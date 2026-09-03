@@ -182,12 +182,17 @@ def test_a_missing_field_is_refused_by_name(path: str) -> None:
     assert excinfo.value.details["field"].startswith(parts[0])
 
 
-def test_finish_reason_is_absent_on_todays_wire_and_read_when_present() -> None:
-    """LoadCoach 01170a7 renders none; the proposed location is ``output.finish_reason``."""
+def test_finish_reason_is_read_from_output_and_absent_on_an_older_wire() -> None:
+    """``output.finish_reason`` since LoadCoach 846348b; before it, nothing, never
+    a guess."""
     assert parse_generation(_generate_document()).finish_reason is None
     document = _generate_document()
+    document["output"]["finish_reason"] = None
+    assert parse_generation(document).finish_reason is None
     document["output"]["finish_reason"] = "stop"
     assert parse_generation(document).finish_reason is FinishReason.STOP
+    document["output"]["finish_reason"] = "length"
+    assert parse_generation(document).finish_reason is FinishReason.LENGTH
     document["output"]["finish_reason"] = "content_filter"
     parsed = parse_generation(document)
     assert parsed.finish_reason is None
@@ -219,7 +224,8 @@ def test_only_a_json_schema_check_counts_as_schema_validation() -> None:
 
 
 def test_a_job_document_without_checks_cannot_prove_schema_validation() -> None:
-    """The replayed-key shape carries ``{"passed", "attempts"}`` only (LoadCoach job_document)."""
+    """A job document from a LoadCoach before 846348b carries ``{"passed",
+    "attempts"}`` only; nothing in it proves a schema check ran."""
     document = _generate_document(validation={"passed": True, "attempts": 1})
     parsed = parse_generation(document)
     assert parsed.validation.checks_reported is False
@@ -401,7 +407,7 @@ def test_generate_returns_a_typed_response(fake: FakeLoadCoach, client: LoadCoac
     assert response.text == "four words of answer"
     assert response.usage.input_tokens == 10
     assert response.usage.cache_read_tokens == 0
-    assert response.finish_reason is None
+    assert response.finish_reason is FinishReason.STOP
     assert response.validation.schema_validated is False
     assert response.model.provider_kind is ProviderKind.OLLAMA
 
@@ -414,7 +420,8 @@ def test_a_repeated_key_returns_the_original_job_not_a_second_execution(
     second = client.generate(request)
     assert first.job_id == second.job_id
     assert len(fake.jobs_with_key("same")) == 1
-    assert second.validation.checks_reported is False  # the job-document shape
+    assert second.validation.checks_reported is True  # the job document carries the checks
+    assert second.finish_reason is FinishReason.STOP
 
 
 def test_scripted_errors_arrive_mapped(fake: FakeLoadCoach, client: LoadCoachClient) -> None:

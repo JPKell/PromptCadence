@@ -46,8 +46,11 @@ I10).
 
 **Where it is looser, or does not model the real thing at all — read this before trusting it.**
 
-* ``finish_reason`` is **never** emitted, because LoadCoach ``01170a7`` never emits it. When
-  LoadCoach starts rendering it, this fake learns it in the same row.
+* ``output.finish_reason`` is rendered the way LoadCoach renders it since its commit
+  ``846348b``: the provider's declared reason for the attempt, ``stop`` unless a script
+  says otherwise, and the job document carries it and the ``validation.checks`` too. A script
+  with ``finish_reason=None`` reproduces the wire of a LoadCoach **before** that commit, which
+  rendered none; the loop must halt on it, never complete.
 * Cancellation takes effect at once; LoadCoach honours it within one stream chunk, or only at
   completion for a provider that cannot stream (``cancellation_deferred_to_completion``).
 * Routing is not modelled: every generation is served by the one scripted model, ``/route``
@@ -84,6 +87,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 __all__ = [
     "FakeLoadCoach",
     "FakeModel",
+    "DERIVED_FINISH",
     "ScriptedError",
     "ScriptedGeneration",
     "Wire",
@@ -94,6 +98,11 @@ __all__ = [
 
 UNSUPPORTED_WIRE: Final = "unsupported"
 """ADR-0016 rule 4 on the wire: an unreported class is this string, never ``null`` and never 0."""
+
+DERIVED_FINISH: Final = "<derived>"
+"""The :attr:`ScriptedGeneration.finish_reason` default: derive the declared reason from the
+script — ``tool_calls`` when tool calls were requested, otherwise ``stop`` — as a real provider
+declares it and as ModelRack's own ``FakeGeneration`` derives it. Never rendered on the wire."""
 
 NON_TERMINAL: Final[frozenset[str]] = frozenset(
     {
@@ -291,6 +300,12 @@ class ScriptedGeneration:
         schema_passes: For a schema-validating profile, whether the ``json_schema`` check passes.
         degradations: Degradation markers to report.
         attempts: How many attempt rows to report.
+        finish_reason: What ``output.finish_reason`` carries — a ``modelrack.FinishReason`` value
+            (``stop``, ``length``, ``tool_calls``, ``content_filter``, ``cancelled``, ``error``,
+            ``unknown``) exactly as LoadCoach renders the provider's declared reason. The default
+            :data:`DERIVED_FINISH` derives it — ``tool_calls`` when tool calls were requested,
+            otherwise ``stop`` — and ``None`` reproduces the wire of a LoadCoach older than
+            ``846348b``, which rendered none.
     """
 
     text: str = "The notes describe three meetings."
@@ -306,6 +321,14 @@ class ScriptedGeneration:
     schema_passes: bool = True
     degradations: tuple[str, ...] = ()
     attempts: int = 1
+    finish_reason: str | None = DERIVED_FINISH
+
+    @property
+    def declared_finish_reason(self) -> str | None:
+        """The value ``output.finish_reason`` carries once :data:`DERIVED_FINISH` is resolved."""
+        if self.finish_reason != DERIVED_FINISH:
+            return self.finish_reason
+        return "tool_calls" if self.tool_calls else "stop"
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,7 +551,8 @@ class FakeLoadCoach:
     def _generate_document(
         self, job: FakeJob, profile: Mapping[str, Any], gen: ScriptedGeneration
     ) -> dict[str, Any]:
-        """``POST /generate``'s 200 body — api.md §4, ``ExecutionOutcome.as_json`` at 01170a7."""
+        """``POST /generate``'s 200 body — api.md §4, ``ExecutionOutcome.as_json`` at
+        ``846348b``."""
         validation = self._validation(profile, gen)
         structured = gen.structured
         if structured is None and validation["performed"] and validation["passed"]:
@@ -540,6 +564,7 @@ class FakeLoadCoach:
             "status": "completed",
             "output": {
                 "text": gen.text,
+                "finish_reason": gen.declared_finish_reason,
                 "structured": structured,
                 "tool_calls": [dict(call) for call in gen.tool_calls],
             },
@@ -588,10 +613,11 @@ class FakeLoadCoach:
         }
 
     def job_document(self, job: FakeJob) -> dict[str, Any]:
-        """``GET /jobs/{id}``'s body — api.md §5, ``job_document`` at 01170a7.
+        """``GET /jobs/{id}``'s body — api.md §5, ``job_document`` at ``846348b``.
 
-        A superset of the ``/generate`` shape for a completed job; for a cancelled or failed one
-        the output is whatever was produced (nothing, here) and ``validation`` is bare.
+        A superset of the ``/generate`` shape for a completed job, ``output.finish_reason`` and
+        ``validation.checks`` included; for a cancelled or failed one the output is whatever was
+        produced (nothing, here), the finish reason is ``null`` and no check was performed.
         """
         result = job.result or {}
         stamp = to_rfc3339(job.created_at)
@@ -617,7 +643,10 @@ class FakeLoadCoach:
                 "started_at": stamp,
                 "completed_at": completed,
             },
-            "output": result.get("output", {"text": "", "structured": None, "tool_calls": []}),
+            "output": result.get(
+                "output",
+                {"text": "", "finish_reason": None, "structured": None, "tool_calls": []},
+            ),
             "reasoning": result.get(
                 "reasoning", {"available": False, "summary": None, "source": None}
             ),
@@ -659,8 +688,10 @@ class FakeLoadCoach:
                 },
             ),
             "validation": {
+                "performed": result.get("validation", {}).get("performed", False),
                 "passed": result.get("validation", {}).get("passed"),
                 "attempts": result.get("validation", {}).get("attempts", 0),
+                "checks": list(result.get("validation", {}).get("checks", [])),
             },
             "retention": {"content_scrubbed_at": None},
             "feedback": [],

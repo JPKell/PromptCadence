@@ -58,12 +58,27 @@ def test_an_idempotency_key_is_required_stricter_than_loadcoach(http: TestClient
     assert response.json()["error"]["details"]["fields"][0]["path"] == "idempotency_key"
 
 
-def test_finish_reason_is_never_emitted(http: TestClient) -> None:
-    """LoadCoach 01170a7 renders none, so neither does the fake."""
+def test_finish_reason_is_rendered_at_output_finish_reason_in_both_documents(
+    http: TestClient, fake: FakeLoadCoach
+) -> None:
+    """LoadCoach 846348b renders the declared reason there, and so does the fake."""
     result = _generate(http)
     assert result["status"] == 200
-    assert "finish_reason" not in result["body"]["output"]
-    assert "finish_reason" not in result["body"]["attempts"][0]
+    assert result["body"]["output"]["finish_reason"] == "stop"
+    assert "finish_reason" not in result["body"]["attempts"][0]  # not on the attempt entry
+
+    fake.script(ScriptedGeneration(finish_reason="length"))
+    assert _generate(http, idempotency_key="f2")["body"]["output"]["finish_reason"] == "length"
+
+    fake.script(ScriptedGeneration(finish_reason=None))  # the wire before 846348b
+    older = _generate(http, idempotency_key="f3")["body"]
+    assert "finish_reason" in older["output"] and older["output"]["finish_reason"] is None
+
+    replay = _generate(http, idempotency_key="f2")["body"]  # the job-document shape
+    assert replay["state"] == "completed"
+    assert replay["output"]["finish_reason"] == "length"
+    assert replay["validation"]["checks"] == [{"kind": "length", "passed": True, "detail": {}}]
+    assert replay["validation"]["performed"] is True
 
 
 def test_the_interim_wire_reports_cache_classes_unsupported(http: TestClient) -> None:

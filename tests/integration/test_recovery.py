@@ -36,7 +36,6 @@ from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
     ScriptedGeneration,
     build_fake_app,
-    schema_profile,
     text_profile,
 )
 
@@ -109,9 +108,9 @@ def _free_port() -> int:
 def served_fake() -> Iterator[tuple[FakeLoadCoach, str]]:
     """The fake LoadCoach on a real loopback socket, outliving any child process."""
     fake = FakeLoadCoach()
-    fake.register_profile(schema_profile("structured.answer"))
+    fake.register_profile(text_profile("tools.agent.local_fast"))
     fake.register_profile(text_profile("tools.agent.local_large"))
-    fake.set_default(ScriptedGeneration(text='{"answer": "recovered"}'))
+    fake.set_default(ScriptedGeneration(text="recovered"))
     port = _free_port()
     config = uvicorn.Config(build_fake_app(fake), host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
@@ -142,8 +141,6 @@ def environment(
         "PROMPTCADENCE_STORAGE__DATABASE_URL": f"sqlite:///{tmp_path / 'shared.sqlite3'}",
         "PROMPTCADENCE_LOADCOACH__BASE_URL": base_url,
         "PROMPTCADENCE_EXECUTION__LEASE_SECONDS": "2",
-        "PROMPTCADENCE_TIERS__LOCAL_FAST__TASK_PROFILE": "structured.answer",
-        "PROMPTCADENCE_TIERS__LOCAL_LARGE__TASK_PROFILE": "tools.agent.local_large",
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -212,7 +209,7 @@ def test_kill_minus_nine_with_a_turn_in_flight_cancels_the_orphan_and_resumes(
 ) -> None:
     fake, _ = served_fake
     hold = threading.Event()
-    fake.script(ScriptedGeneration(hold=hold, text='{"answer": "never delivered"}'))
+    fake.script(ScriptedGeneration(hold=hold, text="never delivered"))
     child, trajectory_id = _spawn(environment, "in_flight")
     deadline = time.monotonic() + 10
     while not fake.in_flight() and time.monotonic() < deadline:
@@ -274,23 +271,24 @@ def test_kill_minus_nine_after_the_response_reconciles_the_completed_job_without
     assert summary.finished == (trajectory_id,)
 
     # The turn is reconciled — one job, one assistant turn, the job's own output — and the
-    # trajectory then ends on that turn's verdict. On today's wire that verdict is a halt: the
-    # job document LoadCoach serves carries no validation checks and no finish_reason, so the
-    # reconciled turn cannot be read as a declared finish (spec §11 contract 6). The cause says so.
+    # trajectory then ends on that turn's verdict, read from the job document exactly as it
+    # would have been read from the response: since LoadCoach 846348b the document
+    # carries `output.finish_reason` and the validation checks, so the declared `stop`
+    # completes the trajectory (spec §11 contract 6) — no halt naming the reconciliation.
     final = recoverer.service.get(trajectory_id)
-    assert final.state is TrajectoryState.HALTED
-    assert final.error_code == ErrorCode.LOADCOACH_ERROR.value
-    assert "reconciled after a crash" in (final.halted_reason or "")
-    assert "no validation checks" in (final.halted_reason or "")
+    assert final.state is TrajectoryState.COMPLETED, final.halted_reason
+    assert final.error_code is None
     turns = recoverer.service.turns(trajectory_id)
     assert [t.turn.role.value for t in turns] == ["user", "assistant"]
     assert turns[1].loadcoach_job_id == job_id
-    assert turns[1].turn.content == '{"answer": "recovered"}'
+    assert turns[1].turn.content == "recovered"
+    assert turns[1].turn.finish_reason is not None
+    assert turns[1].turn.finish_reason.value == "stop"
     assert len(fake.jobs) == 1, "no second execution"
     assert len(fake.jobs_with_key(turns[1].turn.turn_id)) == 1
     assert not fake.in_flight(), "no orphaned job"
     types = [e["event_type"] for e in recoverer.events(trajectory_id)]
-    assert types[-3:] == ["turn.completed", "trajectory.recovered", "trajectory.halted"]
+    assert types[-3:] == ["turn.completed", "trajectory.recovered", "trajectory.completed"]
     reconciled = recoverer.events(trajectory_id)[-2]["data"]
     assert reconciled["outcome"] == f"reconciled_completed_job:{job_id}"
 
@@ -319,7 +317,7 @@ def test_an_unreconcilable_turn_halts_recovered_after_crash(
                 turn_id="01TURNTHATNEVERREACHEDLC00",
                 sequence=2,
                 tier="local_fast",
-                task_profile="structured.answer",
+                task_profile="tools.agent.local_fast",
                 intent_id="i",
                 intent_revision=1,
             ),
@@ -356,7 +354,7 @@ def test_recovery_is_deferred_when_loadcoach_is_unreachable(
                 turn_id="01TURNTHATNEVERREACHEDLC01",
                 sequence=2,
                 tier="local_fast",
-                task_profile="structured.answer",
+                task_profile="tools.agent.local_fast",
                 intent_id="i",
                 intent_revision=1,
             ),

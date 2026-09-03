@@ -4,7 +4,9 @@
 ``01170a7``; the file last moved at ``0963646``), recorded with its digest below. This is what
 keeps the fake honest: every request body the client can send validates against the snapshot's
 schemas, every path the client and the fake use exists in the snapshot with that method, and the
-fake's own request models are the snapshot's, shape for shape.
+fake's own request models are the snapshot's, shape for shape. LoadCoach ``846348b``
+(the ``output.finish_reason`` render) leaves the snapshot byte-identical — responses are open
+objects there — which is why the digest below did not move with it.
 
 **What the snapshot cannot pin, stated plainly.** LoadCoach's route handlers return plain
 dictionaries, so the snapshot types every *response* as an open object (``additionalProperties:

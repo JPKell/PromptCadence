@@ -4,11 +4,17 @@
 ``PROMPTCADENCE_LOADCOACH__BASE_URL`` (default ``http://127.0.0.1:8766``), with every configured
 tier's task profile checked to exist there first.
 
-This test asserts ``completed``. Against LoadCoach ``01170a7`` it is expected to **fail** on a
-free-text tier, because LoadCoach renders no ``finish_reason`` and PromptCadence refuses to read
-an undeclared finish as success; the failure message names the cause verbatim. That is the
-finding, not a flake — see ``D2_HANDOFF.md``. It passes once LoadCoach carries
-``output.finish_reason``, or against a tier whose profile validates a schema.
+This test asserts ``completed``. It passes against a LoadCoach at or after
+``846348b``, which renders the provider's declared reason at ``output.finish_reason``.
+Against an older LoadCoach (``01170a7`` and before) it **fails** on a free-text tier, because that
+wire carries no ``finish_reason`` and PromptCadence refuses to read an undeclared finish as
+success; the failure message names the cause verbatim. That is the finding of ``D2_HANDOFF.md``
+§2, not a flake.
+
+The default tiers name ``tools.agent.local_fast`` and ``tools.agent.local_large``; LoadCoach
+ships one ``tools.agent`` profile, so a live run configures the tiers to profiles the LoadCoach
+under test actually has (``PROMPTCADENCE_TIERS__<NAME>__TASK_PROFILE``), and the first assertion
+below says which are missing when it does not.
 """
 
 from __future__ import annotations

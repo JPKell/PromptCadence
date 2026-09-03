@@ -8,7 +8,8 @@ cannot read is refused with the field named rather than read as a number that wa
 
 **What the parser knows about the wire, and where each fact comes from.** The response shapes are
 transcribed from ``docs/apps/loadcoach/api.md`` §4 and §5 and checked against LoadCoach's own
-``ExecutionOutcome.as_json`` / ``job_document`` (LoadCoach ``01170a7``). Three facts matter:
+``ExecutionOutcome.as_json`` / ``job_document`` (LoadCoach ``846348b``). Three facts
+matter:
 
 * ``usage`` carries four disjoint token classes plus ``thinking_tokens``. A **number** is a count,
   ``0`` included — under ADR-0070 a zero is the provider's protocol saying nothing could have been
@@ -16,15 +17,18 @@ transcribed from ``docs/apps/loadcoach/api.md`` §4 and §5 and checked against 
   mean *never reported* and become :data:`baseaicore.UNSUPPORTED`; neither is ever coerced to
   ``0`` or totalled. Until ``modelrack 0.7.0`` ships and LoadCoach adopts it, every real adapter
   reports the cache classes ``"unsupported"``; afterwards ``0`` or a count. The parser reads both.
-* ``finish_reason`` is **not on the wire today.** LoadCoach records the provider's declared reason
-  on every attempt (``job_attempts.finish_reason``) and renders it nowhere. The parser reads
-  ``output.finish_reason`` when a response carries it — the location proposed to LoadCoach in
-  ``D2_HANDOFF.md`` — and reports ``None`` otherwise, which the loop treats as *absence*, never as
-  success (spec §11 contract 6).
+* ``output.finish_reason`` is the provider's **declared** reason for the attempt that produced
+  the output, rendered by LoadCoach since ``846348b`` in both the ``/generate``
+  response and the job document. The parser reads it as a :class:`FinishReason` member, reports
+  a value outside the enum as ``undeclared_finish_reason``, and reports ``None`` when the field
+  is absent or ``null`` — the wire of a LoadCoach before that commit, which recorded the reason
+  per attempt and rendered it nowhere (``D2_HANDOFF.md`` §2). The loop treats ``None`` as
+  *absence*, never as success (spec §11 contract 6).
 * A repeated ``idempotency_key`` from the same caller returns the **original job's document**
-  rather than executing again. That document is a superset of the ``/generate`` response with the
-  same keys for everything this parser reads, except that its ``validation`` block carries no
-  ``checks``; :attr:`ValidationInfo.checks_reported` says which shape was read.
+  rather than executing again. Since ``846348b`` that document carries the same
+  ``output`` and ``validation`` shapes as the ``/generate`` response, ``checks`` included; a job
+  document from an older LoadCoach carries no ``checks``, and
+  :attr:`ValidationInfo.checks_reported` says which shape was read.
 
 Every request carries ``X-Client-Name: promptcadence`` (api.md §12): on a loopback bind that name
 is the idempotency scope and the ``source`` LoadCoach attributes the job to, and it is what lets

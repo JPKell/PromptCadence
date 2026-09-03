@@ -130,9 +130,9 @@ def decide_finish(
     return FinishDecision(
         FinishOutcome.HALT,
         "LoadCoach's response declared no finish_reason and performed no schema validation; a "
-        "turn cannot complete on an undeclared finish (spec §11 contract 6). LoadCoach stores the "
-        "provider's finish_reason per attempt but does not render it on the wire — see "
-        "D2_HANDOFF.md",
+        "turn cannot complete on an undeclared finish (spec §11 contract 6). LoadCoach renders "
+        "the provider's finish_reason at output.finish_reason since 846348b; an older "
+        "LoadCoach renders none — see D2_HANDOFF.2.md",
         ErrorCode.LOADCOACH_ERROR,
     )
 

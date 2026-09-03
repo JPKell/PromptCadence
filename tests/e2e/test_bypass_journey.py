@@ -5,10 +5,10 @@ over the CLI, with the SSE stream replaying from ``Last-Event-ID``. The live hal
 journey against a real LoadCoach — is ``tests/live/test_loadcoach_journey.py`` and an operator
 step.
 
-The default tier's task profile is a schema-validating one here, because that is the only shape
-on today's wire under which a turn can *complete* (LoadCoach renders no ``finish_reason``; see
-``tests/integration/test_bypass_loop.py`` for the text-profile halt). A second test submits a
-text-profile trajectory and asserts the halt reads as a halt, not as a completion.
+The tiers are the shipped defaults (free-text ``tools.agent.*`` profiles) and the fake speaks the
+wire of LoadCoach ``846348b``: the provider's declared ``stop`` completes a turn. Two
+further tests script the wire of an older LoadCoach (no ``finish_reason``) and a truncated answer
+(``length``) and assert each reads as a halt with its cause on the row, never as a completion.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
     ScriptedGeneration,
     build_fake_app,
-    schema_profile,
     text_profile,
 )
 from typer.testing import CliRunner
@@ -41,17 +40,15 @@ _TERMINAL = {"completed", "halted", "failed", "cancelled"}
 @pytest.fixture
 def fake() -> FakeLoadCoach:
     fake = FakeLoadCoach()
-    fake.register_profile(schema_profile("structured.answer"))
+    fake.register_profile(text_profile("tools.agent.local_fast"))
     fake.register_profile(text_profile("tools.agent.local_large"))
-    fake.set_default(ScriptedGeneration(text='{"answer": "the notes describe three meetings"}'))
+    fake.set_default(ScriptedGeneration(text="the notes describe three meetings"))
     return fake
 
 
 @pytest.fixture
 def client(fake: FakeLoadCoach, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     """The served application, its worker running, its LoadCoach the in-process fake."""
-    monkeypatch.setenv("PROMPTCADENCE_TIERS__LOCAL_FAST__TASK_PROFILE", "structured.answer")
-    monkeypatch.setenv("PROMPTCADENCE_TIERS__LOCAL_LARGE__TASK_PROFILE", "tools.agent.local_large")
     monkeypatch.setenv("PROMPTCADENCE_EXECUTION__LEASE_SECONDS", "2")
     settings = load_settings().settings
     loadcoach_http = TestClient(build_fake_app(fake), base_url="http://loadcoach.fake")
@@ -113,7 +110,7 @@ def test_the_bypass_journey_completes_over_http(client: TestClient, fake: FakeLo
 
     final = _wait_terminal(client, trajectory_id)
     assert final["state"] == "completed", final
-    assert final["cause"] == "LoadCoach validated the output against the profile's schema"
+    assert final["cause"] == "the provider declared finish_reason=stop"
     assert final["lease"]["owner"] is None
 
     turns = client.get(f"/api/v1/trajectories/{trajectory_id}/turns").json()["items"]
@@ -169,8 +166,11 @@ def test_the_stream_replays_from_last_event_id_without_gap_or_duplicate(
     assert client.get("/api/v1/trajectories/01ABSENT000000000000000000/stream").status_code == 404
 
 
-def test_a_text_profile_trajectory_halts_visibly_never_completes(client: TestClient) -> None:
+def test_an_undeclared_finish_halts_visibly_never_completes(
+    client: TestClient, fake: FakeLoadCoach
+) -> None:
     """The quiet failure, made loud: no declared finish is a halt with its cause on the row."""
+    fake.script(ScriptedGeneration(finish_reason=None))  # the wire before 846348b
     trajectory_id = client.post(
         "/api/v1/trajectories", json={"task": "t", "bypass_planning": True, "tier": "local_large"}
     ).json()["trajectory_id"]
@@ -178,6 +178,22 @@ def test_a_text_profile_trajectory_halts_visibly_never_completes(client: TestCli
     assert final["state"] == "halted"
     assert final["error_code"] == "LOADCOACH_ERROR"
     assert "no finish_reason" in final["cause"]
+
+
+def test_a_truncated_answer_halts_visibly_never_completes(
+    client: TestClient, fake: FakeLoadCoach
+) -> None:
+    """A ``length`` finish is the row's named failure mode; it reads as a halt, over HTTP."""
+    fake.script(ScriptedGeneration(text="the notes descr", finish_reason="length"))
+    trajectory_id = client.post(
+        "/api/v1/trajectories", json={"task": "t", "bypass_planning": True}
+    ).json()["trajectory_id"]
+    final = _wait_terminal(client, trajectory_id)
+    assert final["state"] == "halted"
+    assert final["error_code"] == "LOADCOACH_ERROR"
+    assert "finish_reason=length" in final["cause"]
+    turns = client.get(f"/api/v1/trajectories/{trajectory_id}/turns").json()["items"]
+    assert turns[1]["finish_reason"] == "length"
 
 
 def test_submission_refusals_use_spec_13_codes(client: TestClient) -> None:
@@ -213,7 +229,7 @@ def test_submission_refusals_use_spec_13_codes(client: TestClient) -> None:
 
 
 def test_the_cli_run_follow_completes_with_exit_zero(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, fake: FakeLoadCoach, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Acceptance criterion 1, spelled the way the plan spells it."""
     monkeypatch.setattr(
@@ -235,11 +251,12 @@ def test_the_cli_run_follow_completes_with_exit_zero(
     assert "trajectory.completed" in text.stdout
     assert "state        completed" in text.stdout
 
+    fake.script(ScriptedGeneration(text="cut off", finish_reason="length"))
     halted = runner.invoke(
         cli_main.app, ["run", "t", "--bypass-planning", "--tier", "local_large", "--follow"]
     )
     assert halted.exit_code == 5
-    assert "no finish_reason" in halted.stdout
+    assert "finish_reason=length" in halted.stdout
 
     listed = runner.invoke(cli_main.app, ["trajectory", "list", "--json"])
     assert listed.exit_code == 0

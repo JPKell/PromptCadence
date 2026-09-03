@@ -172,22 +172,20 @@ def _claim_and_run(harness: Harness, **overrides: object) -> tuple[str, Trajecto
     return trajectory_id, controller.run(trajectory_id)
 
 
-def test_a_text_profile_turn_halts_on_the_undeclared_finish_never_completes(
-    harness: Harness,
-) -> None:
-    """Today's wire: LoadCoach renders no finish_reason, and a turn cannot complete on none."""
+def test_a_text_profile_turn_completes_on_a_declared_stop(harness: Harness) -> None:
+    """Contract 6's first clause: the provider declared ``stop``, so the turn completes."""
     trajectory_id, state = _claim_and_run(harness)
-    assert state is TrajectoryState.HALTED
+    assert state is TrajectoryState.COMPLETED
     view = harness.service.get(trajectory_id)
-    assert view.error_code == ErrorCode.LOADCOACH_ERROR.value
-    assert "no finish_reason" in (view.halted_reason or "")
+    assert view.error_code is None
+    assert view.completed_at is not None
     assert harness.events(trajectory_id) == [
         "trajectory.created",
         "trajectory.claimed",
         "intent.minted",
         "turn.started",
         "turn.completed",
-        "trajectory.halted",
+        "trajectory.completed",
     ]
     turns = harness.service.turns(trajectory_id)
     assert [t.turn.role.value for t in turns] == ["user", "assistant"]
@@ -202,6 +200,33 @@ def test_a_text_profile_turn_halts_on_the_undeclared_finish_never_completes(
         {"role": "user", "content": "summarize ./notes"}
     ]
     assert harness.fake.requests[-1]["body"]["task"] == "tools.agent.local_fast"
+
+
+def test_a_turn_with_no_declared_finish_halts_never_completes(harness: Harness) -> None:
+    """The wire of a LoadCoach before 846348b: no finish_reason, and a turn cannot
+    complete on none."""
+    harness.fake.script(ScriptedGeneration(finish_reason=None))
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.HALTED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.LOADCOACH_ERROR.value
+    assert "no finish_reason" in (view.halted_reason or "")
+    assert harness.events(trajectory_id)[-2:] == ["turn.completed", "trajectory.halted"]
+    roles = [t.turn.role.value for t in harness.service.turns(trajectory_id)]
+    assert roles == ["user", "assistant"]  # the turn is recorded exactly as it happened
+
+
+def test_a_truncated_answer_halts_never_flows_onward(harness: Harness) -> None:
+    """The quiet failure the row was named for: ``length`` is not ``stop``."""
+    harness.fake.script(ScriptedGeneration(text="the notes describe", finish_reason="length"))
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.HALTED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.LOADCOACH_ERROR.value
+    assert "length" in (view.halted_reason or "")
+    completed = harness.service.events(trajectory_id)[-2]
+    assert completed.data["finish_reason"] == "length"
+    assert completed.data["decision"] == "halt"
 
 
 def test_a_schema_validated_result_completes_the_trajectory(schema_harness: Harness) -> None:
@@ -290,9 +315,9 @@ def test_a_budget_overrun_is_recorded_and_continued_under_the_default_scope(
     ``continue_recorded`` — an event *and* a row — and the turn's own verdict then decides."""
     harness.fake.script(ScriptedGeneration(input_tokens=900, output_tokens=200))
     trajectory_id, state = _claim_and_run(harness, token_budget=1000)
-    assert state is TrajectoryState.HALTED  # the undeclared finish, not the drift
+    assert state is TrajectoryState.COMPLETED  # the declared stop decided; the drift did not
     view = harness.service.get(trajectory_id)
-    assert view.error_code == ErrorCode.LOADCOACH_ERROR.value
+    assert view.error_code is None
     assert "deviation.detected" in harness.events(trajectory_id)
     with harness.database.read() as session:
         deviation = session.execute(select(models.Deviation)).scalar_one()

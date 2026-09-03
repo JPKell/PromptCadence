@@ -804,8 +804,9 @@ class LoopController:
             undeclared_reason=response.undeclared_finish_reason,
         )
         if recovered_from_job is not None and not response.validation.checks_reported:
-            # A reconciled turn is read from LoadCoach's job document, which renders no
-            # validation checks, so a schema validation cannot be confirmed from it. The turn is
+            # A reconciled turn is read from LoadCoach's job document. Since LoadCoach
+            # 846348b that document carries the validation checks; one from an older
+            # LoadCoach does not, so a schema validation cannot be confirmed from it. The turn is
             # recorded exactly as it happened; the verdict says why it could not complete.
             decision = FinishDecision(
                 decision.outcome,
