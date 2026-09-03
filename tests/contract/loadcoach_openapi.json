@@ -1,0 +1,1984 @@
+{
+  "components": {
+    "schemas": {
+      "FeedbackBody": {
+        "additionalProperties": false,
+        "description": "``POST /jobs/{id}/feedback``'s body (api.md \u00a76).\n\n``source`` is honoured only when neither a token nor ``X-Client-Name`` names the caller.",
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "edited": {
+            "default": false,
+            "title": "Edited",
+            "type": "boolean"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "quality_score": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Score"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FeedbackValidationBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "accepted"
+        ],
+        "title": "FeedbackBody",
+        "type": "object"
+      },
+      "FeedbackValidationBody": {
+        "additionalProperties": false,
+        "description": "The caller's own validation verdict (api.md \u00a76's ``validation`` object).",
+        "properties": {
+          "detail": {
+            "title": "Detail"
+          },
+          "passed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passed"
+          }
+        },
+        "title": "FeedbackValidationBody",
+        "type": "object"
+      },
+      "GenerateBody": {
+        "additionalProperties": false,
+        "description": "``POST /generate``'s request body.\n\nExactly one of ``prompt`` (with an optional ``system``) or ``messages`` is supplied; supplying\nboth is a ``VALIDATION_ERROR``, because a request that says two different things about what\nthe model should see has no correct interpretation.",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MessageBody"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messages"
+          },
+          "overrides": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OverridesBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "response_format": {
+            "anyOf": [
+              {
+                "pattern": "^(text|json|json_schema)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Format"
+          },
+          "sampling": {
+            "additionalProperties": true,
+            "title": "Sampling",
+            "type": "object"
+          },
+          "system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System"
+          },
+          "task": {
+            "title": "Task",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "GenerateBody",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "JobBody": {
+        "additionalProperties": false,
+        "description": "``POST /jobs``'s body: ``/generate``'s plus class, priority, wait bound and idempotency.",
+        "properties": {
+          "class": {
+            "default": "normal",
+            "pattern": "^(interactive|normal|background|batch)$",
+            "title": "Class",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "idempotent": {
+            "default": true,
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "max_wait_seconds": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Wait Seconds"
+          },
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MessageBody"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messages"
+          },
+          "overrides": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OverridesBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "maximum": 999.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "response_format": {
+            "anyOf": [
+              {
+                "pattern": "^(text|json|json_schema)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Format"
+          },
+          "sampling": {
+            "additionalProperties": true,
+            "title": "Sampling",
+            "type": "object"
+          },
+          "stream": {
+            "default": false,
+            "title": "Stream",
+            "type": "boolean"
+          },
+          "system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System"
+          },
+          "task": {
+            "title": "Task",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "JobBody",
+        "type": "object"
+      },
+      "MessageBody": {
+        "additionalProperties": false,
+        "description": "One turn of a caller-supplied transcript (api.md \u00a74).",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "pattern": "^(system|user|assistant|tool)$",
+            "title": "Role",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Call Id"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "MessageBody",
+        "type": "object"
+      },
+      "OverridesBody": {
+        "additionalProperties": false,
+        "description": "Routing \u00a710's overrides, as far as this phase implements them.",
+        "properties": {
+          "disallow_fallback": {
+            "default": false,
+            "title": "Disallow Fallback",
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "require_evidence": {
+            "default": false,
+            "title": "Require Evidence",
+            "type": "boolean"
+          },
+          "runtime_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuntimeProfileOverrideBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "OverridesBody",
+        "type": "object"
+      },
+      "RouteBody": {
+        "additionalProperties": false,
+        "description": "``POST /route``'s request body (api.md \u00a73).",
+        "properties": {
+          "constraints": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskProfileConstraints"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "estimated_input_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Input Tokens"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
+          },
+          "overrides": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OverridesBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task": {
+            "title": "Task",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "RouteBody",
+        "type": "object"
+      },
+      "RuntimeProfileOverrideBody": {
+        "additionalProperties": false,
+        "description": "The ``overrides.runtime_profile`` block (routing \u00a710).",
+        "properties": {
+          "batch_size": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Size"
+          },
+          "context_size": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Size"
+          },
+          "flash_attention": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flash Attention"
+          },
+          "gpu_layers": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Layers"
+          },
+          "keep_alive": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keep Alive"
+          },
+          "kv_cache_precision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kv Cache Precision"
+          },
+          "threads": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threads"
+          }
+        },
+        "title": "RuntimeProfileOverrideBody",
+        "type": "object"
+      },
+      "TaskProfileConstraints": {
+        "additionalProperties": false,
+        "description": "Hard filters \u2014 a candidate that fails one is removed, not merely ranked lower.",
+        "properties": {
+          "allow_remote_providers": {
+            "default": false,
+            "title": "Allow Remote Providers",
+            "type": "boolean"
+          },
+          "exclude_models": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Exclude Models",
+            "type": "array"
+          },
+          "max_latency_p95_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Latency P95 Seconds"
+          },
+          "min_capability_scores": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Min Capability Scores",
+            "type": "object"
+          },
+          "min_context_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Min Context Tokens",
+            "type": "integer"
+          },
+          "requires_capabilities": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Requires Capabilities",
+            "type": "array"
+          }
+        },
+        "title": "TaskProfileConstraints",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "LoadCoach",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/evidence": {
+      "get": {
+        "description": "Return imported evidence as a collection of SetSpec envelopes (ADR-0025 \u00a72).\n\nArgs:\n    request: The incoming request.\n    capability: Exact capability ID.\n    model: Model canonical ID.\n    match_state: One of ``bound``, ``unmatched``, ``ambiguous_name_only``.\n    min_confidence: Confidence floor.\n    stale: Stale records only, or fresh only.\n    limit: Page size.\n    cursor: The previous page's ``next_cursor``.\n\nReturns:\n    ``{\"items\": [...], \"page\": {...}, \"summary\": {...}}``. ``items`` are\n    ``capability.evidence`` envelopes; ``summary`` is the store overview the page and the\n    routing explanation share.\n\nRaises:\n    ValidationError: ``match_state`` is not one of the three.",
+        "operationId": "list_evidence_api_v1_evidence_get",
+        "parameters": [
+          {
+            "description": "Exact capability ID.",
+            "in": "query",
+            "name": "capability",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact capability ID.",
+              "title": "Capability"
+            }
+          },
+          {
+            "description": "Model canonical ID.",
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Model canonical ID.",
+              "title": "Model"
+            }
+          },
+          {
+            "description": "bound | unmatched | ambiguous_name_only.",
+            "in": "query",
+            "name": "match_state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "bound | unmatched | ambiguous_name_only.",
+              "title": "Match State"
+            }
+          },
+          {
+            "description": "Confidence floor.",
+            "in": "query",
+            "name": "min_confidence",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Confidence floor.",
+              "title": "Min Confidence"
+            }
+          },
+          {
+            "description": "Stale records only, or fresh only.",
+            "in": "query",
+            "name": "stale",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Stale records only, or fresh only.",
+              "title": "Stale"
+            }
+          },
+          {
+            "description": "Page size.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "Page size.",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Evidence Api V1 Evidence Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Imported capability evidence",
+        "tags": [
+          "evidence"
+        ]
+      }
+    },
+    "/api/v1/evidence/import": {
+      "post": {
+        "description": "Import a bundle from the request body, or pull one from a URL (api.md \u00a77).\n\nArgs:\n    request: The incoming request.\n    body: Either a ``benchmark.evidence_bundle`` envelope, or ``{\"url\": \"http://\u2026\"}``.\n\nReturns:\n    Counts of imported / updated / unmatched / rejected, with every rejection's reason.\n\nRaises:\n    ValidationError: The body is neither an envelope nor a ``url``.\n    EvidenceSchemaVersionUnsupported: An unsupported schema major; both versions are named\n        and no evidence is changed.\n    EvidenceImportFailed: The bundle itself was unusable.\n    EvidenceSourceRefused: A ``url`` failed the fetch allowlist (ADR-0026 \u00a73).",
+        "operationId": "import_evidence_api_v1_evidence_import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Evidence Api V1 Evidence Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import a FreeWeight evidence bundle",
+        "tags": [
+          "evidence"
+        ]
+      }
+    },
+    "/api/v1/evidence/sources": {
+      "get": {
+        "description": "Return every configured and observed source with its last status (api.md \u00a77).",
+        "operationId": "list_evidence_sources_api_v1_evidence_sources_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Evidence Sources Api V1 Evidence Sources Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Evidence sources and their last import",
+        "tags": [
+          "evidence"
+        ]
+      }
+    },
+    "/api/v1/generate": {
+      "post": {
+        "description": "Execute ``body`` synchronously and return the result with its routing metadata.\n\n``def``, not ``async def`` (ADR-0003 \u00a71): this handler touches the database and the provider,\nso Starlette runs it in the worker threadpool rather than on the event loop.\n\nA repeated ``idempotency_key`` returns the original job (api.md \u00a74) \u2014 its document, waited\nfor if it is still running \u2014 rather than executing again.\n\nErrors: ``TASK_PROFILE_NOT_FOUND``, ``NO_ELIGIBLE_MODEL`` (with every candidate and its\nrejection reason), ``ALL_CANDIDATES_FAILED`` (with every attempt and its error).",
+        "operationId": "post_generate_api_v1_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Generate Api V1 Generate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Route, execute and validate one generation",
+        "tags": [
+          "generation"
+        ]
+      }
+    },
+    "/api/v1/generate/stream": {
+      "post": {
+        "description": "Execute ``body`` and stream the routing decision, tokens and terminal result.\n\n``async def`` (ADR-0003 \u00a72): this handler only streams. The reservation is one database\nwrite dispatched to the threadpool; the execution itself runs in a worker thread; and every\ncall MirrorWall's ``sse_response`` makes back into the event source is dispatched with\n``anyio.to_thread.run_sync`` by that package \u2014 so nothing here can put a blocking call on\nthe event loop.\n\nTerminal event is always ``result`` or ``error``, and the stream closes on it. A repeated\n``idempotency_key`` attaches to the job's stream (api.md \u00a74) and ``Last-Event-ID`` is\nhonoured there, against the persisted events; a POST with no key is a new execution with\nits own sequence space, where a foreign ``Last-Event-ID`` would skip every frame this one\nproduces, so it is ignored.",
+        "operationId": "post_generate_stream_api_v1_generate_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream one generation as it is produced",
+        "tags": [
+          "generation"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "description": "Return the current health report; 200 for ok/degraded, 503 for unavailable.\n\nReports on the handle the server is serving from, not a connection opened for the check \u2014 a\nhealth check against a different connection than requests use is answering a question nobody\nasked.",
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Component health",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/jobs": {
+      "get": {
+        "description": "Jobs newest first, filtered by state, class, task and source; cursor-paginated.",
+        "operationId": "get_jobs_api_v1_jobs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "task",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Task"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List jobs",
+        "tags": [
+          "jobs"
+        ]
+      },
+      "post": {
+        "description": "Enqueue ``body`` and return the job. ``202``; a repeated key returns the original job.\n\nErrors: ``TASK_PROFILE_NOT_FOUND``, ``VALIDATION_ERROR`` (a priority outside the class's\nband), ``QUEUE_FULL`` (429).",
+        "operationId": "post_job_api_v1_jobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Job Api V1 Jobs Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit a job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/v1/jobs/{job_id}": {
+      "get": {
+        "description": "The job: state, attempts, routing summary, usage, timings, validation, degradations.",
+        "operationId": "get_job_document_api_v1_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Job Document Api V1 Jobs  Job Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One job in full",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/v1/jobs/{job_id}/cancel": {
+      "post": {
+        "description": "Cancel: at once for a waiting job, at the next chunk boundary for an executing one.\n\n``409 JOB_NOT_CANCELLABLE`` for a terminal job; idempotent otherwise.",
+        "operationId": "post_cancel_api_v1_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Cancel Api V1 Jobs  Job Id  Cancel Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel a job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/v1/jobs/{job_id}/explanation": {
+      "get": {
+        "description": "The routing decision whose ``job_id`` matches \u2014 a lookup, never a copy (LCX3).",
+        "operationId": "get_job_explanation_api_v1_jobs__job_id__explanation_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Job Explanation Api V1 Jobs  Job Id  Explanation Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The job's routing explanation",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/v1/jobs/{job_id}/feedback": {
+      "post": {
+        "description": "Record the caller's verdict on the job; ``write`` scope (spec \u00a714).\n\n``201`` with the stored record on a source's first feedback for the job, ``200`` on an\nupdate; idempotent per ``(job_id, source)``. ``404 JOB_NOT_FOUND`` otherwise.",
+        "operationId": "post_feedback_api_v1_jobs__job_id__feedback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Feedback Api V1 Jobs  Job Id  Feedback Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Caller feedback on a job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/v1/jobs/{job_id}/stream": {
+      "get": {
+        "description": "SSE: state changes, tokens when streaming was requested, and the terminal event.\n\nReplays the persisted events after ``Last-Event-ID`` and follows the live broker; closes on\nthe terminal event.",
+        "operationId": "get_job_stream_api_v1_jobs__job_id__stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The job's event stream",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/v1/models": {
+      "get": {
+        "description": "Return every known model, available or not, with declared capabilities, its evidence\nsummary, reliability and residency (api.md \u00a72).\n\nUnavailable models are included, with a reason \u2014 not deleted (dev-plan P2 test list).",
+        "operationId": "list_models_api_v1_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Models Api V1 Models Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The model registry",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/api/v1/models/discover": {
+      "post": {
+        "description": "Run discovery now (api.md \u00a72); ``admin``. Returns the added/updated/unavailable counts.",
+        "operationId": "discover_api_v1_models_discover_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Discover Api V1 Models Discover Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Re-discover models through the provider",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/api/v1/models/{model_ref}": {
+      "get": {
+        "description": "Identity, descriptor, evidence per capability, reliability and breaker state (api.md \u00a72).\n\n``model_ref`` is the registry ULID or an unambiguous prefix of it \u2014 never the canonical ID,\nwhich does not survive a path segment (ADR-0024).",
+        "operationId": "get_model_api_v1_models__model_ref__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_ref",
+            "required": true,
+            "schema": {
+              "title": "Model Ref",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Model Api V1 Models  Model Ref  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One model in full",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/api/v1/queue": {
+      "get": {
+        "description": "Queue \u00a711's report.",
+        "operationId": "get_queue_api_v1_queue_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Queue Api V1 Queue Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Queue depth, latency, residency, breakers",
+        "tags": [
+          "queue"
+        ]
+      }
+    },
+    "/api/v1/queue/drain": {
+      "post": {
+        "description": "Admin: finish in-flight work, claim nothing new. ``in_flight`` says how many remain.",
+        "operationId": "post_drain_api_v1_queue_drain_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Drain Api V1 Queue Drain Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Drain for shutdown",
+        "tags": [
+          "queue"
+        ]
+      }
+    },
+    "/api/v1/queue/pause": {
+      "post": {
+        "description": "Admin: stop claiming without dropping jobs. In-flight work finishes.",
+        "operationId": "post_pause_api_v1_queue_pause_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Pause Api V1 Queue Pause Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Stop dispatch",
+        "tags": [
+          "queue"
+        ]
+      }
+    },
+    "/api/v1/queue/resume": {
+      "post": {
+        "description": "Admin: resume claiming; also clears a drain.",
+        "operationId": "post_resume_api_v1_queue_resume_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Resume Api V1 Queue Resume Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Resume dispatch",
+        "tags": [
+          "queue"
+        ]
+      }
+    },
+    "/api/v1/queue/stream": {
+      "get": {
+        "description": "SSE: one ``queue.status`` frame per change, each the whole current report and the page\nfragment rendered from it \u2014 never a diff, so a reconnect is right after one frame.",
+        "operationId": "get_queue_stream_api_v1_queue_stream_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Live queue status",
+        "tags": [
+          "queue"
+        ]
+      }
+    },
+    "/api/v1/reliability": {
+      "get": {
+        "description": "Every tracked pair's window statistics, factor, regression verdict and breaker state.\n\nEvery statistic carries the sample count behind it and a reason when it is absent\n(ADR-0016); ``minimums`` states the bounds so a reader can see why a value is missing.",
+        "operationId": "get_reliability_api_v1_reliability_get",
+        "parameters": [
+          {
+            "description": "Only this task profile.",
+            "in": "query",
+            "name": "task",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this task profile.",
+              "title": "Task"
+            }
+          },
+          {
+            "description": "Only this model (canonical ID).",
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this model (canonical ID).",
+              "title": "Model"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Reliability Api V1 Reliability Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Production evidence per model and task profile",
+        "tags": [
+          "reliability"
+        ]
+      }
+    },
+    "/api/v1/route": {
+      "post": {
+        "description": "Return the full routing explanation for ``body`` without spending a GPU second.\n\nErrors: ``TASK_PROFILE_NOT_FOUND`` when the task is unknown, ``NO_ELIGIBLE_MODEL`` (with every\ncandidate and its rejection reason) when nothing survived the hard constraints.",
+        "operationId": "post_route_api_v1_route_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Route Api V1 Route Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Route a task without executing it",
+        "tags": [
+          "routing"
+        ]
+      }
+    },
+    "/api/v1/routing-decisions": {
+      "get": {
+        "description": "Return the most recent decisions, newest first.",
+        "operationId": "list_routing_decisions_api_v1_routing_decisions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Routing Decisions Api V1 Routing Decisions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Recent routing decisions",
+        "tags": [
+          "routing"
+        ]
+      }
+    },
+    "/api/v1/routing-decisions/{decision_id}": {
+      "get": {
+        "description": "Return one decision's explanation exactly as it was persisted.",
+        "operationId": "get_routing_decision_api_v1_routing_decisions__decision_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "decision_id",
+            "required": true,
+            "schema": {
+              "title": "Decision Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Routing Decision Api V1 Routing Decisions  Decision Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One stored routing explanation",
+        "tags": [
+          "routing"
+        ]
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "description": "Every runtime-changeable key's effective value, its definition, and the config-only keys.",
+        "operationId": "get_settings_api_v1_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Settings Api V1 Settings Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Runtime-changeable settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "put": {
+        "description": "Set one or more runtime-changeable keys; ``admin`` scope.\n\n``403 FORBIDDEN`` names a security-relevant key; ``400 VALIDATION_ERROR`` names an unknown\nkey or a value outside its bounds. Applied by the running scheduler within a second.",
+        "operationId": "put_settings_api_v1_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Put Settings Api V1 Settings Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change runtime settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/v1/system/status": {
+      "get": {
+        "description": "api.md \u00a71's status: the queue report plus the current telemetry snapshot.",
+        "operationId": "get_system_status_api_v1_system_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get System Status Api V1 System Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Queue, executions, residency, telemetry",
+        "tags": [
+          "queue"
+        ]
+      }
+    },
+    "/api/v1/system/telemetry/stream": {
+      "get": {
+        "description": "SSE: one ``telemetry.sampled`` frame per ``[telemetry] interval_ms`` (api.md \u00a71).\n\nA new client receives the latest sample at once and follows from there; the stream is\nopen-ended and closes when the client disconnects.",
+        "operationId": "telemetry_stream_api_v1_system_telemetry_stream_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Sampled machine telemetry",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/task-profiles": {
+      "get": {
+        "description": "Return every task profile: version, weights, constraints, execution and validation policy.",
+        "operationId": "list_task_profiles_api_v1_task_profiles_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Task Profiles Api V1 Task Profiles Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Task profile definitions",
+        "tags": [
+          "task-profiles"
+        ]
+      }
+    },
+    "/api/v1/task-profiles/{profile_id}": {
+      "get": {
+        "description": "The definition with its version, weights, constraints, execution and validation policy.",
+        "operationId": "get_task_profile_api_v1_task_profiles__profile_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "title": "Profile Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Task Profile Api V1 Task Profiles  Profile Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One task profile definition",
+        "tags": [
+          "task-profiles"
+        ]
+      }
+    },
+    "/api/v1/version": {
+      "get": {
+        "description": "Return the application version and served API majors.",
+        "operationId": "version_api_v1_version_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Version Api V1 Version Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Application and API versions",
+        "tags": [
+          "system"
+        ]
+      }
+    }
+  }
+}
