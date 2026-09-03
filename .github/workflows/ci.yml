@@ -70,20 +70,37 @@ jobs:
     services:
       postgres:
         image: postgres:16
+        # Credentials and database name match `weightsdb.testing`'s documented default URL, so the
+        # service this job starts is the one the package looks for. The scaffold named a
+        # `postgres`/`postgres` server nothing ever connected to, and passed it as `DATABASE_URL`
+        # — a variable `temporary_postgres` does not read. Under REQUIRE_POSTGRES=1 that is a hard
+        # failure rather than a skip, so this job would have been red on the first push while
+        # appearing to test PostgreSQL. LoadCoach, IdeaPress, LoadLedger and WeightsDB all fixed
+        # the same defect in their own jobs; this is that fix.
         env:
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: weightsdb
+          POSTGRES_PASSWORD: weightsdb
+          POSTGRES_DB: weightsdb_test
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-cmd "pg_isready -U weightsdb -d weightsdb_test" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e ".[dev,postgres]"
-      - run: pytest -m integration
+      # Selected by path, as every sibling does. The `integration` marker stays registered and
+      # applied — it is what `-m integration` selects locally — but the job must not depend on a
+      # marker to find its tests: selecting on one a repository forgets to apply collects zero and
+      # exits 5, which is the failure this selection cannot have.
+      - run: pytest -m "not live and not performance" tests/integration
         env:
+          # Without this the PostgreSQL legs would skip exactly as they do on a developer's
+          # machine, and the job would go green having tested SQLite twice.
           WEIGHTSDB_REQUIRE_POSTGRES: "1"
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          # `temporary_postgres` reads WEIGHTSDB_POSTGRES_URL, not DATABASE_URL. Set explicitly
+          # rather than relying on the default, so the job states which server it is testing.
+          WEIGHTSDB_POSTGRES_URL: postgresql+psycopg://weightsdb:weightsdb@localhost:5432/weightsdb_test
 
   coverage:
     needs: [tests]
