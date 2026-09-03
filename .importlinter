@@ -1,0 +1,49 @@
+[importlinter]
+root_package = promptcadence
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = PromptCadence internal layering
+type = layers
+layers =
+    web
+    cli
+    services
+    domain
+containers = promptcadence
+
+[importlinter:contract:web-cli-independence]
+name = Web and CLI never import each other
+type = independence
+modules =
+    promptcadence.web
+    promptcadence.cli
+
+[importlinter:contract:domain-purity]
+name = Domain imports no frameworks
+type = forbidden
+source_modules = promptcadence.domain
+forbidden_modules =
+    fastapi
+    starlette
+    sqlalchemy
+    typer
+    httpx
+    jinja2
+
+[importlinter:contract:no-other-applications]
+name = PromptCadence must not import other applications
+type = forbidden
+source_modules = promptcadence
+forbidden_modules =
+    freeweight
+    loadcoach
+    ideapress
+
+[importlinter:contract:no-direct-provider-access]
+name = PromptCadence reaches a model only through LoadCoach's HTTP API (ADR-0045 rule 2)
+type = forbidden
+source_modules = promptcadence
+forbidden_modules =
+    modelrack
+    sweatmeter

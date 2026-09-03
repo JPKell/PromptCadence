@@ -1,0 +1,118 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "promptcadence"
+description = "A plan-approved, tier-routed agent loop over LoadCoach, in which every step is proposed, approved against governance policy and remaining budget before it executes, and fully reconstructable afterwards."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dynamic = ["version"]
+authors = [{ name = "Local AI Suite contributors" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+# modelrack and sweatmeter are deliberately absent (ADR-0045 rule 2): PromptCadence reaches a
+# model only through LoadCoach's HTTP API, and telemetry is displayed from LoadCoach's own
+# /system/status. cutctx, toolyard, loadledger and commissioner are not dependencies of Phase 1;
+# each is added when the phase that consumes it arrives (P4-P6).
+dependencies = [
+    "baseaicore>=0.4.1,<0.5",
+    "setspec>=0.4,<0.5",
+    "weightsdb>=0.2,<0.3",
+    "mirrorwall>=0.2,<0.3",
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.4,<3",
+    "sqlalchemy>=2.0.30,<3",
+    "alembic>=1.13,<2",
+    "typer>=0.12,<1",
+    "jinja2>=3.1,<4",
+    "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-cov>=5,<6",
+    "pytest-randomly>=3,<4",
+    "mypy>=1.11,<2",
+    "ruff>=0.6,<1",
+    "import-linter>=2.0,<3",
+    "respx>=0.21,<1",
+]
+postgres = [
+    "psycopg[binary]>=3.2,<4",
+]
+
+[project.urls]
+Homepage = "https://github.com/JPKell/PromptCadence"
+Documentation = "https://github.com/JPKell/PromptCadence/tree/main/docs"
+Changelog = "https://github.com/JPKell/PromptCadence/blob/main/CHANGELOG.md"
+
+[project.scripts]
+promptcadence = "promptcadence.cli.main:app"
+
+[tool.hatch.version]
+path = "src/promptcadence/__about__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/promptcadence"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# docs/ is a byte-identical mirror of ~/ai/suite/docs; ruff formats fenced Python inside Markdown
+# and would silently diverge the mirror. Workspace CLAUDE.md states this exclusion as the rule.
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S", "T20", "DTZ", "PTH", "D1", "BLE"]
+ignore = ["D100", "D104"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "D1"]
+# Alembic-generated: upgrade()/downgrade() carry no behaviour beyond the revision's own docstring,
+# and their bodies are op.* DDL calls Alembic itself generated, not hand-written business logic.
+"src/promptcadence/infrastructure/db/migrations/versions/*.py" = ["D1"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+mypy_path = "src"
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+addopts = "-m 'not live and not performance'"
+pythonpath = ["."]
+markers = [
+    "live: requires a real provider/GPU, never in default CI",
+    "performance: performance budget assertions, excluded by default",
+    "contract: public API/schema conformance in both directions",
+    "integration: needs a real PostgreSQL server; the db-matrix CI job selects these with -m",
+]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["promptcadence"]
+branch = true
+
+[tool.coverage.paths]
+source = ["src/promptcadence", "*/site-packages/promptcadence"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
