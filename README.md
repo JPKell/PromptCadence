@@ -5,10 +5,13 @@ the plan is approved against governance policy and remaining budget before any s
 every turn that does execute is fully reconstructable afterwards — which model ran it, on which
 tier, on what data, at what cost, under whose approval.
 
-**Status:** Phase 1 (skeleton, configuration, database, health), unreleased. This repository
-currently holds the project scaffold, configuration, storage and honest-degradation health
-reporting — see [development plan](docs/apps/promptcadence/development-plan.md) for what each
-phase adds. Nothing executes yet: no planner, no tool loop, no budget enforcement.
+**Status:** Phase 2 (domain core), unreleased. This repository holds the project scaffold,
+configuration, storage and honest-degradation health reporting from Phase 1, and now the pure
+domain: tiers and admission, the plan schema and its validation, the `ExecutionIntent` every turn
+executes under, the closed deviation taxonomy, the approval policy and the trajectory state
+machine — every governance decision that needs no I/O, as a golden-tested function. See the
+[development plan](docs/apps/promptcadence/development-plan.md) for what each phase adds. Nothing
+executes yet: no LoadCoach client, no tool loop, no budget enforcement.
 
 Part of the **Local AI Suite**. Reaches a model only through [LoadCoach](https://github.com/JPKell/LoadCoach)'s
 HTTP API — it never imports a model provider directly ([ADR-0045](docs/adr/0045-promptcadence-reaches-models-only-through-loadcoach.md)
