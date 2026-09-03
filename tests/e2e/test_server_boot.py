@@ -16,7 +16,13 @@ from promptcadence.config import InsecureBindingError
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    """The bootstrapped application, with LoadCoach's address the one thing configured.
+
+    It points at a closed port so "unreachable" stays unreachable when a LoadCoach happens to
+    be listening on the default one; nothing else is set.
+    """
+    monkeypatch.setenv("PROMPTCADENCE_LOADCOACH__BASE_URL", "http://127.0.0.1:9")
     application = bootstrap()
     with TestClient(application.app, base_url="http://localhost") as test_client:
         yield test_client

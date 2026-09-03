@@ -13,8 +13,9 @@ success; the failure message names the cause verbatim. That is the finding of ``
 
 The default tiers name ``tools.agent.local_fast`` and ``tools.agent.local_large``; LoadCoach
 ships one ``tools.agent`` profile, so a live run configures the tiers to profiles the LoadCoach
-under test actually has (``PROMPTCADENCE_TIERS__<NAME>__TASK_PROFILE``), and the first assertion
-below says which are missing when it does not.
+under test actually has (``PROMPTCADENCE_TIERS__<NAME>__TASK_PROFILE``, which the shared
+``isolated_environment`` fixture keeps for ``live`` tests), and the first assertion below says
+which are missing when it does not.
 """
 
 from __future__ import annotations

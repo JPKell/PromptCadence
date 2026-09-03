@@ -9,6 +9,9 @@ Two properties every test in this suite depends on:
 * **No ambient state.** Configuration reads ``PROMPTCADENCE_*`` and the XDG variables from the real
   environment, so every test gets its own data directory and a cleared prefix. Without this a
   developer's own ``~/.config/promptcadence/config.toml`` would change the result of a test run.
+  A ``live`` test keeps ``PROMPTCADENCE_LOADCOACH__*`` and ``PROMPTCADENCE_TIERS__*`` — the
+  operator must be able to point it at their LoadCoach and at the task profiles that LoadCoach
+  has — and is isolated in every other respect.
 
 The domain fixtures below are shared because determinism is: the tier snapshot, the approval
 policy and ``minted_at`` are fixed values, so a golden derived from them is byte-identical on
@@ -54,11 +57,21 @@ def no_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(socket.socket, "connect", _guard)
 
 
+_LIVE_KEEPS = ("PROMPTCADENCE_LOADCOACH__", "PROMPTCADENCE_TIERS__")
+
+
 @pytest.fixture(autouse=True)
-def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Point every XDG path at a temporary directory and clear the ``PROMPTCADENCE_`` prefix."""
+def isolated_environment(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Path]:
+    """Point every XDG path at a temporary directory and clear the ``PROMPTCADENCE_`` prefix.
+
+    A test marked ``live`` keeps the LoadCoach address and the tier configuration from the real
+    environment (module docstring); everything else is cleared for it too.
+    """
+    live = request.node.get_closest_marker("live") is not None
     for key in list(os.environ):
-        if key.startswith("PROMPTCADENCE_"):
+        if key.startswith("PROMPTCADENCE_") and not (live and key.startswith(_LIVE_KEEPS)):
             monkeypatch.delenv(key, raising=False)
     data = tmp_path / "data"
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))

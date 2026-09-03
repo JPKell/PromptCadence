@@ -29,7 +29,12 @@ def test_health_json_flag_produces_valid_json() -> None:
     assert names == {"database", "loadcoach"}
 
 
-def test_health_reports_loadcoach_degraded_when_unreachable() -> None:
+def test_health_reports_loadcoach_degraded_when_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A closed port, not the default one: a LoadCoach that happens to be running on 8766 must
+    # not turn "unreachable" into "ok" and this test into a coin toss.
+    monkeypatch.setenv("PROMPTCADENCE_LOADCOACH__BASE_URL", "http://127.0.0.1:9")
     result = runner.invoke(app, ["health", "--json"])
     payload = json.loads(result.stdout)
     loadcoach = next(c for c in payload["components"] if c["name"] == "loadcoach")
