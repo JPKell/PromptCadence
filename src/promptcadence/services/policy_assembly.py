@@ -12,7 +12,10 @@ and nothing in ``domain`` imports this module.
 
 from __future__ import annotations
 
-from baseaicore import Money
+from collections.abc import Mapping
+from typing import Any
+
+from baseaicore import DataClassification, Money
 
 from promptcadence.config import MoneyAmount, Settings
 from promptcadence.config import Tier as ConfiguredTier
@@ -24,6 +27,7 @@ __all__ = [
     "money_from_amount",
     "tier_from_config",
     "tier_policy_from_settings",
+    "tier_snapshot_from_document",
     "tier_snapshot_from_settings",
 ]
 
@@ -131,4 +135,44 @@ def approval_policy_from_settings(settings: Settings) -> ApprovalPolicy:
         gate_step_cost=money_from_amount(settings.approval.gate_step_cost),
         request_timeout_hours=settings.approval.request_timeout_hours,
         reapproval_scope=ReapprovalScope(settings.planning.reapproval_scope),
+    )
+
+
+def tier_snapshot_from_document(document: Mapping[str, Any]) -> TierSnapshot:
+    """Rebuild the snapshot a trajectory recorded, from its ``tier_snapshots`` row.
+
+    The inverse of :meth:`~promptcadence.domain.tiers.TierSnapshot.as_canonical`, so a worker
+    resuming a trajectory — after a restart, or after an operator edited a tier — runs it under
+    the definitions it was submitted with rather than today's (lifecycle §3, §4.2). The rebuilt
+    snapshot's content address equals the row's id, which a caller may assert.
+
+    Args:
+        document: ``tier_snapshots.document_json``.
+
+    Returns:
+        The snapshot.
+
+    Raises:
+        ValidationError: If the document does not describe a valid snapshot — the same refusals
+            construction makes.
+    """
+    tiers = tuple(
+        Tier(
+            name=str(entry["name"]),
+            task_profile=str(entry["task_profile"]),
+            egress_class=EgressClass(entry["egress_class"]),
+            max_data_classification=(
+                DataClassification(entry["max_data_classification"])
+                if entry.get("max_data_classification")
+                else None
+            ),
+            context_budget_tokens=int(entry["context_budget_tokens"]),
+            pricing_source=str(entry.get("pricing_source") or ""),
+        )
+        for entry in document["tiers"]
+    )
+    return TierSnapshot(
+        tiers=tiers,
+        default_tier=str(document["default_tier"]),
+        escalation_order=tuple(str(name) for name in document["escalation_order"]),
     )

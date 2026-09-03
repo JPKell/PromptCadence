@@ -5,36 +5,22 @@ unreachable LoadCoach degrade health rather than fail startup or serving. This m
 minimal ``httpx`` client that fact requires: a single ``GET /api/v1/health`` against the configured
 LoadCoach, feeding the ``loadcoach`` health component and (from Phase 8) the telemetry widget.
 Nothing else — no ``/generate``, no ``/route``, no job traffic, no error-code mapping. The full
-client (``infrastructure/loadcoach.py``) arrives in Phase 3.
+client is :mod:`promptcadence.infrastructure.loadcoach`; this stays separate because a health
+probe must tolerate every failure the client refuses, and must never raise.
 """
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import Final
 
 import httpx
 from mirrorwall import ComponentHealth, ComponentStatus
 
+from promptcadence.infrastructure.loadcoach import resolve_api_key
+
 __all__ = ["loadcoach_health_component"]
 
 _HEALTH_CHECK_TIMEOUT_SECONDS: Final = 3.0
-
-
-def _resolve_api_key(*, api_key_env: str, api_key_file: str) -> str | None:
-    """Read the LoadCoach bearer token from its configured source (ADR-0026 §4).
-
-    Never both — :mod:`promptcadence.config` refuses a configuration naming both a source.
-    """
-    if api_key_env:
-        return os.environ.get(api_key_env)
-    if api_key_file:
-        try:
-            return Path(api_key_file).read_text(encoding="utf-8").strip()
-        except OSError:
-            return None
-    return None
 
 
 def loadcoach_health_component(
@@ -59,7 +45,7 @@ def loadcoach_health_component(
         acceptance criterion 1).
     """
     headers = {}
-    token = _resolve_api_key(api_key_env=api_key_env, api_key_file=api_key_file)
+    token = resolve_api_key(api_key_env=api_key_env, api_key_file=api_key_file)
     if token:
         headers["Authorization"] = f"Bearer {token}"
 

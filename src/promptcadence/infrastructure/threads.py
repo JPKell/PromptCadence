@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session, sessionmaker
 
-__all__ = ["SqlThreadStore"]
+__all__ = ["SqlThreadStore", "thread_row", "turn_row"]
 
 
 class SqlThreadStore:
@@ -166,6 +166,44 @@ class SqlThreadStore:
             The snapshot.
         """
         return build_snapshot(thread_id, self.turns(thread_id), taken_at=taken_at)
+
+
+def thread_row(thread: Thread) -> models.Thread:
+    """Map a domain thread onto its row, for a caller composing it into a larger transaction.
+
+    The loop opens a thread in the same write as the claim that starts it (T3) and the intent it
+    mints — one transaction, one event set (ADR-0044) — which :meth:`SqlThreadStore.create_thread`
+    cannot join because it owns its own session. This is the mapping without the session.
+    """
+    return models.Thread(
+        id=thread.thread_id, trajectory_id=thread.owner_id, created_at=thread.created_at
+    )
+
+
+def turn_row(
+    turn: Turn[TurnProvenance],
+    *,
+    loadcoach_job_id: str | None = None,
+    loadcoach_ms: float | None = None,
+    overhead_ms: float | None = None,
+) -> models.Turn:
+    """Map a domain turn onto the ``turns`` row, with the host-only columns the row carries.
+
+    Args:
+        turn: The package-shaped turn.
+        loadcoach_job_id: The LoadCoach job that produced an assistant turn — the reference
+            recovery reconciles against and the explanation links to.
+        loadcoach_ms: LoadCoach's own ``total_ms`` for the turn.
+        overhead_ms: PromptCadence's time around the call, reported separately (spec §15).
+
+    Returns:
+        The row, ready to be added to a session the caller owns.
+    """
+    row = _to_row(turn)
+    row.loadcoach_job_id = loadcoach_job_id
+    row.loadcoach_ms = loadcoach_ms
+    row.overhead_ms = overhead_ms
+    return row
 
 
 def _to_row(turn: Turn[TurnProvenance]) -> models.Turn:
