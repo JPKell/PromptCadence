@@ -15,6 +15,7 @@ from mirrorwall import ComponentHealth, ComponentStatus, health_payload, json_re
 from starlette.responses import JSONResponse
 
 from promptcadence.__about__ import __version__
+from promptcadence.domain.trajectory import TrajectoryState
 
 __all__ = ["API_VERSION", "SCHEMA_VERSION", "router"]
 
@@ -74,17 +75,33 @@ def version() -> JSONResponse:
 
 @router.get("/system/status")
 def system_status(request: Request) -> JSONResponse:
-    """Report active trajectories and configured concurrency (spec §17).
+    """Report active trajectories, the last recovery pass and configured concurrency (spec §17).
 
-    Trajectories, approvals and the ledger arrive in later phases; this reports the shape spec §17
-    commits to, with the pieces this phase has: nothing queued yet, and the concurrency ceiling
-    that will bound it.
+    Approvals and the ledger arrive in later phases; ``pending_approvals`` is the shape spec §17
+    commits to, empty until Phase 7 can fill it.
     """
     settings = request.app.state.settings
+    runtime = getattr(request.app.state, "runtime", None)
+    active: list[dict[str, Any]] = []
+    last_recovery: dict[str, Any] | None = None
+    if runtime is not None and hasattr(runtime, "trajectories"):
+        page, _ = runtime.trajectories.list(state=TrajectoryState.EXECUTING, limit=50)
+        active = [
+            {
+                "trajectory_id": view.trajectory_id,
+                "state": view.state.value,
+                "lease_owner": view.lease_owner,
+                "created_at": view.as_json()["created_at"],
+            }
+            for view in page
+        ]
+        summary = runtime.worker.last_recovery
+        last_recovery = summary.as_json() if summary is not None else None
     payload: dict[str, Any] = {
-        "active_trajectories": [],
+        "active_trajectories": active,
         "pending_approvals": [],
         "max_concurrent_trajectories": settings.execution.max_concurrent_trajectories,
         "loadcoach_base_url": settings.loadcoach.base_url,
+        "last_recovery": last_recovery,
     }
     return json_response(payload)

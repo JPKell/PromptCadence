@@ -1,9 +1,10 @@
 """promptcadence.cli.main — the Typer root app.
 
-Registers the top-level ``serve``/``health``/``version``/``doctor`` commands and the ``config`` and
-``db`` subgroups. Only ``typer`` and the lightweight command modules load at import time; every
-heavier dependency stays behind a lazy import inside the command bodies (CLI Standards §12), so
-building ``--help`` never imports FastAPI, SQLAlchemy or httpx.
+Registers the top-level ``serve``/``health``/``version``/``doctor``/``run`` commands and the
+``config``, ``db`` and ``trajectory`` subgroups. Only ``typer`` and the lightweight command
+modules load at import time; every heavier dependency stays behind a lazy import inside the
+command bodies (CLI Standards §12), so building ``--help`` never imports FastAPI, SQLAlchemy or
+httpx.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import typer
 from promptcadence.cli.commands import config as config_commands
 from promptcadence.cli.commands import db as db_commands
 from promptcadence.cli.commands import system as system_commands
+from promptcadence.cli.commands import trajectories as trajectory_commands
 
 __all__ = ["app"]
 
@@ -59,3 +61,7 @@ app.command(name="version", help="Print the application and API versions.")(syst
 app.command(name="doctor", help="Diagnose a broken installation.")(system_commands.doctor)
 app.add_typer(config_commands.app, name="config", help="Configuration inspection and management.")
 app.add_typer(db_commands.app, name="db", help="Database migration and maintenance.")
+app.command(name="run", help="Submit a trajectory (client mode; needs a running server).")(
+    trajectory_commands.run
+)
+app.add_typer(trajectory_commands.app, name="trajectory", help="List, show, cancel, wait.")

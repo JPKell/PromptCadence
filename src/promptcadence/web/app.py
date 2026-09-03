@@ -6,9 +6,10 @@ lifespan, which runs only when the application is actually served.
 
 Host validation, the request-ID middleware and the error envelope come from MirrorWall, not from
 this module — three implementations of one security control are three chances to get it subtly
-different, and the difference will be in the application nobody audited (ADR-0026 §1). Phase 1
-ships no HTML UI and no state-changing route (both arrive later), so CSRF and same-origin
-protection are not yet wired: there is nothing here for either to protect.
+different, and the difference will be in the application nobody audited (ADR-0026 §1). There is
+no HTML UI yet (Phase 8), so CSRF and same-origin protection are not wired: the state-changing
+routes take JSON bodies and bearer-less loopback callers only, and a browser form cannot reach
+them.
 """
 
 from __future__ import annotations
@@ -28,17 +29,28 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from promptcadence.__about__ import __version__
 from promptcadence.config import LOOPBACK_HOSTS, Settings
 from promptcadence.web.routes import system as system_routes
+from promptcadence.web.routes import trajectories as trajectory_routes
 
 __all__ = ["create_app", "register_exception_handlers"]
 
 logger = logging.getLogger(__name__)
 
-# Only the codes Phase 1 can actually raise. The spec §13 application error codes
-# (TRAJECTORY_NOT_FOUND, PLAN_REJECTED, BUDGET_EXCEEDED, ...) have no exception yet to raise them
-# — mapping them now would be a table nothing in this build exercises. Each is added here in the
-# phase that introduces its exception.
+# Only the codes a built phase can actually raise. A spec §13 code with no exception yet to raise
+# it (PLAN_REJECTED, BUDGET_EXCEEDED, ...) is added here in the phase that introduces it, so this
+# table never claims a status for a code nothing exercises. Statuses follow API standards §4.
 _STATUS_BY_CODE: Final[dict[str, int]] = {
     "VALIDATION_ERROR": status.HTTP_400_BAD_REQUEST,
+    "CLASSIFICATION_INVALID": status.HTTP_400_BAD_REQUEST,
+    "SCHEMA_VERSION_UNSUPPORTED": status.HTTP_400_BAD_REQUEST,
+    "TRAJECTORY_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+    "TRAJECTORY_NOT_CANCELLABLE": status.HTTP_409_CONFLICT,
+    "PROJECT_UNKNOWN": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "TOOL_NOT_FOUND": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "TIER_NOT_CONFIGURED": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    "TIER_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
+    "LOADCOACH_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
+    "LOADCOACH_ERROR": status.HTTP_502_BAD_GATEWAY,
+    "COMPACTION_FAILED": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "CONFIGURATION_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "INSECURE_BINDING": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "MISDIRECTED_REQUEST": 421,
@@ -167,6 +179,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     runtime = builder(app.state.settings) if builder is not None else None
     app.state.runtime = runtime
     app.state.health_checkers = runtime.health_checkers if runtime is not None else ()
+    if runtime is not None and hasattr(runtime, "start"):
+        runtime.start()
     try:
         yield
     finally:
@@ -209,5 +223,6 @@ def create_app(settings: Settings, *, runtime_builder: Any | None = None) -> Fas
     register_exception_handlers(app)
 
     app.include_router(system_routes.router, prefix="/api/v1")
+    app.include_router(trajectory_routes.router, prefix="/api/v1")
 
     return app
