@@ -56,11 +56,18 @@ docs merged); `baseaicore 0.4.1` published.
 **Prerequisites:** Phase 1.
 
 **Work**
-* `domain/threads.py`: `Thread`, `Turn`, `ThreadSnapshot`, `ThreadStore` protocol +
-  `SqlThreadStore` — **built package-shaped** (no PromptCadence vocabulary in the types), per the
-  recorded ThreadRack rejection ([spec §10](spec.md)).
+* `domain/threads.py`: `Thread`, `Turn`, `ThreadSnapshot`, `ThreadStore` protocol — **built
+  package-shaped** (no PromptCadence vocabulary in the types), per the recorded ThreadRack
+  rejection ([spec §10](spec.md)). `Turn` is generic over its provenance, which is both how a
+  host attaches its own vocabulary without contaminating the type and how "no turn without an
+  intent" becomes structural. `infrastructure/threads.py`: `SqlThreadStore` — **not** in
+  `domain/`, which the `domain-purity` import contract forbids `sqlalchemy` inside; the earlier
+  wording here contradicted that contract and the contract wins.
 * `domain/tiers.py`: `Tier`, `TierPolicy` — admission (`classification ≤ ceiling`), default tier,
-  escalation order, tier snapshots for trajectories.
+  escalation order, tier snapshots for trajectories (content-addressed; see [spec §10](spec.md)).
+  The domain `Tier` is a frozen dataclass built from `config.Tier` at the boundary by
+  `services/policy_assembly.py`, so the domain stays free of a validation framework's semantics
+  and `TierPolicy` is testable without constructing a `Settings`.
 * `domain/plan.py`: `Plan`, `PlanStep`, the plan JSON Schema (committed + golden), validation
   (DAG, tools, tiers, classification laundering, non-empty).
 * `domain/intent.py`: `ExecutionIntent` ([lifecycle §4.3](lifecycle.md)) — immutable, revisioned;
@@ -71,7 +78,11 @@ docs merged); `baseaicore 0.4.1` published.
   tables define it — every T-row an explicit function, every illegal transition refused;
   `domain/policy.py`: approval-policy evaluation (auto verdicts) as a pure function over tier
   policy + ledger verdicts — human modes arrive in P7.
-* Event types and payload shapes (`observability` module) matching spec §17.
+* Event types and payload shapes matching spec §17: `domain/events.py` owns the closed
+  `EventType` vocabulary and the "ids, categories and numbers — never prompt text, never model
+  output" rule, and each event body lives with the code that mints it. Naming the module
+  `observability` would have `domain` importing an infrastructure package to name its own events;
+  writing them is Phase 3's, and that is what `observability` owns.
 
 **Tests**
 * Golden plan validations (valid, cyclic, laundering, empty, unknown tool/tier).
@@ -82,6 +93,13 @@ docs merged); `baseaicore 0.4.1` published.
 * Tier admission matrix; escalation ordering; snapshot immutability.
 * State machine: every lifecycle §8.2 row, every illegal transition refused; property test that
   terminal states have no exits.
+
+* Migration `0002`: `tier_snapshots`, `plans`, `plan_steps`, `plan_approvals`,
+  `approval_requests`, `execution_intents` and `deviations`, plus `turns.intent_id`,
+  `turns.intent_revision`, `turns.cache_write_tokens`, `turns.cache_read_tokens` and
+  `trajectories.tier_snapshot_id` / `.approval_policy_version`. Born with the domain types that
+  define them rather than retrofitted by the loop that first writes them — P3's first act mints
+  an intent at claim (T3), and every turn persists `(intent_id, revision)`.
 
 **Acceptance criteria**
 1. Domain modules import no framework (asserted by import-linter).

@@ -83,7 +83,12 @@ therefore improves when evidence improves, with no PromptCadence code involved.
 
 Escalation between tiers follows `policy.escalation_order` and is always explicit: a step
 approved for `local_fast` that fails there does not silently climb; the deviation policy (§5)
-decides whether a scoped re-approval offers the next tier.
+decides whether a scoped re-approval offers the next tier. It follows that the **automatic
+approval policy grants no `fallback_tiers`** — an intent minted by `auto` permits exactly its
+approved tier, and escalation reaches the next one through a `tier_escalation` drift and a
+superseding revision. A human approver may grant fallbacks, and a supersession may add them;
+granting them up front would pre-approve egress nobody asked for and make the escalation path
+dead code.
 
 **Remote tiers and LoadCoach's provider surface.** LoadCoach 1.0 configures exactly one provider.
 Local tiers work against it unchanged. Serving a *mixed* candidate pool — more than one local
@@ -133,6 +138,13 @@ Rules, each enforced by validation rather than convention:
 plus a trajectory-level verdict. Its inputs are the tier policy, the ledger's headroom (§6) and
 the egress policy; its output is deterministic given those inputs, and versioned
 (`approval_policy_version` on every trajectory).
+
+`approval_policy_version` is **derived, never declared**: it is a digest over the configured
+policy values *and* a digest of the approver's own decisions over a fixed corpus, the second
+asserted by a test that fails with the new value whenever a rule changes. A version an
+implementer must remember to bump is a version that will not be bumped, and a stale one silently
+reinterprets every trajectory already recorded under it. The other half of pinning a decision is
+the trajectory's tier snapshot (§3), which fixes what the tiers were.
 
 **Approval modes** (roadmap §2, D-5): `auto` applies the policy verdict directly. `manual` holds
 every plan in `awaiting_approval` for an `approve`-scoped operator. `hybrid` auto-approves except
@@ -189,7 +201,32 @@ Rules, each load-bearing:
 
 After every turn the `DeviationHandler` runs one pure comparison —
 `compare(turn_facts, intent) → deviations` — against the turn's `ExecutionIntent` (§4.3),
-identically in both paths. Deviations are **category-typed**: there is exactly one category per
+identically in both paths.
+
+`turn_facts` is a frozen value object built from the LoadCoach response (and from the ledger's
+per-step running totals) by the executor, never by the handler, and it carries **exactly** the
+facts an intent field can be contradicted by:
+
+```text
+TurnFacts
+  turn_id
+  executed_tier                       # None when the intent's tiers could not serve
+  subject                             # model identity, provider kind, and the VERIFIED egress
+                                      # class of what actually answered (§11 contract 4)
+  tier_service_failure                # no_eligible_model | tier_unavailable; set iff no tier served
+  requested_tools                     # what the model asked for this turn
+  trajectory_allowlist                # the caller's allowlist, which splits `undeclared_tool`
+  observed_classification             # the classification of what came back
+  turns_used                          # turns under this intent, including this one
+  step_tokens_spent · step_money_spent · step_money_is_floor
+  finish_declared                     # a declared finish_reason, never the text saying it is done
+```
+
+The closure argument has two halves, and this is the second: the taxonomy is closed because there
+is one category per intent field, which only holds if `turn_facts` can express no fact that no
+intent field covers. In particular it carries **no trajectory-level ceiling, balance or
+headroom** — a ceiling crossing is the budget machinery's halt or park (§6), and a fact of that
+kind reaching `compare()` would either be ignored or demand a seventh category. Deviations are **category-typed**: there is exactly one category per
 intent field it can contradict, plus one for a promise contradicted after the fact, so the
 taxonomy is closed by construction — a new intent field is what it takes to create a new category.
 

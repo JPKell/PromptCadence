@@ -190,13 +190,22 @@ the turn that used it with its `prompt_id`, `version` and `sha256`.
 
 ## 10. Data ownership
 
-Owns `promptcadence.sqlite3` exclusively: `trajectories`, `plans`, `plan_steps`, `plan_approvals`,
-`approval_requests`, `execution_intents` (immutable, revisioned — [Lifecycle §4.3](lifecycle.md)),
+Owns `promptcadence.sqlite3` exclusively: `trajectories`, `tier_snapshots`, `plans`, `plan_steps`,
+`plan_approvals`, `approval_requests`, `execution_intents` (immutable, revisioned —
+[Lifecycle §4.3](lifecycle.md)), `deviations`,
 `threads`, `turns`, `tool_call_records`, `ledger_entries` (mounted from `loadledger.sql`),
 `egress_decisions` (mounted from `commissioner.sql`), `compactions`, `explanation_revisions`
 (derived cache — [Lifecycle §9.1](lifecycle.md)), `events`, `api_tokens`, `settings`. One Alembic history, owned by PromptCadence, including the mounted package
 tables ([roadmap §2, D-6](../../roadmap/promptcadence-roadmap.md)). No access to any other application's
 database, ever.
+
+`tier_snapshots` is **content-addressed**: its primary key is the digest of the tier definitions
+it holds, so identical configurations share one row and an edited ceiling produces a new one with
+no migration. `trajectories.tier_snapshot_id` carries no foreign key to it deliberately — a
+snapshot is shared by every trajectory whose configuration matched, so a cascade from one
+trajectory must never reach it. `deviations` is the row half of "every deviation is an event and
+a row" ([Lifecycle §5](lifecycle.md)); the earlier omission of both tables from this list was a
+defect, closed in Phase 2 with migration `0002`.
 
 **Thread and turn state is PromptCadence-internal.** The skeleton proposed a `ThreadRack` package and
 flagged that it alone had no second consumer; per the suite's own extraction rule —
@@ -229,7 +238,13 @@ deliberate rejection, like `LoadCoachClient`.
    provider kind) is checked against the tier that requested it. A local-tier turn answered by a
    remote provider halts the trajectory and records the violation — the tier constraint is
    verified, not assumed ([ADR-0043](../../adr/0043-grounding-is-verified-not-assumed.md)'s
-   principle applied to egress).
+   principle applied to egress). **Provider kind alone cannot settle it**: `ProviderKind` names a
+   runtime, and `openai_compatible` covers both a local llama.cpp server and a paid remote
+   endpoint, so deriving egress from the kind would be exactly the assumption this contract
+   forbids. The egress class is resolved at the HTTP boundary — while LoadCoach serves one
+   configured provider, verifying that the response's provider *is* the configured one is the
+   verification — and LC-E1's multi-provider registration must carry the serving provider's
+   identity on every response so the resolution stays a check rather than an inference.
 5. **Budget contract.** Money ceilings govern priced usage; token ceilings govern all usage. A
    local model's cost is `UNSUPPORTED`, never `$0.00`
    ([ADR-0030](../../adr/0030-model-cost-and-pricing.md)); a remote tier with no configured
