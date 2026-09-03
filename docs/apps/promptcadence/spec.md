@@ -261,13 +261,14 @@ deliberate rejection, like `LoadCoachClient`.
    trajectory it stops parks until the next UTC day instead of halting.
 6. **Advance contract.** A step completes only on a declared `finish_reason` of `STOP` (or a
    schema-validated structured result); `LENGTH`, `ERROR` and absence are handled explicitly, never
-   read as success. **The declared finish must be on the wire.** LoadCoach records the provider's
-   `finish_reason` on every attempt but, as of LoadCoach `01170a7`, renders it in neither the
-   `/generate` response nor the job document; PromptCadence reads `output.finish_reason` when a
-   response carries it and treats its absence as *absence* — a halt naming the gap, never a
-   completion. Rendering it is an obligation on LoadCoach recorded in `D2_HANDOFF.md`; until it
-   lands, only a schema-validated result completes a turn, and a free-text tier halts on every
-   turn. A declared `LENGTH` or `ERROR` wins over a passed schema check.
+   read as success. **The declared finish must be on the wire.** LoadCoach renders the provider's
+   declared reason at `output.finish_reason` in both the `/generate` response and the job
+   document since its commit `846348b` (before it, the reason was recorded per
+   attempt and rendered nowhere — the gap `D2_HANDOFF.md` §2 named); the job document also
+   carries the validation `checks`, so a turn reconciled after a crash is judged on the same
+   facts as one read from the response. PromptCadence reads that field and nothing else for the
+   declared finish, and treats its absence — an older LoadCoach — as *absence*: a halt naming the
+   gap, never a completion. A declared `LENGTH` or `ERROR` wins over a passed schema check.
 7. **Streaming contract.** SSE with persisted events and `Last-Event-ID` replay, the same envelope
    shape as the rest of the suite.
 8. **Degradation contract.** No LoadCoach, no remote provider configured, or an exhausted budget

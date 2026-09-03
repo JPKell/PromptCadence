@@ -20,7 +20,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
     `ExecutionIntent`, one turn per `/generate`, the turn row with `turn.completed`, every
     deviation as a row and an event, and the terminal transition, in one write (ADR-0044).
     A turn completes only on a declared `finish_reason=stop` or a schema-validated result
-    (`domain/turns.py`); `length`, `error` and absence halt naming the cause. Every response's
+    (`domain/turns.py`); `length`, `error`, an undeclared reason and absence halt naming the
+    cause. The declared reason is read from `output.finish_reason`, which LoadCoach renders
+    since `846348b` (the gap D2 found and LoadCoach closed in the same row); an
+    older LoadCoach's wire carries none, and a free-text tier halts on it rather than
+    completing. Every response's
     execution subject is verified against the provider surface read from `/models`
     (`services/loadcoach_surface.py`), and a foreign provider on a local tier halts as a
     `tier_violation`.
@@ -37,8 +41,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
     with `Last-Event-ID` replay; `promptcadence run [--follow]` and
     `promptcadence trajectory list|show|cancel|wait`, with CLI standards §4 exit codes.
   - `tests/fakes/loadcoach_app.py`: the fake LoadCoach, speaking exactly the documented wire
-    (no `finish_reason`, because LoadCoach renders none) and stricter than the real thing where
-    recovery depends on it; `tests/contract/`: the I10 contract tests against LoadCoach's
+    (`output.finish_reason` and the job document's validation `checks` as LoadCoach
+    `846348b` renders them, and the older wire on request) and stricter than the real
+    thing where recovery depends on it; `tests/contract/`: the I10 contract tests against LoadCoach's
     committed OpenAPI snapshot; `tests/live/`: the marked live journey against a real LoadCoach.
   - Migration `0003`: `lease_owner`, `lease_expires_at`, `cancel_requested` and `error_code` on
     `trajectories`.

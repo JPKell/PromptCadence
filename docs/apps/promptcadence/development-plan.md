@@ -162,10 +162,14 @@ resolved in `services/loadcoach_surface.py` from `/models` (LoadCoach's `/system
 no provider information); `TierRouter` and `BypassGate` live in `services/loop.py`; the worker,
 lease keeper and recovery pass in `services/worker.py`; the views shared by the service and the
 loop in `services/views.py`; the ADR-0044 sink in `services/events.py`; migration `0003` adds the
-lease, cancel and error-code columns to `trajectories`. LoadCoach renders no `finish_reason`
-(spec §11 contract 6), so on today's wire a free-text tier halts on its first turn and only a
-schema-validating profile completes; the live half of acceptance criterion 1 fails against
-LoadCoach `01170a7` for that reason, by design.
+lease, cancel and error-code columns to `trajectories`. LoadCoach `01170a7` rendered no
+`finish_reason` (spec §11 contract 6), so on that wire a free-text tier halted on its first turn
+and only a schema-validating profile completed; LoadCoach `846348b` renders the
+declared reason at `output.finish_reason` and the job document's validation `checks`, the fake
+speaks that wire, a free-text tier completes on a declared `stop`, and a `length` finish, an
+undeclared reason or an absent field halt with the cause on the row. The live half of
+acceptance criterion 1 passes against a LoadCoach at or after that commit and fails, naming the
+gap, against an older one.
 
 ---
 

@@ -42,10 +42,12 @@ promptcadence trajectory list
 promptcadence --help
 ```
 
-A note on today's LoadCoach: it records the provider's `finish_reason` but does not yet render it
-on the wire, and PromptCadence never reads an undeclared finish as success (spec §11 contract 6).
-Until LoadCoach carries `output.finish_reason`, a free-text tier halts on its first turn with that
-cause on the row, and only a tier whose task profile validates a JSON Schema completes.
+A note on LoadCoach versions: PromptCadence never reads an undeclared finish as success (spec
+§11 contract 6), and it reads the provider's declared reason from `output.finish_reason`, which
+LoadCoach renders since its commit `846348b`. Against an older LoadCoach (`1.0.0`,
+`01170a7`), which recorded the reason but rendered it nowhere, a free-text tier halts on its
+first turn with that cause on the row, and only a tier whose task profile validates a JSON
+Schema completes.
 
 ## Documentation
 
