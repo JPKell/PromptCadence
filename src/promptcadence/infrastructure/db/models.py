@@ -55,6 +55,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from weightsdb import PortableJSON, UtcDateTime, ulid_primary_key
@@ -109,8 +110,12 @@ def utcnow() -> datetime:
 class Trajectory(Base):
     """One persisted, resumable unit of agent work (spec §2, lifecycle §8).
 
-    The state machine, the lease and the recovery path are Phase 3's domain and service logic;
-    this table exists in Phase 1 only to prove the schema, its migration and its round trip.
+    The state machine is the domain's (``promptcadence.domain.trajectory``); the lease, the
+    cancel flag and recovery are Phase 3's service logic over the four columns migration ``0003``
+    adds: ``lease_owner``/``lease_expires_at`` (lifecycle §8.1 — a persisted lease is what a
+    restart recovers from), ``cancel_requested`` (T14 on an ``executing`` trajectory is honoured
+    at the next turn boundary, so the request must outlive the HTTP call that made it) and
+    ``error_code`` (the spec §13 code beside the verbatim cause in ``halted_reason``).
     """
 
     __tablename__ = "trajectories"
@@ -133,13 +138,22 @@ class Trajectory(Base):
     tier_snapshot_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
     approval_policy_version: Mapped[str | None] = mapped_column(String(71), nullable=True)
     halted_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         UtcDateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
     completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
 
-    __table_args__ = (Index("ix_trajectories_status_created_at", "status", "created_at"),)
+    __table_args__ = (
+        Index("ix_trajectories_status_created_at", "status", "created_at"),
+        Index("ix_trajectories_status_lease_expires_at", "status", "lease_expires_at"),
+    )
 
 
 class Thread(Base):

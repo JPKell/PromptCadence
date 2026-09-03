@@ -4,9 +4,10 @@ Spec §13 fixes the error vocabulary PromptCadence surfaces to a caller. :class:
 that list verbatim and nothing else: a refusal that needs a code the spec does not list is a
 defect in the spec to close with an amendment, not a string to invent at the raise site.
 
-Only the codes Phase 2 can actually raise have an exception class here. The rest arrive with the
-phase that can produce them — a class for ``TOOL_EXECUTION_FAILED`` before ToolYard is wired would
-be a promise with no code behind it.
+Only the codes a built phase can actually raise have an exception class here. The rest arrive
+with the phase that can produce them — a class for ``TOOL_EXECUTION_FAILED`` before ToolYard is
+wired would be a promise with no code behind it. Phase 3 added the trajectory lookups, the two
+LoadCoach failures, the unknown project and the unregistered tool.
 
 :class:`IllegalTransitionError` is the one code **not** in spec §13, deliberately. An illegal state
 transition is a programming error inside the application, never a caller's input: services map it
@@ -24,12 +25,20 @@ from baseaicore import SuiteError, ValidationError
 __all__ = [
     "ApprovalInvalidStateError",
     "ClassificationInvalidError",
+    "CompactionFailedError",
     "DeviationHaltedError",
     "ErrorCode",
     "IllegalTransitionError",
+    "LoadCoachError",
+    "LoadCoachUnavailableError",
     "PlanInvalidError",
+    "ProjectUnknownError",
+    "SchemaVersionUnsupportedError",
     "TierNotConfiguredError",
     "TierUnavailableError",
+    "ToolNotFoundError",
+    "TrajectoryNotCancellableError",
+    "TrajectoryNotFoundError",
     "UnpricedEgressRefusedError",
 ]
 
@@ -96,11 +105,82 @@ class TierNotConfiguredError(ValidationError):
 class TierUnavailableError(SuiteError):
     """A configured tier cannot serve right now; ``details["reason"]`` says why.
 
-    The only reason this phase can produce is ``loadcoach_has_no_remote_provider`` (lifecycle §3):
-    remote tiers are unavailable until LC-E1 registers a second provider in LoadCoach.
+    Two reasons exist. ``loadcoach_has_no_remote_provider`` (lifecycle §3): remote tiers are
+    unavailable until LC-E1 registers a second provider in LoadCoach. And, from Phase 3,
+    LoadCoach's own ``NO_ELIGIBLE_MODEL`` or ``TASK_PROFILE_NOT_FOUND`` for the tier's task
+    profile — the tier is configured here and cannot be served there; ``details`` preserves every
+    candidate and its rejection reason exactly as LoadCoach reported them (spec §13).
     """
 
     code: ClassVar[str] = ErrorCode.TIER_UNAVAILABLE
+
+
+class TrajectoryNotFoundError(SuiteError):
+    """No trajectory has that identifier."""
+
+    code: ClassVar[str] = ErrorCode.TRAJECTORY_NOT_FOUND
+
+
+class TrajectoryNotCancellableError(SuiteError):
+    """A cancel reached a trajectory that is already terminal.
+
+    The service-layer name for :class:`IllegalTransitionError` on T14: a completed trajectory is
+    not cancellable, and the caller is told so with a spec §13 code rather than an internal one.
+    """
+
+    code: ClassVar[str] = ErrorCode.TRAJECTORY_NOT_CANCELLABLE
+
+
+class ProjectUnknownError(ValidationError):
+    """A request named a ``project`` no ``[budget.projects.<name>]`` section configures."""
+
+    code: ClassVar[str] = ErrorCode.PROJECT_UNKNOWN
+
+
+class ToolNotFoundError(ValidationError):
+    """A request's tool allowlist named a tool the registry (``[tools] enabled``) does not list."""
+
+    code: ClassVar[str] = ErrorCode.TOOL_NOT_FOUND
+
+
+class LoadCoachUnavailableError(SuiteError):
+    """LoadCoach could not be reached at all: connection refused, DNS failure, a dropped socket.
+
+    Distinct from :class:`LoadCoachError`, which is LoadCoach *answering* with a failure. Spec §13
+    parks the trajectory with the reason and degrades health; it never fails the request as
+    ``INTERNAL_ERROR``.
+    """
+
+    code: ClassVar[str] = ErrorCode.LOADCOACH_UNAVAILABLE
+
+
+class CompactionFailedError(SuiteError):
+    """LoadCoach reported ``CONTEXT_LIMIT_EXCEEDED`` and nothing here could make the context fit.
+
+    Spec §13 maps that code to "trigger compaction and retry once; then halt". Compaction arrives
+    in Phase 8, so until then every occurrence is the "then halt" half, surfaced as this code with
+    LoadCoach's own in ``details`` — never as a silent retry of the same request.
+    """
+
+    code: ClassVar[str] = ErrorCode.COMPACTION_FAILED
+
+
+class SchemaVersionUnsupportedError(SuiteError):
+    """LoadCoach serves no API major this build speaks (api.md §12 rule 1)."""
+
+    code: ClassVar[str] = ErrorCode.SCHEMA_VERSION_UNSUPPORTED
+
+
+class LoadCoachError(SuiteError):
+    """LoadCoach answered with an error, or with a response PromptCadence cannot read.
+
+    ``details["loadcoach_code"]`` carries LoadCoach's own code verbatim and
+    ``details["loadcoach_details"]`` its details, so no LoadCoach failure loses its identity on the
+    way to a caller (spec §13: "with the original code in ``details``"). ``details["http_status"]``
+    is the status the answer came with.
+    """
+
+    code: ClassVar[str] = ErrorCode.LOADCOACH_ERROR
 
 
 class UnpricedEgressRefusedError(SuiteError):

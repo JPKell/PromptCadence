@@ -34,7 +34,7 @@ def test_fresh_database_migrates_to_head_sqlite() -> None:
         runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
         assert runner.current() is None
         outcome = runner.upgrade(backup=False)
-        assert outcome.to_revision == _head() == "0002"
+        assert outcome.to_revision == _head() == "0003"
         assert runner.is_at_head()
 
 
