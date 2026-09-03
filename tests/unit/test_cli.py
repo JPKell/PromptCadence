@@ -121,7 +121,9 @@ def test_db_upgrade_then_status_then_backup() -> None:
     assert status_result.exit_code == 0
     payload = json.loads(status_result.stdout)
     assert payload["at_head"] is True
-    assert payload["head_revision"] == "0001"
+    # The head is read from the script directory rather than written down: a phase that adds a
+    # revision should not have to edit an assertion that was never about the revision number.
+    assert payload["head_revision"] == payload["current_revision"]
 
     backup_result = runner.invoke(app, ["db", "backup"])
     assert backup_result.exit_code == 0, backup_result.output

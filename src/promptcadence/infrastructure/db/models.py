@@ -14,6 +14,21 @@ tables (migration ``0001``). ``turns`` carries the optional LA0 adapter fields f
 (adapter-roadmap §4.5 — "born, not retrofitted"): ``adapter_name``, ``adapter_digest`` and
 ``adapter_source_digest``, all nullable, absent unless an adapter served the turn.
 
+Phase 2 adds the governance tables (migration ``0002``): ``tier_snapshots``, ``plans``,
+``plan_steps``, ``plan_approvals``, ``approval_requests``, ``execution_intents`` and
+``deviations``, plus four columns on ``turns`` and two on ``trajectories``. They arrive **here**
+rather than with the loop that first writes them, for the same reason the ``adapter_*`` columns
+did: Phase 3's first act mints an intent at claim (T3) and every turn persists
+``(intent_id, revision)``, so a migration arriving with the loop would be a retrofit of the turn
+row inside the phase that is hardest to review. ``turns`` also gains ``cache_write_tokens`` and
+``cache_read_tokens`` now: ADR-0070 decision 7 puts all four token classes on LoadCoach's wire,
+and a turn row that cannot hold them throws two away before the ledger at P5 ever sees them.
+
+``execution_intents`` is keyed on ``(intent_id, revision)`` and is append-only in practice — one
+row per revision, none ever updated (ADR-0056 §3). ``trajectories.tier_snapshot_id`` carries **no**
+foreign key deliberately: a snapshot is content-addressed and shared by every trajectory whose
+configuration matched, so a cascade from one trajectory must never reach it.
+
 ``ledger_entries`` (LoadLedger) and ``egress_decisions`` (Commissioner) are **not** created here.
 They arrive *mounted* into this same metadata and Alembic history at Phase 5/6
 (ADR-0050): each package exports a ``mount_*_tables(metadata, ...)`` function the application
@@ -46,10 +61,17 @@ from weightsdb import PortableJSON, UtcDateTime, ulid_primary_key
 
 __all__ = [
     "ApiToken",
+    "ApprovalRequest",
     "Base",
+    "Deviation",
     "Event",
+    "ExecutionIntent",
+    "Plan",
+    "PlanApproval",
+    "PlanStep",
     "Setting",
     "Thread",
+    "TierSnapshot",
     "Trajectory",
     "Turn",
     "utcnow",
@@ -108,6 +130,8 @@ class Trajectory(Base):
     budget_money_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     budget_money_nanos: Mapped[int | None] = mapped_column(Integer, nullable=True)
     budget_token_ceiling: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tier_snapshot_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    approval_policy_version: Mapped[str | None] = mapped_column(String(71), nullable=True)
     halted_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -165,9 +189,13 @@ class Turn(Base):
     content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(71), nullable=True)
     finish_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    intent_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    intent_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     thinking_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     loadcoach_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     overhead_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     loadcoach_job_id: Mapped[str | None] = mapped_column(String(60), nullable=True)
@@ -232,3 +260,185 @@ class Setting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         UtcDateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
+
+
+class TierSnapshot(Base):
+    """The tier definitions one or more trajectories ran under, content-addressed.
+
+    The primary key **is** the content address, so identical configurations share one row and an
+    edited ceiling produces a new one with no migration. A trajectory records the id; the
+    explanation reads the document, and stays readable after the configuration changes
+    (lifecycle §3).
+    """
+
+    __tablename__ = "tier_snapshots"
+
+    id: Mapped[str] = mapped_column(String(71), primary_key=True)
+    document_json: Mapped[dict[str, Any]] = mapped_column(PortableJSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+
+class Plan(Base):
+    """One drafted plan, kept verbatim beside its validated form (lifecycle §4.1).
+
+    ``raw_document`` is what the planner returned, byte for byte; ``validated_json`` is what
+    PromptCadence made of it. Both survive because they answer different questions — what the model
+    proposed, and what execution was held to.
+    """
+
+    __tablename__ = "plans"
+
+    id: Mapped[str] = ulid_primary_key()
+    trajectory_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
+    )
+    document_sha256: Mapped[str] = mapped_column(String(71), nullable=False)
+    raw_document: Mapped[str] = mapped_column(Text, nullable=False)
+    validated_json: Mapped[dict[str, Any]] = mapped_column(PortableJSON, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (Index("ix_plans_trajectory_id", "trajectory_id"),)
+
+
+class PlanStep(Base):
+    """One step of a validated plan, denormalized so the DAG is queryable without parsing JSON."""
+
+    __tablename__ = "plan_steps"
+
+    id: Mapped[str] = ulid_primary_key()
+    plan_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("plans.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    depends_on_json: Mapped[list[Any]] = mapped_column(PortableJSON, nullable=False, default=list)
+    tools_json: Mapped[list[Any]] = mapped_column(PortableJSON, nullable=False, default=list)
+    tier: Mapped[str] = mapped_column(String(60), nullable=False)
+    data_classification: Mapped[str] = mapped_column(String(20), nullable=False)
+    expected_turns: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (UniqueConstraint("plan_id", "step_id", name="uq_plan_steps_plan_id_step_id"),)
+
+
+class PlanApproval(Base):
+    """One approval verdict over a plan, with the policy version and headroom behind it.
+
+    ``PLAN_REJECTED`` always lists every step's verdict and the ceiling that rejected it (spec
+    §13), so ``verdict_json`` holds the whole :class:`~promptcadence.domain.policy.PlanVerdict`
+    rather than a summary.
+    """
+
+    __tablename__ = "plan_approvals"
+
+    id: Mapped[str] = ulid_primary_key()
+    trajectory_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
+    )
+    plan_id: Mapped[str | None] = mapped_column(
+        String(26), ForeignKey("plans.id", ondelete="CASCADE"), nullable=True
+    )
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    approval_policy_version: Mapped[str] = mapped_column(String(71), nullable=False)
+    verdict_json: Mapped[dict[str, Any]] = mapped_column(PortableJSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (Index("ix_plan_approvals_trajectory_id", "trajectory_id"),)
+
+
+class ApprovalRequest(Base):
+    """One pending question for a person, with its timeout as a persisted value (ADR-0049).
+
+    ``expires_at`` is a stored instant rather than process state, so the clock survives a restart;
+    a timeout is never a grant, and never an indefinite wait. A trajectory parks on exactly one
+    pending request at a time.
+    """
+
+    __tablename__ = "approval_requests"
+
+    id: Mapped[str] = ulid_primary_key()
+    trajectory_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    step_ids_json: Mapped[list[Any]] = mapped_column(PortableJSON, nullable=False, default=list)
+    expires_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    approver_token_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+
+    __table_args__ = (
+        Index("ix_approval_requests_trajectory_id_status", "trajectory_id", "status"),
+    )
+
+
+class ExecutionIntent(Base):
+    """One immutable envelope revision (ADR-0056). Keyed on ``(intent_id, revision)``.
+
+    Append-only in practice: a re-approval writes revision *n+1* with ``supersedes`` pointing at
+    *n*, and *n* is retained, so "under whose grant did turn 7 run?" is answerable after the fact
+    — which an edited row cannot do.
+    """
+
+    __tablename__ = "execution_intents"
+
+    intent_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    trajectory_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    supersedes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    approved_tier: Mapped[str] = mapped_column(String(60), nullable=False)
+    fallback_tiers_json: Mapped[list[Any]] = mapped_column(
+        PortableJSON, nullable=False, default=list
+    )
+    permitted_egress_class: Mapped[str] = mapped_column(String(10), nullable=False)
+    approved_tools_json: Mapped[list[Any]] = mapped_column(
+        PortableJSON, nullable=False, default=list
+    )
+    max_classification: Mapped[str] = mapped_column(String(20), nullable=False)
+    token_budget: Mapped[int] = mapped_column(Integer, nullable=False)
+    money_budget_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    money_budget_nanos: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    budget_source: Mapped[str] = mapped_column(String(30), nullable=False)
+    budget_sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_turns: Mapped[int] = mapped_column(Integer, nullable=False)
+    minted_by: Mapped[str] = mapped_column(String(60), nullable=False)
+    minted_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    approval_request_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    gate_json: Mapped[dict[str, Any]] = mapped_column(PortableJSON, nullable=False, default=dict)
+
+    __table_args__ = (
+        Index("ix_execution_intents_trajectory_id_step_id", "trajectory_id", "step_id"),
+    )
+
+
+class Deviation(Base):
+    """One category-typed deviation of a turn from its intent (lifecycle §5).
+
+    Every deviation is an event *and* a row, including a drift the policy silently continued past
+    — a record holding only the deviations that stopped something answers the wrong question.
+    """
+
+    __tablename__ = "deviations"
+
+    id: Mapped[str] = ulid_primary_key()
+    trajectory_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
+    )
+    turn_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("turns.id", ondelete="CASCADE"), nullable=False
+    )
+    intent_id: Mapped[str] = mapped_column(String(26), nullable=False)
+    intent_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    disposition: Mapped[str] = mapped_column(String(30), nullable=False)
+    reapprovable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    detail_json: Mapped[dict[str, Any]] = mapped_column(PortableJSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (Index("ix_deviations_trajectory_id", "trajectory_id"),)
