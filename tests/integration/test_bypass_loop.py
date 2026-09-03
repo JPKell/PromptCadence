@@ -1,0 +1,411 @@
+"""The bypass loop against the fake LoadCoach: claim, turn, finish, halt, cancel, fence.
+
+Integration by nature — a migrated SQLite database and the in-process fake — and in the default
+suite (spec §18): no LoadCoach, no GPU, no network.
+"""
+
+from __future__ import annotations
+
+import threading
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from baseaicore import DataClassification
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+from tests.fakes.loadcoach_app import (
+    FakeLoadCoach,
+    ScriptedError,
+    ScriptedGeneration,
+    build_fake_app,
+    schema_profile,
+    text_profile,
+)
+from weightsdb import MigrationRunner
+from weightsdb.testing import temporary_sqlite
+
+from promptcadence.config import Settings, load_settings
+from promptcadence.domain.errors import ErrorCode
+from promptcadence.domain.trajectory import TrajectoryState
+from promptcadence.infrastructure.db import models
+from promptcadence.infrastructure.loadcoach import LoadCoachClient
+from promptcadence.services.database import MIGRATIONS_LOCATION, Database
+from promptcadence.services.events import TrajectoryEventSink
+from promptcadence.services.loop import LoopController, RunSignals
+from promptcadence.services.trajectories import TrajectoryService, TrajectorySubmission
+
+_NOW = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+
+
+class Harness:
+    """Everything one loop test needs, over one database and one fake."""
+
+    def __init__(self, settings: Settings, database: Database, fake: FakeLoadCoach) -> None:
+        self.settings = settings
+        self.database = database
+        self.fake = fake
+        ticks = iter(range(100_000))
+        self.clock = lambda: _NOW + timedelta(milliseconds=next(ticks))
+        self.sink = TrajectoryEventSink(database, clock=self.clock)
+        self.service = TrajectoryService(database, self.sink, settings, clock=self.clock)
+        self.loadcoach = LoadCoachClient(
+            TestClient(build_fake_app(fake), base_url="http://loadcoach.test")
+        )
+
+    def controller(self, owner: str = "host:1/0") -> LoopController:
+        return LoopController(
+            database=self.database,
+            sink=self.sink,
+            loadcoach=self.loadcoach,
+            settings=self.settings,
+            owner=owner,
+            clock=self.clock,
+        )
+
+    def submit(self, **overrides: object) -> str:
+        fields: dict[str, object] = {"task": "summarize ./notes", "bypass_planning": True}
+        fields.update(overrides)
+        submission = TrajectorySubmission(**fields)  # type: ignore[arg-type]
+        return self.service.submit(submission).trajectory_id
+
+    def events(self, trajectory_id: str) -> list[str]:
+        return [event.event_type for event in self.service.events(trajectory_id)]
+
+
+@pytest.fixture
+def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
+    monkeypatch.setenv("PROMPTCADENCE_EXECUTION__LEASE_SECONDS", "2")
+    settings = load_settings().settings
+    fake = FakeLoadCoach()
+    fake.register_profile(text_profile("tools.agent.local_fast"))
+    fake.register_profile(text_profile("tools.agent.local_large"))
+    with temporary_sqlite() as engine:
+        MigrationRunner(engine, script_location=MIGRATIONS_LOCATION).upgrade(backup=False)
+        yield Harness(settings, Database(engine), fake)
+
+
+@pytest.fixture
+def schema_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: object) -> Iterator[Harness]:
+    """A configuration whose default tier's profile validates a schema: the completing case."""
+    monkeypatch.setenv("PROMPTCADENCE_TIERS__LOCAL_FAST__TASK_PROFILE", "structured.answer")
+    monkeypatch.setenv("PROMPTCADENCE_TIERS__LOCAL_LARGE__TASK_PROFILE", "tools.agent.local_large")
+    settings = load_settings().settings
+    fake = FakeLoadCoach()
+    fake.register_profile(schema_profile("structured.answer"))
+    fake.register_profile(text_profile("tools.agent.local_large"))
+    with temporary_sqlite() as engine:
+        MigrationRunner(engine, script_location=MIGRATIONS_LOCATION).upgrade(backup=False)
+        yield Harness(settings, Database(engine), fake)
+
+
+# --------------------------------------------------------------------------------------------
+# Claim
+# --------------------------------------------------------------------------------------------
+
+
+def test_t3_claims_in_one_write_with_thread_task_turn_intent_and_both_events(
+    harness: Harness,
+) -> None:
+    trajectory_id = harness.submit()
+    controller = harness.controller()
+    assert controller.claim(trajectory_id) is TrajectoryState.EXECUTING
+    view = harness.service.get(trajectory_id)
+    assert view.state is TrajectoryState.EXECUTING
+    assert view.lease_owner == "host:1/0"
+    assert view.lease_expires_at is not None
+    assert harness.events(trajectory_id) == [
+        "trajectory.created",
+        "trajectory.claimed",
+        "intent.minted",
+    ]
+    (task_turn,) = harness.service.turns(trajectory_id)
+    assert task_turn.turn.role.value == "user"
+    assert task_turn.turn.content == "summarize ./notes"
+    assert task_turn.turn.provenance.intent_revision == 1
+    with harness.database.read() as session:
+        intent = session.execute(select(models.ExecutionIntent)).scalar_one()
+    assert intent.minted_by == "bypass_default"
+    assert intent.step_id == "loop"
+    assert intent.trajectory_id == trajectory_id
+
+
+def test_a_second_worker_cannot_claim_the_same_trajectory(harness: Harness) -> None:
+    trajectory_id = harness.submit()
+    assert harness.controller("host:1/0").claim(trajectory_id) is TrajectoryState.EXECUTING
+    assert harness.controller("host:1/1").claim(trajectory_id) is None
+    assert harness.controller("host:1/1").next_queued() is None
+
+
+def test_a_planned_trajectory_is_claimed_and_failed_with_the_cause(harness: Harness) -> None:
+    """No planner before Phase 7: loud (T2 then T7 in one write), never queued forever."""
+    trajectory_id = harness.submit(bypass_planning=None)
+    assert harness.service.get(trajectory_id).bypass_planning is False
+    assert harness.controller().claim(trajectory_id) is TrajectoryState.FAILED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.PLAN_DRAFT_FAILED.value
+    assert "Phase 7" in (view.halted_reason or "")
+    assert harness.events(trajectory_id) == [
+        "trajectory.created",
+        "trajectory.claimed",
+        "trajectory.failed",
+    ]
+
+
+def test_the_tier_pin_is_honoured_by_the_minted_intent(harness: Harness) -> None:
+    trajectory_id = harness.submit(tier="local_large")
+    harness.controller().claim(trajectory_id)
+    with harness.database.read() as session:
+        intent = session.execute(select(models.ExecutionIntent)).scalar_one()
+    assert intent.approved_tier == "local_large"
+
+
+# --------------------------------------------------------------------------------------------
+# Run
+# --------------------------------------------------------------------------------------------
+
+
+def _claim_and_run(harness: Harness, **overrides: object) -> tuple[str, TrajectoryState]:
+    trajectory_id = harness.submit(**overrides)
+    controller = harness.controller()
+    assert controller.claim(trajectory_id) is TrajectoryState.EXECUTING
+    return trajectory_id, controller.run(trajectory_id)
+
+
+def test_a_text_profile_turn_halts_on_the_undeclared_finish_never_completes(
+    harness: Harness,
+) -> None:
+    """Today's wire: LoadCoach renders no finish_reason, and a turn cannot complete on none."""
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.HALTED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.LOADCOACH_ERROR.value
+    assert "no finish_reason" in (view.halted_reason or "")
+    assert harness.events(trajectory_id) == [
+        "trajectory.created",
+        "trajectory.claimed",
+        "intent.minted",
+        "turn.started",
+        "turn.completed",
+        "trajectory.halted",
+    ]
+    turns = harness.service.turns(trajectory_id)
+    assert [t.turn.role.value for t in turns] == ["user", "assistant"]
+    assistant = turns[1]
+    assert assistant.turn.content == "The notes describe three meetings."
+    assert assistant.loadcoach_job_id is not None
+    assert assistant.turn.provenance.tier == "local_fast"
+    assert assistant.turn.usage is not None and assistant.turn.usage.input_tokens == 812
+    (job,) = harness.fake.jobs.values()
+    assert job.idempotency_key == assistant.turn.turn_id  # the turn id is the key
+    assert harness.fake.requests[-1]["body"]["messages"] == [
+        {"role": "user", "content": "summarize ./notes"}
+    ]
+    assert harness.fake.requests[-1]["body"]["task"] == "tools.agent.local_fast"
+
+
+def test_a_schema_validated_result_completes_the_trajectory(schema_harness: Harness) -> None:
+    """Contract 6's second clause, and the full bypass journey on today's wire."""
+    schema_harness.fake.script(ScriptedGeneration(text='{"answer": "three meetings"}'))
+    trajectory_id, state = _claim_and_run(schema_harness)
+    assert state is TrajectoryState.COMPLETED
+    view = schema_harness.service.get(trajectory_id)
+    assert view.completed_at is not None
+    assert view.lease_owner is None
+    assert schema_harness.events(trajectory_id)[-2:] == ["turn.completed", "trajectory.completed"]
+    completed = schema_harness.service.events(trajectory_id)[-2]
+    assert completed.data["schema_validated"] is True
+    assert completed.data["decision"] == "complete"
+
+
+def test_loadcoach_errors_halt_with_the_mapped_code_and_the_original_in_the_cause(
+    harness: Harness,
+) -> None:
+    harness.fake.script(ScriptedError("NO_ELIGIBLE_MODEL", details={"candidates": []}))
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.HALTED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.TIER_UNAVAILABLE.value
+    assert "NO_ELIGIBLE_MODEL" in (view.halted_reason or "")
+    assert harness.events(trajectory_id)[-2:] == ["turn.started", "trajectory.halted"]
+
+    harness.fake.script(ScriptedError("CONTEXT_LIMIT_EXCEEDED"))
+    _, state = _claim_and_run(harness)
+    assert harness.service.list(state=TrajectoryState.HALTED)[0][0].error_code == (
+        ErrorCode.COMPACTION_FAILED.value
+    )
+
+    harness.fake.script(ScriptedError("PROVIDER_TIMEOUT"))
+    _, state = _claim_and_run(harness)
+    assert harness.service.list(state=TrajectoryState.HALTED)[0][0].error_code == (
+        ErrorCode.LOADCOACH_ERROR.value
+    )
+
+
+def test_an_unreachable_loadcoach_fails_the_trajectory_with_the_reason(
+    harness: Harness,
+) -> None:
+    import httpx
+
+    harness.loadcoach = LoadCoachClient(httpx.Client(base_url="http://127.0.0.1:9", timeout=0.2))
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.FAILED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.LOADCOACH_UNAVAILABLE.value
+
+
+def test_a_requested_tool_call_halts_rather_than_pretending_to_run_it(harness: Harness) -> None:
+    harness.fake.script(
+        ScriptedGeneration(text="", tool_calls=({"name": "read_file", "arguments": {"path": "a"}},))
+    )
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.HALTED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.TOOL_NOT_FOUND.value
+    assert "Phase 4" in (view.halted_reason or "")
+
+
+def test_a_tool_outside_the_allowlist_is_a_recorded_deviation_that_halts(
+    harness: Harness,
+) -> None:
+    harness.fake.script(
+        ScriptedGeneration(text="", tool_calls=({"name": "teleport", "arguments": {}},))
+    )
+    trajectory_id, state = _claim_and_run(harness, tools=("read_file",))
+    assert state is TrajectoryState.HALTED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.DEVIATION_HALTED.value
+    assert "undeclared_tool" in (view.halted_reason or "")
+    assert "deviation.detected" in harness.events(trajectory_id)
+    with harness.database.read() as session:
+        deviation = session.execute(select(models.Deviation)).scalar_one()
+    assert deviation.category == "undeclared_tool"
+    assert deviation.reapprovable is False
+
+
+def test_a_budget_overrun_is_recorded_and_continued_under_the_default_scope(
+    harness: Harness,
+) -> None:
+    """Lifecycle §5: under ``on_tier_or_classification_change`` a budget overrun is
+    ``continue_recorded`` — an event *and* a row — and the turn's own verdict then decides."""
+    harness.fake.script(ScriptedGeneration(input_tokens=900, output_tokens=200))
+    trajectory_id, state = _claim_and_run(harness, token_budget=1000)
+    assert state is TrajectoryState.HALTED  # the undeclared finish, not the drift
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.LOADCOACH_ERROR.value
+    assert "deviation.detected" in harness.events(trajectory_id)
+    with harness.database.read() as session:
+        deviation = session.execute(select(models.Deviation)).scalar_one()
+    assert deviation.category == "budget_overrun"
+    assert deviation.disposition == "continue_recorded"
+    assert deviation.detail_json["tokens_spent"] == 1100
+
+
+def test_a_budget_overrun_halts_for_want_of_reapproval_under_any_deviation(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PROMPTCADENCE_PLANNING__REAPPROVAL_SCOPE", "any_deviation")
+    strict = Harness(load_settings().settings, harness.database, harness.fake)
+    strict.fake.script(ScriptedGeneration(input_tokens=900, output_tokens=200))
+    trajectory_id, state = _claim_and_run(strict, token_budget=1000)
+    assert state is TrajectoryState.HALTED
+    view = strict.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.DEVIATION_HALTED.value
+    assert "budget_overrun" in (view.halted_reason or "")
+    assert "Phase 7" in (view.halted_reason or "")
+
+
+def test_a_remote_answer_on_a_local_tier_is_a_violation_that_halts(harness: Harness) -> None:
+    """Contract 4: the subject is verified; a foreign provider kind is read as remote."""
+    from tests.fakes.loadcoach_app import FakeModel
+
+    harness.fake.model = FakeModel(
+        canonical_id="openai_compatible/gpt@sha256:" + "b" * 64, provider_kind="openai_compatible"
+    )
+    # The registry still says one kind, so the surface is verifiable; the *answer* names it.
+    harness.fake.model = FakeModel(
+        canonical_id="openai_compatible/gpt@sha256:" + "b" * 64, provider_kind="ollama"
+    )
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.HALTED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.DEVIATION_HALTED.value
+    assert "tier_violation" in (view.halted_reason or "")
+
+
+def test_a_cancel_request_is_honoured_at_the_boundary_in_one_write(harness: Harness) -> None:
+    trajectory_id = harness.submit()
+    controller = harness.controller()
+    controller.claim(trajectory_id)
+    harness.service.cancel(trajectory_id)  # sets the flag on a leased trajectory
+    assert controller.run(trajectory_id) is TrajectoryState.CANCELLED
+    assert harness.events(trajectory_id)[-1] == "trajectory.cancelled"
+    assert harness.fake.requests == []  # no turn was started
+
+
+def test_a_cancel_mid_turn_cancels_the_loadcoach_job_and_the_trajectory(harness: Harness) -> None:
+    hold = threading.Event()
+    harness.fake.script(ScriptedGeneration(hold=hold))
+    trajectory_id = harness.submit()
+    controller = harness.controller()
+    controller.claim(trajectory_id)
+    signals = RunSignals.fresh()
+    result: list[TrajectoryState] = []
+    thread = threading.Thread(
+        target=lambda: result.append(controller.run(trajectory_id, signals=signals))
+    )
+    thread.start()
+    deadline = datetime.now(UTC) + timedelta(seconds=5)
+    while not harness.fake.in_flight() and datetime.now(UTC) < deadline:
+        threading.Event().wait(0.01)
+    assert signals.in_flight_turn_id is not None
+    harness.service.cancel(trajectory_id)
+    renewed, requested = controller.renew_lease(trajectory_id)
+    assert renewed and requested
+    signals.cancel_requested.set()
+    assert controller.cancel_in_flight(signals.in_flight_turn_id) is not None
+    thread.join(timeout=5)
+    assert result == [TrajectoryState.HALTED] or result == [TrajectoryState.CANCELLED]
+    assert not harness.fake.in_flight()
+    view = harness.service.get(trajectory_id)
+    assert view.state in {TrajectoryState.HALTED, TrajectoryState.CANCELLED}
+    assert view.lease_owner is None
+
+
+def test_a_lost_lease_fences_every_write(harness: Harness) -> None:
+    """The recovering worker owns it now; the stalled one cannot commit a turn or an ending."""
+    trajectory_id = harness.submit()
+    stalled = harness.controller("host:1/0")
+    stalled.claim(trajectory_id)
+    with harness.database.write() as session:
+        row = session.get(models.Trajectory, trajectory_id)
+        assert row is not None
+        row.lease_owner = "host:2/0"  # recovery elsewhere took it over
+    renewed, _ = stalled.renew_lease(trajectory_id)
+    assert renewed is False
+    assert stalled.run(trajectory_id) is TrajectoryState.EXECUTING  # stopped, committed nothing
+    assert harness.fake.requests == []
+    assert harness.service.get(trajectory_id).state is TrajectoryState.EXECUTING
+
+
+def test_a_changed_approval_policy_refuses_to_run_under_an_envelope_nobody_minted(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trajectory_id = harness.submit()
+    harness.controller().claim(trajectory_id)
+    monkeypatch.setenv("PROMPTCADENCE_EXECUTION__MAX_STEPS", "7")  # the default max_turns moved
+    changed = LoopController(
+        database=harness.database,
+        sink=harness.sink,
+        loadcoach=harness.loadcoach,
+        settings=load_settings().settings,
+        owner="host:1/0",
+        clock=harness.clock,
+    )
+    assert changed.run(trajectory_id) is TrajectoryState.FAILED
+    assert "nobody minted" in (harness.service.get(trajectory_id).halted_reason or "")
+
+
+def test_the_recorded_classification_flows_into_the_facts(harness: Harness) -> None:
+    trajectory_id, _ = _claim_and_run(harness, classification=DataClassification.PUBLIC)
+    assert harness.service.get(trajectory_id).classification is DataClassification.PUBLIC
