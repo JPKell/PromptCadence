@@ -9,6 +9,10 @@ Two properties every test in this suite depends on:
 * **No ambient state.** Configuration reads ``PROMPTCADENCE_*`` and the XDG variables from the real
   environment, so every test gets its own data directory and a cleared prefix. Without this a
   developer's own ``~/.config/promptcadence/config.toml`` would change the result of a test run.
+
+The domain fixtures below are shared because determinism is: the tier snapshot, the approval
+policy and ``minted_at`` are fixed values, so a golden derived from them is byte-identical on
+every run and on every machine (lifecycle §10).
 """
 
 from __future__ import annotations
@@ -16,10 +20,16 @@ from __future__ import annotations
 import os
 import socket
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+from baseaicore import DataClassification, Money
+
+from promptcadence.domain.policy import ApprovalMode, ApprovalPolicy
+from promptcadence.domain.tiers import EgressClass, Tier, TierPolicy, TierSnapshot
+from promptcadence.domain.trajectory import TrajectoryDeclaration
 
 _REAL_SOCKET_CONNECT = socket.socket.connect
 
@@ -58,3 +68,91 @@ def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ite
     monkeypatch.chdir(tmp_path)
     data.mkdir(parents=True, exist_ok=True)
     yield data
+
+
+@pytest.fixture
+def tier_snapshot() -> TierSnapshot:
+    """Four tiers covering every admission and egress case the domain tests need.
+
+    Ordered by name, as :class:`TierSnapshot` requires for a stable content address. The two
+    remote tiers differ in ceiling on purpose: ``remote_cheap`` admits up to ``internal`` and
+    ``remote_frontier`` only ``public``, which is the shipped ladder ADR-0046 says three levels
+    exist to express.
+    """
+    return TierSnapshot(
+        tiers=(
+            Tier(
+                name="local_fast",
+                task_profile="tools.agent.local_fast",
+                egress_class=EgressClass.LOCAL,
+                max_data_classification=None,
+                context_budget_tokens=16_384,
+            ),
+            Tier(
+                name="local_large",
+                task_profile="tools.agent.local_large",
+                egress_class=EgressClass.LOCAL,
+                max_data_classification=None,
+                context_budget_tokens=32_768,
+            ),
+            Tier(
+                name="remote_cheap",
+                task_profile="tools.agent.remote_cheap",
+                egress_class=EgressClass.REMOTE,
+                max_data_classification=DataClassification.INTERNAL,
+                context_budget_tokens=64_000,
+                pricing_source="pricing/remote_cheap.json",
+            ),
+            Tier(
+                name="remote_frontier",
+                task_profile="tools.agent.remote_frontier",
+                egress_class=EgressClass.REMOTE,
+                max_data_classification=DataClassification.PUBLIC,
+                context_budget_tokens=128_000,
+                pricing_source="pricing/remote_frontier.json",
+            ),
+        ),
+        default_tier="local_fast",
+        escalation_order=("local_fast", "local_large", "remote_cheap", "remote_frontier"),
+    )
+
+
+@pytest.fixture
+def tier_policy(tier_snapshot: TierSnapshot) -> TierPolicy:
+    """A tier policy with a remote provider registered, as it will be once LC-E1 lands."""
+    return TierPolicy(snapshot=tier_snapshot, loadcoach_has_remote_provider=True)
+
+
+@pytest.fixture
+def local_only_policy(tier_snapshot: TierSnapshot) -> TierPolicy:
+    """A tier policy as PromptCadence ships today: LoadCoach has no remote provider."""
+    return TierPolicy(snapshot=tier_snapshot, loadcoach_has_remote_provider=False)
+
+
+@pytest.fixture
+def approval_policy() -> ApprovalPolicy:
+    """The shipped default approval policy: auto, gating egress at internal."""
+    return ApprovalPolicy(
+        mode=ApprovalMode.AUTO,
+        gate_egress_at=DataClassification.INTERNAL,
+        gate_step_cost=Money(currency="USD", nanos=1_000_000_000),
+    )
+
+
+@pytest.fixture
+def declaration() -> TrajectoryDeclaration:
+    """A caller's declaration: internal work, two tools, a token ceiling and eight turns."""
+    return TrajectoryDeclaration(
+        trajectory_id="01TRAJECTORY0000000000000A",
+        classification=DataClassification.INTERNAL,
+        tool_allowlist=frozenset({"read_file", "list_dir"}),
+        token_budget=100_000,
+        money_budget=Money(currency="USD", nanos=5_000_000_000),
+        max_turns=8,
+    )
+
+
+@pytest.fixture
+def minted_at() -> datetime:
+    """A fixed instant, so every minting golden is byte-identical on re-derivation."""
+    return datetime(2026, 9, 2, 12, 0, 0, tzinfo=UTC)
