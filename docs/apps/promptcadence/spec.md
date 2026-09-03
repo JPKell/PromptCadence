@@ -261,7 +261,13 @@ deliberate rejection, like `LoadCoachClient`.
    trajectory it stops parks until the next UTC day instead of halting.
 6. **Advance contract.** A step completes only on a declared `finish_reason` of `STOP` (or a
    schema-validated structured result); `LENGTH`, `ERROR` and absence are handled explicitly, never
-   read as success.
+   read as success. **The declared finish must be on the wire.** LoadCoach records the provider's
+   `finish_reason` on every attempt but, as of LoadCoach `01170a7`, renders it in neither the
+   `/generate` response nor the job document; PromptCadence reads `output.finish_reason` when a
+   response carries it and treats its absence as *absence* — a halt naming the gap, never a
+   completion. Rendering it is an obligation on LoadCoach recorded in `D2_HANDOFF.md`; until it
+   lands, only a schema-validated result completes a turn, and a free-text tier halts on every
+   turn. A declared `LENGTH` or `ERROR` wins over a passed schema check.
 7. **Streaming contract.** SSE with persisted events and `Last-Event-ID` replay, the same envelope
    shape as the rest of the suite.
 8. **Degradation contract.** No LoadCoach, no remote provider configured, or an exhausted budget
@@ -387,6 +393,16 @@ caller as `INTERNAL_ERROR`:
 | `CONTEXT_LIMIT_EXCEEDED` | Trigger compaction and retry once; then halt | `COMPACTION_FAILED` if compaction cannot fit it |
 | `VALIDATION_FAILED`, `STRUCTURED_OUTPUT_INVALID` | LoadCoach's own retry/fallback ran; PromptCadence records and applies its bounded corrective (planner only) | `PLAN_DRAFT_FAILED` / `LOADCOACH_ERROR` |
 | connection refused / DNS | Trajectory parks in `waiting` with the reason; health degraded | `LOADCOACH_UNAVAILABLE` |
+| `TASK_PROFILE_NOT_FOUND` | The tier is configured here and cannot be served there; `promptcadence tiers check` names it | `TIER_UNAVAILABLE` with `reason = task_profile_not_found` |
+| Every other LoadCoach code — `PROVIDER_PROTOCOL_ERROR`, `PROVIDER_REJECTED`, `ALL_CANDIDATES_FAILED`, `MODEL_NOT_FOUND`, `CAPABILITY_UNSUPPORTED`, `INSUFFICIENT_RESOURCES`, `GENERATION_CANCELLED`, `JOB_NOT_FOUND`, `JOB_NOT_CANCELLABLE`, its web layer's `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `INTERNAL_ERROR`, and any code this build does not know | Halt with the cause naming the code | `LOADCOACH_ERROR` with the original code and details preserved — never `INTERNAL_ERROR` |
+| The client's own read timeout | Cancel the job the request may have started, then halt | `LOADCOACH_ERROR` with `reason = client_timeout` |
+
+The mapping is complete from Phase 3 (`infrastructure/loadcoach.py`, `LOADCOACH_CODE_MAP`, walked
+by a test against LoadCoach's own spec §13 list); the *behaviour* column is the target. Until the
+step policy arrives with the plan (Phase 7), the "retry" and "wait" cells halt with the cause. And
+there is no `waiting` state in [Lifecycle §8.1](lifecycle.md): until one is specified, an
+unreachable LoadCoach mid-turn is T13 (`failed`) with the cause, after cancelling any job the
+request may have started — never a silent retry of the same request.
 
 Behavioural rules:
 

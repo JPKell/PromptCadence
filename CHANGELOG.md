@@ -7,6 +7,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ## [Unreleased]
 
 ### Added
+- Phase 3: a bypassed trajectory executes end to end — durably, observably, and under
+  governance — against a fake LoadCoach that every later phase tests against.
+  - `infrastructure/loadcoach.py`: the httpx client for `/version`, `/system/status`, `/models`,
+    `/task-profiles`, `/route`, `/generate`, `/jobs` and `/jobs/{id}/cancel`, with every
+    LoadCoach error code mapped onto exactly one spec §13 code and the original preserved in
+    `details` (never `INTERNAL_ERROR`). Both `usage` wires are read — the interim one with the
+    cache classes `"unsupported"`, and the post-`modelrack 0.7.0` one with `0` or a count — and
+    the three answers never render as one another (ADR-0016, ADR-0070). Every request carries
+    `X-Client-Name: promptcadence` and every turn's `idempotency_key` is its turn id.
+  - `services/loop.py`: the bypass `LoopController` — claim (T3), mint the default
+    `ExecutionIntent`, one turn per `/generate`, the turn row with `turn.completed`, every
+    deviation as a row and an event, and the terminal transition, in one write (ADR-0044).
+    A turn completes only on a declared `finish_reason=stop` or a schema-validated result
+    (`domain/turns.py`); `length`, `error` and absence halt naming the cause. Every response's
+    execution subject is verified against the provider surface read from `/models`
+    (`services/loadcoach_surface.py`), and a foreign provider on a local tier halts as a
+    `tier_violation`.
+  - `services/worker.py`: the worker pool, the lease keeper (renewal by compare-and-set; a
+    lost lease fences every write) and the recovery pass of lifecycle §8.3 — an in-flight
+    LoadCoach job found by its idempotency key is cancelled, a completed one is reconciled into
+    the turn row, an unreconcilable one halts `recovered_after_crash`, an unreachable LoadCoach
+    defers. Proven with a real `kill -9` at both places a turn can be lost.
+  - `services/events.py`: the ADR-0044 sink — a state change and its event commit in one
+    transaction and publish only after it; gap-free per-trajectory sequences for SSE replay.
+  - `POST /trajectories`, `GET /trajectories(/{id})`, `GET /trajectories/{id}/turns`,
+    `POST /trajectories/{id}/cancel` (at once when unleased, at the next turn boundary when
+    leased, with the in-flight LoadCoach job cancelled) and the SSE `GET /trajectories/{id}/stream`
+    with `Last-Event-ID` replay; `promptcadence run [--follow]` and
+    `promptcadence trajectory list|show|cancel|wait`, with CLI standards §4 exit codes.
+  - `tests/fakes/loadcoach_app.py`: the fake LoadCoach, speaking exactly the documented wire
+    (no `finish_reason`, because LoadCoach renders none) and stricter than the real thing where
+    recovery depends on it; `tests/contract/`: the I10 contract tests against LoadCoach's
+    committed OpenAPI snapshot; `tests/live/`: the marked live journey against a real LoadCoach.
+  - Migration `0003`: `lease_owner`, `lease_expires_at`, `cancel_requested` and `error_code` on
+    `trajectories`.
 - Phase 2: the domain core — every governance decision that needs no I/O, as a pure,
   golden-tested function.
   - `domain/intent.py`: the immutable, revisioned `ExecutionIntent` (ADR-0056) with its three

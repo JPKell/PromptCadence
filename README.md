@@ -5,13 +5,14 @@ the plan is approved against governance policy and remaining budget before any s
 every turn that does execute is fully reconstructable afterwards — which model ran it, on which
 tier, on what data, at what cost, under whose approval.
 
-**Status:** Phase 2 (domain core), unreleased. This repository holds the project scaffold,
-configuration, storage and honest-degradation health reporting from Phase 1, and now the pure
-domain: tiers and admission, the plan schema and its validation, the `ExecutionIntent` every turn
-executes under, the closed deviation taxonomy, the approval policy and the trajectory state
-machine — every governance decision that needs no I/O, as a golden-tested function. See the
-[development plan](docs/apps/promptcadence/development-plan.md) for what each phase adds. Nothing
-executes yet: no LoadCoach client, no tool loop, no budget enforcement.
+**Status:** Phase 3 (LoadCoach client, bypass loop, events and recovery), unreleased. A
+bypassed trajectory executes end to end: `promptcadence run "…" --bypass-planning --follow`
+queues it, the worker claims it under a lease, mints its `ExecutionIntent`, runs each turn through
+LoadCoach's `/generate`, records the turn with its provenance and every deviation, streams the
+events over SSE, and survives a `kill -9` mid-turn with no duplicated turn and no orphaned
+LoadCoach job. Planning, tools, budget enforcement and egress policy arrive in the phases that
+follow; a planned trajectory is claimed and failed with that cause rather than queued forever. See
+the [development plan](docs/apps/promptcadence/development-plan.md) for what each phase adds.
 
 Part of the **Local AI Suite**. Reaches a model only through [LoadCoach](https://github.com/JPKell/LoadCoach)'s
 HTTP API — it never imports a model provider directly ([ADR-0045](docs/adr/0045-promptcadence-reaches-models-only-through-loadcoach.md)
@@ -36,8 +37,15 @@ surface and `PROMPTCADENCE_*` environment variables.
 pip install promptcadence
 promptcadence serve            # starts the API on 127.0.0.1:8768
 promptcadence health --json    # same health data the API reports, from the CLI
+promptcadence run "summarize the files in ./notes" --bypass-planning --follow
+promptcadence trajectory list
 promptcadence --help
 ```
+
+A note on today's LoadCoach: it records the provider's `finish_reason` but does not yet render it
+on the wire, and PromptCadence never reads an undeclared finish as success (spec §11 contract 6).
+Until LoadCoach carries `output.finish_reason`, a free-text tier halts on its first turn with that
+cause on the row, and only a tier whose task profile validates a JSON Schema completes.
 
 ## Documentation
 

@@ -411,6 +411,22 @@ explicit recovery edge, exercised at startup and on lease expiry:
 clocks (ageing, approval timeout, the window edge and its day count) are persisted values, not
 process state.
 
+**How "a known LoadCoach job" is known** (Phase 3). Before every `/generate` call the loop writes
+`turn.started` in its own transaction, carrying the `turn_id`, and sends that id as the request's
+`idempotency_key` under `X-Client-Name: promptcadence`. A `turn.started` with no turn row is
+therefore the in-flight work at the crash, and its key is enough to find the job with LoadCoach's
+own API and nothing else: `GET /jobs?source=promptcadence` lists this application's jobs with
+their keys. An in-flight job is cancelled (`POST /jobs/{id}/cancel`) and the trajectory resumed
+with a fresh turn; a completed one is reconciled into the turn row from its job document and the
+loop continues from what it decided; a key no job holds is the unreconcilable edge. The loop
+never re-POSTs `/generate` with the old key to find out, because after
+`queue.idempotency_ttl_hours` a re-POST would start *new* work and `/generate` cannot tell a
+replay from a fresh execution. Startup takes over every lease not held by this process — the
+single-process design makes any other owner a process that is gone — and the running reaper takes
+over only expired ones. An unreachable LoadCoach defers the reconciliation to the next pass rather
+than halting on a transient outage. Until the planner exists (Phase 7), a `planning` lease found
+at recovery is T7 with the cause rather than a redraft.
+
 ### 8.4 DAG dispatch
 
 **DAG dispatch** (the skeleton's scheduling question, resolved): the `LoopController` maintains a
