@@ -15,6 +15,7 @@ import typer
 
 from promptcadence.cli.commands import config as config_commands
 from promptcadence.cli.commands import db as db_commands
+from promptcadence.cli.commands import egress as egress_commands
 from promptcadence.cli.commands import ledger as ledger_commands
 from promptcadence.cli.commands import system as system_commands
 from promptcadence.cli.commands import tools as tools_commands
@@ -70,4 +71,9 @@ app.add_typer(trajectory_commands.app, name="trajectory", help="List, show, canc
 app.add_typer(tools_commands.app, name="tools", help="The tool registry, and what was withheld.")
 app.add_typer(
     ledger_commands.app, name="ledger", help="The budget ledger: today's position and the debits."
+)
+app.add_typer(
+    egress_commands.app,
+    name="egress",
+    help="Recorded egress decisions: approved, denied and violated.",
 )

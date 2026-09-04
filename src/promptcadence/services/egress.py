@@ -32,7 +32,7 @@ return.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
 from baseaicore import DataClassification
@@ -60,6 +60,7 @@ __all__ = [
     "LOOPBACK_HOSTS",
     "EgressService",
     "VIOLATION_POLICY_NAME",
+    "decision_view",
     "fetch_target",
     "host_of",
     "tier_target",
@@ -352,3 +353,21 @@ class EgressService:
                 better than a restatement would.
         """
         return self.ledger().decisions(run_id=run_id, verdict=verdict, target=target, since=since)
+
+
+def decision_view(decision: EgressDecision) -> dict[str, Any]:
+    """Render one decision for ``GET /egress-decisions`` and ``promptcadence egress list``.
+
+    Built from :meth:`~commissioner.EgressDecision.to_payload` rather than field by field, so the
+    wire shape *is* SetSpec's ``governance.egress_decision`` 1.0 and cannot drift from it by an
+    edit here (ADR-0051 §4). A hand-written projection would be a second definition of the payload,
+    which is the thing versioned payloads exist to prevent.
+
+    Args:
+        decision: The recorded decision.
+
+    Returns:
+        The payload as a JSON-ready mapping, with instants as RFC 3339 strings.
+    """
+    payload: Any = decision.to_payload()
+    return cast("dict[str, Any]", payload.model_dump(mode="json"))

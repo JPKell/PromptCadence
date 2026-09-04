@@ -25,6 +25,7 @@ from mirrorwall import ComponentHealth
 from promptcadence.infrastructure.loadcoach import LoadCoachClient
 from promptcadence.services.budget import BudgetService
 from promptcadence.services.database import Database, database_health_component, ensure_ready
+from promptcadence.services.egress import EgressService
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.loadcoach_status import loadcoach_health_component
 from promptcadence.services.pricing import PricingCatalog
@@ -49,6 +50,7 @@ class Runtime:
         "_database",
         "_started",
         "budget",
+        "egress",
         "loadcoach",
         "pricing",
         "settings",
@@ -88,6 +90,7 @@ class Runtime:
         # configuration mistake.
         self.pricing = PricingCatalog.from_settings(settings)
         self.budget = BudgetService(database, settings, self.pricing, clock=utc_now)
+        self.egress = EgressService(database, clock=utc_now)
         self.trajectories = TrajectoryService(database, self.sink, settings, budget=self.budget)
         loadcoach = settings.loadcoach
         self.loadcoach = (
@@ -110,6 +113,7 @@ class Runtime:
             settings=settings,
             tools=self.tools,
             budget=self.budget,
+            egress=self.egress,
         )
         self._started = False
 

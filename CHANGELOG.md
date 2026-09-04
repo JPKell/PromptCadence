@@ -111,6 +111,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
     still passes on the fake provider with no GPU, no Ollama and no network (spec §20 #10).
 
 ### Added
+- **Phase 6, gate E: the surfaces.** `GET /egress-decisions` and `promptcadence egress list`
+  (mode: either), plus the fetch tests the plan names.
+  - Both list **approvals, denials and violations together and unfiltered by default**. A surface
+    showing only refusals would answer "what was blocked" rather than "where did this
+    trajectory's data go", and the second is what spec §11 contract 3 exists to make answerable.
+  - Each row is SetSpec's `governance.egress_decision` 1.0, rendered from
+    `EgressDecision.to_payload()` rather than from a projection kept in step by hand — a
+    hand-written one would be a second definition of the payload (ADR-0051 §4). `--json` prints
+    those documents unchanged.
+  - `?verdict=` outside the vocabulary is **refused** (`400 VALIDATION_ERROR`), not ignored: a
+    caller who asked for `verdict=blocked` and got everything back would read an unfiltered list
+    as a filtered one, which on this endpoint means reading approvals as denials.
+  - The fetch tests cover all three target shapes against the shipped policy: a non-allowlisted
+    host denied `no_ceiling_declared`, an allowlisted host above the declared ceiling denied
+    `classification_exceeds_ceiling`, and loopback approved `target_not_remote`. They run through
+    an injected transport, so the suite still opens no socket.
+
+### Added
 - **Phase 6, gate D: the deviation matrix, as the bypass path actually mints it.** The comparison
   machinery was already wired end to end at Phase 4; what this adds is the evidence that it is
   wired against the *default* intent, not only against a hand-built one.

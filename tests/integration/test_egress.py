@@ -370,3 +370,111 @@ def test_every_turn_of_an_ordinary_local_journey_carries_an_egress_decision(
     assert gated == {record.turn.turn_id for record in assistant_turns}, (
         "each decision must name the turn it gated"
     )
+
+
+# --------------------------------------------------------------------------------------------
+# http_fetch, egress-checked
+# --------------------------------------------------------------------------------------------
+
+
+def _fetch_transport() -> httpx.MockTransport:
+    """A transport that answers any GET, so a *reached* host is distinguishable from a refused one.
+
+    It answers rather than refuses on purpose: if the transport itself said no, a test could not
+    tell "the egress decision stopped this" from "the network stopped this", which is the only
+    thing these tests are about.
+    """
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="fetched body", headers={"content-type": "text/plain"})
+
+    return httpx.MockTransport(handle)
+
+
+def _fetch_call(url: str) -> ScriptedGeneration:
+    return ScriptedGeneration(
+        text="fetching",
+        tool_calls=({"id": "call_1", "name": "http_fetch", "arguments": {"url": url}},),
+    )
+
+
+@pytest.fixture
+def fetch_harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
+    """One allowlisted host, and a declared ceiling of ``internal`` for fetch egress."""
+    monkeypatch.setenv("PROMPTCADENCE_TOOLS__FETCH_ALLOWED_HOSTS", "docs.example.com")
+    monkeypatch.setenv("PROMPTCADENCE_TOOLS__FETCH_MAX_DATA_CLASSIFICATION", "internal")
+    yield from _harness(load_settings().settings, _fake(), fetch_transport=_fetch_transport())
+
+
+def test_a_fetch_to_a_non_allowlisted_host_is_refused_and_recorded(
+    fetch_harness: Harness,
+) -> None:
+    """The plan's named test. The refusal is recorded as a decision, not only as a tool result.
+
+    A non-allowlisted host is refused by *withholding* a ceiling from the target, so the shipped
+    policy denies it with ``no_ceiling_declared`` — Commissioner's own fail-closed branch
+    (ADR-0046). That is deliberately not an early return: an unrecorded refusal cannot be audited,
+    and "a declined call is as auditable as an approved one" has to hold for tool egress too.
+    """
+    fetch_harness.fake.script(_fetch_call("https://evil.example.net/secrets"))
+    trajectory_id, _ = fetch_harness.run(classification=DataClassification.PUBLIC)
+
+    denials = [
+        decision
+        for decision in fetch_harness.decisions(trajectory_id)
+        if decision.verdict is Verdict.DENIED
+    ]
+    assert len(denials) == 1
+    assert denials[0].reason == "no_ceiling_declared"
+    assert denials[0].request.target.name == "evil.example.net"
+    assert denials[0].request.target.remote is True
+
+    tool_turns = [
+        record
+        for record in fetch_harness.service.turns(trajectory_id)
+        if record.turn.role.value == "tool"
+    ]
+    assert tool_turns, "the refusal must come back to the model as a tool turn"
+    assert "egress_not_permitted" in (tool_turns[0].turn.content or "")
+
+
+def test_a_fetch_above_the_declared_ceiling_is_refused_even_on_an_allowlisted_host(
+    fetch_harness: Harness,
+) -> None:
+    """The allowlist and the ceiling answer different questions, and both must be asked.
+
+    ``docs.example.com`` is allowlisted, so ToolYard would have fetched it. The trajectory is
+    ``confidential`` and the declared fetch ceiling is ``internal``, so the egress decision refuses
+    — which is the whole reason the decision exists separately from the allowlist.
+    """
+    fetch_harness.fake.script(_fetch_call("https://docs.example.com/guide"))
+    trajectory_id, _ = fetch_harness.run(classification=DataClassification.CONFIDENTIAL)
+
+    denials = [
+        decision
+        for decision in fetch_harness.decisions(trajectory_id)
+        if decision.verdict is Verdict.DENIED and decision.request.target.name == "docs.example.com"
+    ]
+    assert len(denials) == 1
+    assert denials[0].reason == "classification_exceeds_ceiling"
+
+
+def test_a_loopback_fetch_is_not_egress_and_is_approved(fetch_harness: Harness) -> None:
+    """A fetch that does not leave the machine is approved with ``target_not_remote``.
+
+    Treating loopback as egress would either block the local-service case an empty
+    ``fetch_allowed_hosts`` exists for, or force an operator to declare a ceiling for data that
+    never leaves — and a ceiling declared for that reason is a ceiling nobody means.
+    """
+    fetch_harness.fake.script(_fetch_call("http://127.0.0.1:8080/status"))
+    trajectory_id, _ = fetch_harness.run(classification=DataClassification.CONFIDENTIAL)
+
+    fetches = [
+        decision
+        for decision in fetch_harness.decisions(trajectory_id)
+        if decision.request.target.name == "127.0.0.1"
+    ]
+    assert len(fetches) == 1
+    assert fetches[0].verdict is Verdict.APPROVED
+    assert fetches[0].reason == "target_not_remote"
+    assert fetches[0].request.target.remote is False
