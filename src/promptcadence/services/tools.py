@@ -87,6 +87,7 @@ __all__ = [
     "ToolCatalogEntry",
     "ToolPlant",
     "TrajectoryTools",
+    "isolation_payload",
     "outcome_of",
     "tools_health_component",
 ]
@@ -127,6 +128,30 @@ Should an output ever exceed this, ToolYard truncates and labels it, the digests
 and :meth:`ToolPlant.spill` writes **nothing**: a prefix filed under the whole output's hash is the
 truncated body pretending to be complete that the record exists to prevent.
 """
+
+
+def isolation_payload(report: TierReport) -> dict[str, Any]:
+    """Render the probe's answer as the mapping every surface shows.
+
+    One function rather than a method on :class:`toolyard.TierReport`, which is that package's
+    frozen dataclass and not ours to extend — and one function rather than two hand-built literals,
+    because ``GET /tools`` and ``promptcadence tools list --json`` describing the same probe
+    differently is a drift nobody would notice until an operator compared them.
+
+    Args:
+        report: What :meth:`ToolPlant.isolation` returned.
+
+    Returns:
+        ``tier``, ``runtime``, ``reason`` and ``limits_unenforced``. ``reason`` is the operator's
+        whole answer to "why this rung" — it names every rung the probe visited and why each was
+        skipped or failed — and it never reaches a model.
+    """
+    return {
+        "tier": report.tier.value,
+        "runtime": report.runtime,
+        "reason": report.reason,
+        "limits_unenforced": list(report.limits_unenforced),
+    }
 
 
 def outcome_of(status: ToolStatus) -> ToolOutcome:
@@ -281,8 +306,12 @@ class TrajectoryTools:
         """Build the executor for one turn's write.
 
         Args:
-            store: Where records go — the loop's :class:`SqlToolCallStore`, bound to the session
-                that turn commits on. ``None`` records nothing and is for a caller with no
+            store: Where records go — the loop's
+                :class:`~promptcadence.infrastructure.tool_calls.CollectingToolCallStore`, which
+                collects during the call and is flushed onto the session that turn commits on. It
+                collects rather than writing through because a ``run_command`` may spend its whole
+                timeout inside a container, and a write-through store would hold a SQLite write
+                lock for exactly that long. ``None`` records nothing and is for a caller with no
                 database; the record is built either way, so the path a test exercises is the path
                 production runs.
 
@@ -572,22 +601,38 @@ class ToolPlant:
         shutil.rmtree(target)
         return True
 
-    def spill(self, result: ToolResult, *, result_sha256: str) -> str | None:
-        """File a tool output that is too large for a transcript, if it can be filed honestly.
+    def spill(self, result: ToolResult, *, result_sha256: str, limit: int) -> str | None:
+        """File a tool output too large for a transcript, if it can be filed honestly.
+
+        Three refusals, and the middle one is what makes ``artifact_ref`` mean something. An
+        artifact exists to hold what the model was **not** shown; an output that fits in the turn
+        was shown in full, so filing it would put a second copy on disk for every successful call
+        and leave ``artifact_ref`` populated on every row — which is the same as it saying nothing.
+
+        ``limit`` is deliberately the same number
+        :func:`~promptcadence.services.loop._shown_result` truncates at, so for an ``OK`` result
+        the two answers cannot disagree: an artifact is written exactly when the model saw a
+        prefix. The one asymmetry is honest and intended — a result ToolYard itself truncated is
+        shown as a prefix and filed **nowhere**, so ``output_truncated`` without an
+        ``artifact_ref`` reads as "the whole output no longer exists to be filed".
 
         Args:
             result: The executor's result. Its ``content`` is the whole cleaned output while it
                 fits under :data:`ARTIFACT_CEILING_BYTES`.
             result_sha256: The digest the record carries — of the **whole** output.
+            limit: ``[tools] max_result_chars``. At or below it the output lives in the turn and
+                nothing is written.
 
         Returns:
-            The artifact reference, or ``None`` when nothing was written. Nothing is written when
-            the output is small enough to live in the turn, and nothing is written when the
+            The artifact reference, or ``None`` when nothing was written — because the call did not
+            produce output, because the output is small enough to live in the turn, or because the
             content's own digest does not match ``result_sha256``, which means ToolYard truncated
-            it: a prefix filed under the whole output's hash would be a record pointing at
+            it and a prefix filed under the whole output's hash would be a record pointing at
             something it does not describe.
         """
         if result.status is not ToolStatus.OK:
+            return None
+        if len(result.content) <= limit:
             return None
         if sha256_of(result.content) != result_sha256:
             return None

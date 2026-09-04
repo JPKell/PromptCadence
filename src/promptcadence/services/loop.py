@@ -1099,14 +1099,13 @@ class LoopController:
                     error_code=ErrorCode.TOOL_EXECUTION_FAILED,
                 )
         record = store.records[0] if store.records else None
+        limit = self._settings.tools.max_result_chars
         artifact_ref = (
-            self._tools.spill(result, result_sha256=record.result_sha256)
+            self._tools.spill(result, result_sha256=record.result_sha256, limit=limit)
             if record is not None
             else None
         )
-        shown, truncated = _shown_result(
-            result.content, limit=self._settings.tools.max_result_chars, artifact_ref=artifact_ref
-        )
+        shown, truncated = _shown_result(result.content, limit=limit, artifact_ref=artifact_ref)
         now = self._clock()
         tool_turn = Turn(
             self._ids(),

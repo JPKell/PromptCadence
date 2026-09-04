@@ -22,6 +22,7 @@ from starlette.responses import JSONResponse
 from promptcadence.__about__ import __version__
 from promptcadence.domain.errors import ToolNotFoundError
 from promptcadence.domain.trajectory import TrajectoryState
+from promptcadence.services.tools import isolation_payload
 
 __all__ = ["API_VERSION", "SCHEMA_VERSION", "router"]
 
@@ -127,16 +128,10 @@ def tools(request: Request) -> JSONResponse:
     plant = _plant(request)
     if plant is None:
         return json_response({"tools": [], "isolation": None})
-    report = plant.isolation()
     return json_response(
         {
             "tools": [entry.as_payload() for entry in plant.catalog()],
-            "isolation": {
-                "tier": report.tier.value,
-                "runtime": report.runtime,
-                "reason": report.reason,
-                "limits_unenforced": list(report.limits_unenforced),
-            },
+            "isolation": isolation_payload(plant.isolation()),
         }
     )
 

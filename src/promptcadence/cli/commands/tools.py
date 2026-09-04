@@ -44,14 +44,10 @@ def _plant() -> ToolPlant:
 
 
 def _isolation(plant: ToolPlant) -> dict[str, Any]:
-    """The probe's answer, as the payload both commands print."""
-    report = plant.isolation()
-    return {
-        "tier": report.tier.value,
-        "runtime": report.runtime,
-        "reason": report.reason,
-        "limits_unenforced": list(report.limits_unenforced),
-    }
+    """The probe's answer, in the one shape ``GET /tools`` also uses."""
+    from promptcadence.services.tools import isolation_payload
+
+    return isolation_payload(plant.isolation())
 
 
 @app.command("list")

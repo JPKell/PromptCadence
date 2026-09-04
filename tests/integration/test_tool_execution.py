@@ -312,6 +312,11 @@ def test_a_multi_tool_journey_writes_reads_and_lists_then_finishes(harness: Harn
     records = harness.records(trajectory_id)
     assert [r.tool_name for r in records] == ["write_file", "list_dir", "read_file"]
     assert {r.status for r in records} == {"ok"}
+    # Every result here fits in its turn, so none of them is filed: an artifact holds what the
+    # model was *not* shown, and `artifact_ref` populated on every row would say nothing.
+    assert {r.artifact_ref for r in records} == {None}
+    assert {r.output_truncated for r in records} == {False}
+    assert not harness.tools.artifacts.root.exists()
     assert (harness.workspace(trajectory_id) / "notes.md").read_text() == "three meetings"
     assert "three meetings" in harness.tool_turns(trajectory_id)[2]
     roles = [t.turn.role.value for t in harness.service.turns(trajectory_id)]

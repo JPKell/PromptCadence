@@ -18,6 +18,7 @@ from toolyard import (
     SandboxPaths,
     TieredSandbox,
     ToolCallRequest,
+    ToolResult,
     ToolStatus,
 )
 
@@ -246,22 +247,55 @@ def test_a_refusal_is_never_spilled(tmp_path: Path) -> None:
         tools.context("inv-1", approved_tools=frozenset({"read_file"})),
     )
     assert result.status is ToolStatus.REFUSED
-    assert built.spill(result, result_sha256=sha256_of(result.content)) is None
+    assert built.spill(result, result_sha256=sha256_of(result.content), limit=8) is None
+
+
+def _read_result(built: ToolPlant, body: str) -> tuple[ToolResult, str]:
+    """Read a file of ``body`` through the real executor, and return the result and its digest."""
+    tools = built.for_trajectory("01ABC", allowlist=frozenset({"read_file"}))
+    (tools.workspace.write_root / "a.txt").write_text(body, encoding="utf-8")
+    result = tools.executor(None).execute(
+        ToolCallRequest(name="read_file", args={"path": "a.txt"}),
+        tools.context("inv-1", approved_tools=frozenset({"read_file"})),
+    )
+    assert result.status is ToolStatus.OK
+    return result, sha256_of(result.content)
+
+
+def test_an_output_that_fits_in_the_turn_is_not_filed(tmp_path: Path) -> None:
+    """An artifact holds what the model was **not** shown.
+
+    Filing a result the model saw in full would put a second copy on disk for every successful
+    call and leave ``artifact_ref`` populated on every row — which is the same as it saying
+    nothing, and it would stop the ``artifact_ref``/``output_truncated`` pair distinguishing an
+    oversize output from an ordinary one.
+    """
+    built = plant(PROMPTCADENCE_TOOLS__WORKSPACE_ROOT=str(tmp_path / "work"))
+    result, digest = _read_result(built, "short")
+    assert built.spill(result, result_sha256=digest, limit=len(result.content)) is None
+    # The store only creates its root on a write, so "nothing was filed" is checkable directly.
+    assert not built.artifacts.root.exists()
+
+
+def test_an_output_one_character_past_the_limit_is_filed(tmp_path: Path) -> None:
+    """The boundary is `<=`, the same one `_shown_result` truncates at, so the two cannot
+    disagree about whether the model saw everything."""
+    built = plant(PROMPTCADENCE_TOOLS__WORKSPACE_ROOT=str(tmp_path / "work"))
+    result, digest = _read_result(built, "abcdefghij")
+    limit = len(result.content) - 1
+    reference = built.spill(result, result_sha256=digest, limit=limit)
+    assert reference == digest
+    assert built.artifacts.path_for(digest).read_text(encoding="utf-8") == result.content
 
 
 def test_a_truncated_result_is_not_filed_under_the_whole_outputs_hash(tmp_path: Path) -> None:
     """The rule the record exists to enforce: never a prefix pretending to be the whole thing."""
     built = plant(PROMPTCADENCE_TOOLS__WORKSPACE_ROOT=str(tmp_path / "work"))
-    tools = built.for_trajectory("01ABC", allowlist=frozenset({"read_file"}))
-    workspace = tools.workspace.write_root
-    (workspace / "a.txt").write_text("short", encoding="utf-8")
-    result = tools.executor(None).execute(
-        ToolCallRequest(name="read_file", args={"path": "a.txt"}),
-        tools.context("inv-1", approved_tools=frozenset({"read_file"})),
-    )
-    # A digest that is not this content's stands in for "ToolYard truncated": nothing is written.
-    assert built.spill(result, result_sha256=sha256_of("something else")) is None
-    assert built.spill(result, result_sha256=sha256_of(result.content)) is not None
+    result, _ = _read_result(built, "short")
+    # A digest that is not this content's stands in for "ToolYard truncated": nothing is written,
+    # even though the output is past the limit and would otherwise be filed.
+    assert built.spill(result, result_sha256=sha256_of("something else"), limit=1) is None
+    assert built.spill(result, result_sha256=sha256_of(result.content), limit=1) is not None
 
 
 def test_the_executors_content_cap_is_above_every_shipped_tools_own_cap() -> None:

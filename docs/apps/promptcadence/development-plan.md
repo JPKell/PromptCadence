@@ -184,8 +184,13 @@ gap, against an older one.
   per-trajectory allowlists (request ⊆ config).
 * Tool round trips inside a step: `tool_calls` → ToolYard → results appended as TOOL turns →
   continue until declared finish; `max_turns_per_step`.
-* `SqlToolCallStore`; `tool_call_records` table; `tool.call.*` events; oversize outputs to the
-  artifact directory by hash.
+* The tool-call store; `tool_call_records` table; `tool.call.*` events; oversize outputs to the
+  artifact directory by hash. **Built as `CollectingToolCallStore`, not `SqlToolCallStore`**: the
+  executor appends its record from inside `execute()`, and a `run_command` may spend its whole
+  timeout inside a container — so a store that wrote through would hold a SQLite write lock for
+  exactly that long. It collects during the call and is flushed onto the session the turn commits
+  on, which keeps ADR-0044's one-write property (record, `TOOL` turn and `tool.call.completed`
+  are atomic with each other) without a transaction open across a subprocess.
 * `GET /tools`, `promptcadence tools list|show`.
 
 **Tests**

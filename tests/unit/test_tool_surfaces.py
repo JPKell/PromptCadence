@@ -168,6 +168,18 @@ def test_tools_list_shows_registered_and_withheld_and_the_rung() -> None:
     assert "isolation:" in result.stdout
 
 
+def test_the_http_and_cli_surfaces_report_the_same_isolation_shape(client: TestClient) -> None:
+    """Both render `isolation_payload`, so the two cannot describe one probe differently.
+
+    They were hand-built literals until an E4 review pointed out they would drift; the keys are
+    asserted rather than the values, because the CLI probes the host it runs on and the route
+    probes the serving process's — the same host here, but that is not the property being pinned.
+    """
+    from_http = client.get("/api/v1/tools").json()["isolation"]
+    from_cli = json.loads(runner.invoke(app, ["tools", "list", "--json"]).stdout)["isolation"]
+    assert set(from_http) == set(from_cli) == {"tier", "runtime", "reason", "limits_unenforced"}
+
+
 def test_tools_list_json_is_valid_json_carrying_both_halves() -> None:
     result = runner.invoke(app, ["tools", "list", "--json"])
     assert result.exit_code == 0
