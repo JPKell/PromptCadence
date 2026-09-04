@@ -29,6 +29,13 @@ row per revision, none ever updated (ADR-0056 §3). ``trajectories.tier_snapshot
 foreign key deliberately: a snapshot is content-addressed and shared by every trajectory whose
 configuration matched, so a cascade from one trajectory must never reach it.
 
+Phase 4 adds ``tool_call_records`` (migration ``0004``) and one column on ``turns``. The column is
+``tool_call_id``: the domain has always refused a ``TOOL`` turn that names no call, and a
+non-``TOOL`` turn that names one, and until Phase 4 nothing wrote either, so the row had nowhere to
+keep the link. A tool result and the call it answers must survive a compaction that reads only
+this field (``domain.threads``), which is why it is a column and not a fact recomputed from the
+ordering of rows.
+
 ``ledger_entries`` (LoadLedger) and ``egress_decisions`` (Commissioner) are **not** created here.
 They arrive *mounted* into this same metadata and Alembic history at Phase 5/6
 (ADR-0050): each package exports a ``mount_*_tables(metadata, ...)`` function the application
@@ -73,6 +80,7 @@ __all__ = [
     "Setting",
     "Thread",
     "TierSnapshot",
+    "ToolCallRecord",
     "Trajectory",
     "Turn",
     "utcnow",
@@ -213,6 +221,7 @@ class Turn(Base):
     loadcoach_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     overhead_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     loadcoach_job_id: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
 
     __table_args__ = (
@@ -456,3 +465,58 @@ class Deviation(Base):
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
 
     __table_args__ = (Index("ix_deviations_trajectory_id", "trajectory_id"),)
+
+
+class ToolCallRecord(Base):
+    """One model-directed tool call, whatever became of it (spec §10, ADR-0053 decision 7).
+
+    A row per call, **including refusals and failures** — the table answers "what did this
+    trajectory try", not "what did it manage", and the second question alone is useless to a
+    security review. The columns are ToolYard's ``ToolCallRecord`` plus the three links this
+    application needs to put a call back in its trajectory: the trajectory, the turn whose
+    ``tool_calls`` it answers, and the ``TOOL`` turn that carried its result back to the model.
+
+    Two columns exist because a record must outlive its content. ``args_json`` is ``NULL`` when
+    the tool is named in ``[tools] redact_args`` and after a retention sweep; ``args_sha256`` is
+    written in every case, so the row still proves what was asked even when it no longer says it.
+    ``result_sha256`` is the digest of the handler's **whole** output, never of the capped text the
+    model saw — which is what lets ``artifact_ref`` point at a spilled body and be checkable.
+
+    There is no cost column and no ledger link. A tool call's cost is LoadLedger's at Phase 5,
+    derived from usage and a pricing hash rather than stored as money (ADR-0030), and a column
+    here would be the second place it lived.
+    """
+
+    __tablename__ = "tool_call_records"
+
+    id: Mapped[str] = ulid_primary_key()
+    trajectory_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
+    )
+    turn_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("turns.id", ondelete="CASCADE"), nullable=False
+    )
+    tool_turn_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    invocation_id: Mapped[str] = mapped_column(String(26), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    args_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    args_sha256: Mapped[str] = mapped_column(String(71), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    reason_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_sha256: Mapped[str] = mapped_column(String(71), nullable=False)
+    artifact_ref: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    output_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    risk_class: Mapped[str] = mapped_column(String(20), nullable=False)
+    egress: Mapped[str] = mapped_column(String(20), nullable=False)
+    isolation_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("invocation_id", name="uq_tool_call_records_invocation_id"),
+        Index("ix_tool_call_records_trajectory_id", "trajectory_id"),
+        Index("ix_tool_call_records_turn_id", "turn_id"),
+    )

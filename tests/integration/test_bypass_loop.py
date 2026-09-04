@@ -22,6 +22,7 @@ from tests.fakes.loadcoach_app import (
     schema_profile,
     text_profile,
 )
+from toolyard import TieredSandbox
 from weightsdb import MigrationRunner
 from weightsdb.testing import temporary_sqlite
 
@@ -33,6 +34,7 @@ from promptcadence.infrastructure.loadcoach import LoadCoachClient
 from promptcadence.services.database import MIGRATIONS_LOCATION, Database
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.loop import LoopController, RunSignals
+from promptcadence.services.tools import ToolPlant
 from promptcadence.services.trajectories import TrajectoryService, TrajectorySubmission
 
 _NOW = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
@@ -52,6 +54,11 @@ class Harness:
         self.loadcoach = LoadCoachClient(
             TestClient(build_fake_app(fake), base_url="http://loadcoach.test")
         )
+        # No isolation rung, deterministically: the probe's view of the host is shaped by the
+        # injected `which` (D1's seam), so `run_command` refuses with `isolation_unavailable` here
+        # whether or not the machine running the suite has docker. The rung itself is ToolYard's to
+        # test; what this suite asserts is that its refusal is a result the loop feeds back.
+        self.tools = ToolPlant(settings, sandbox=TieredSandbox(which=lambda _name: None))
 
     def controller(self, owner: str = "host:1/0") -> LoopController:
         return LoopController(
@@ -61,6 +68,7 @@ class Harness:
             settings=self.settings,
             owner=owner,
             clock=self.clock,
+            tools=self.tools,
         )
 
     def submit(self, **overrides: object) -> str:
@@ -279,33 +287,93 @@ def test_an_unreachable_loadcoach_fails_the_trajectory_with_the_reason(
     assert view.error_code == ErrorCode.LOADCOACH_UNAVAILABLE.value
 
 
-def test_a_requested_tool_call_halts_rather_than_pretending_to_run_it(harness: Harness) -> None:
-    harness.fake.script(
-        ScriptedGeneration(text="", tool_calls=({"name": "read_file", "arguments": {"path": "a"}},))
-    )
-    trajectory_id, state = _claim_and_run(harness)
-    assert state is TrajectoryState.HALTED
-    view = harness.service.get(trajectory_id)
-    assert view.error_code == ErrorCode.TOOL_NOT_FOUND.value
-    assert "Phase 4" in (view.halted_reason or "")
-
-
-def test_a_tool_outside_the_allowlist_is_a_recorded_deviation_that_halts(
+def test_a_requested_tool_call_is_executed_and_its_result_continues_the_turn(
     harness: Harness,
 ) -> None:
+    """Phase 4 replaces Phase 3's placeholder: the call runs, and the loop keeps going.
+
+    The trajectory still does not *complete* on the tool turn — a requested tool is not a declared
+    finish — so the second scripted answer is what completes it. That is the placeholder's one
+    surviving claim, kept.
+    """
+    (harness.tools.workspace_root / "x").mkdir(parents=True, exist_ok=True)
     harness.fake.script(
-        ScriptedGeneration(text="", tool_calls=({"name": "teleport", "arguments": {}},))
+        ScriptedGeneration(
+            text="",
+            tool_calls=(
+                {
+                    "call_index": 0,
+                    "id": "c1",
+                    "name": "list_dir",
+                    "arguments_fragment": '{"path": "."}',
+                },
+            ),
+        ),
+        ScriptedGeneration(text="The workspace is empty."),
+    )
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.COMPLETED
+    roles = [t.turn.role.value for t in harness.service.turns(trajectory_id)]
+    assert roles == ["user", "assistant", "tool", "assistant"]
+    events = harness.events(trajectory_id)
+    assert "tool.call.started" in events
+    assert "tool.call.completed" in events
+    with harness.database.read() as session:
+        record = session.execute(select(models.ToolCallRecord)).scalar_one()
+    assert record.tool_name == "list_dir"
+    assert record.status == "ok"
+    assert record.reason is None
+    assert record.tool_turn_id is not None
+
+
+def test_a_tool_outside_the_allowlist_is_refused_and_recorded_and_the_run_continues(
+    harness: Harness,
+) -> None:
+    """Lifecycle §5's prose refinement, now that a call can actually be refused.
+
+    Outside the *trajectory* allowlist the call is refused outright and never re-approvable — but
+    that is a statement about the **call**, not about the trajectory. Before tools executed, a
+    halt was the only available reading; ToolYard's ``not_allowlisted`` is the other one, and it is
+    the one lifecycle §5 wrote down.
+
+    ``write_file`` rather than an invented name on purpose: the refusal order is registry →
+    allowlist → … , so a name nothing registers is refused as ``unknown_tool`` before the allowlist
+    is consulted, and would test the wrong check. The file it asked for is asserted absent, which
+    is the claim that matters — a refusal that still wrote would be the failure this exists to
+    prevent.
+    """
+    harness.fake.script(
+        ScriptedGeneration(
+            text="",
+            tool_calls=(
+                {
+                    "call_index": 0,
+                    "id": "c1",
+                    "name": "write_file",
+                    "arguments_fragment": '{"path": "out.txt", "content": "x"}',
+                },
+            ),
+        ),
+        ScriptedGeneration(text="I cannot do that; answering directly."),
     )
     trajectory_id, state = _claim_and_run(harness, tools=("read_file",))
-    assert state is TrajectoryState.HALTED
+    assert state is TrajectoryState.COMPLETED
     view = harness.service.get(trajectory_id)
-    assert view.error_code == ErrorCode.DEVIATION_HALTED.value
-    assert "undeclared_tool" in (view.halted_reason or "")
+    assert view.error_code is None
     assert "deviation.detected" in harness.events(trajectory_id)
     with harness.database.read() as session:
         deviation = session.execute(select(models.Deviation)).scalar_one()
+        record = session.execute(select(models.ToolCallRecord)).scalar_one()
     assert deviation.category == "undeclared_tool"
     assert deviation.reapprovable is False
+    assert deviation.disposition == "refused_not_reapprovable"
+    assert record.tool_name == "write_file"
+    assert record.status == "refused"
+    assert record.reason == "not_allowlisted"
+    assert not (harness.tools.workspace_root / trajectory_id / "out.txt").exists()
+    tool_turn = next(t for t in harness.service.turns(trajectory_id) if t.turn.role.value == "tool")
+    assert tool_turn.turn.tool_call_id == record.invocation_id
+    assert "not_allowlisted" in (tool_turn.turn.content or "")
 
 
 def test_a_budget_overrun_is_recorded_and_continued_under_the_default_scope(

@@ -37,6 +37,7 @@ recovery find a job this application started with only ``GET /jobs?source=prompt
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -69,11 +70,13 @@ __all__ = [
     "Message",
     "ModelEntry",
     "ModelInfo",
+    "RequestedToolCall",
     "RoutingInfo",
     "TaskProfileInfo",
     "TimingInfo",
     "ValidationInfo",
     "VersionInfo",
+    "assemble_tool_calls",
     "map_error",
     "parse_generation",
     "resolve_api_key",
@@ -1081,3 +1084,111 @@ def _job_summary_of(document: Mapping[str, Any]) -> JobSummary:
         idempotency_key=document.get("idempotency_key"),
         document=dict(document),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class RequestedToolCall:
+    """One tool call the model asked for, assembled from the fragments LoadCoach forwards.
+
+    LoadCoach streams tool calls the way providers emit them — one entry per ``ToolCallDelta``,
+    each carrying a ``call_index``, an ``id``, a ``name`` and an ``arguments_fragment`` — and
+    renders the collected list verbatim into ``output.tool_calls``. A call whose arguments arrived
+    in three deltas is therefore three entries, not one, and reading a name off each entry would
+    count that call three times. This type is the assembled form.
+
+    **Every field here is model-chosen and none of it is validated.** That is deliberate and is the
+    same posture ToolYard takes for :class:`toolyard.ToolCallRequest`: a constructor that refused a
+    bad name or unparseable arguments would raise on model input, handing the model a way to end
+    the turn. A name that is empty, a name no tool has and arguments that are not JSON all have a
+    defined outcome at the executor — ``unknown_tool`` and ``args_invalid`` — and every one of them
+    is a recorded result rather than an exception.
+
+    Attributes:
+        call_id: The provider's id for the call, or a synthesized ``call-<index>`` when it gave
+            none. Used only to group fragments and to report; the ``TOOL`` turn's
+            ``tool_call_id`` is this application's own ULID, never this.
+        name: The tool name, exactly as the model spelled it. Empty when no fragment named one.
+        arguments: The parsed arguments when the concatenated fragments are a JSON **object**;
+            otherwise the raw concatenated text, which the executor refuses with ``args_invalid``
+            while the record still shows what was asked for.
+        arguments_parsed: Whether ``arguments`` is the parsed object. ``False`` says the model
+            produced something that is not a JSON object, which is a fact worth recording rather
+            than smoothing into an empty mapping.
+    """
+
+    call_id: str
+    name: str
+    arguments: Any
+    arguments_parsed: bool
+
+
+def assemble_tool_calls(entries: Sequence[Mapping[str, Any]]) -> tuple[RequestedToolCall, ...]:
+    """Group LoadCoach's tool-call fragments into one entry per call, in first-seen order.
+
+    Fragments are grouped by ``id`` when the provider supplied one and by ``call_index``
+    otherwise, because a provider that emits no id still emits a stable index and two calls to the
+    same tool must not collapse into one. Names are taken from the first fragment that carries a
+    non-empty one; argument fragments are concatenated in arrival order and parsed once at the end.
+
+    Args:
+        entries: ``output.tool_calls`` exactly as LoadCoach rendered it. Entries that are not
+            mappings have already been dropped by :func:`parse_generation`.
+
+    Returns:
+        One :class:`RequestedToolCall` per call, in the order the calls first appeared. Empty when
+        the response requested none.
+
+    Refuses nothing. Every shape a model can produce — a missing name, a missing index, arguments
+    that are not JSON, a fragment list that repeats an id — resolves to a value here, because a
+    parser that raised on model output would let the model choose when the turn ends.
+    """
+    order: list[str] = []
+    names: dict[str, str] = {}
+    fragments: dict[str, list[str]] = {}
+    identifiers: dict[str, str] = {}
+    for position, entry in enumerate(entries):
+        raw_id = entry.get("id")
+        index = entry.get("call_index")
+        key = (
+            f"id:{raw_id}"
+            if isinstance(raw_id, str) and raw_id
+            else f"index:{index}"
+            if index is not None
+            else f"position:{position}"
+        )
+        if key not in fragments:
+            order.append(key)
+            fragments[key] = []
+            names[key] = ""
+            identifiers[key] = (
+                raw_id
+                if isinstance(raw_id, str) and raw_id
+                else f"call-{index if index is not None else position}"
+            )
+        name = entry.get("name")
+        if not names[key] and isinstance(name, str) and name:
+            names[key] = name
+        fragment = entry.get("arguments_fragment", entry.get("arguments"))
+        if isinstance(fragment, str):
+            fragments[key].append(fragment)
+        elif isinstance(fragment, Mapping):
+            # Some providers send the whole object rather than a text fragment. Keep it as text so
+            # one code path parses, and so a mixture of the two forms cannot half-parse.
+            fragments[key].append(json.dumps(fragment))
+    assembled: list[RequestedToolCall] = []
+    for key in order:
+        text = "".join(fragments[key])
+        parsed: Any = text
+        ok = False
+        try:
+            candidate = json.loads(text) if text.strip() else None
+        except ValueError:
+            candidate = None
+        if isinstance(candidate, Mapping):
+            parsed, ok = dict(candidate), True
+        assembled.append(
+            RequestedToolCall(
+                call_id=identifiers[key], name=names[key], arguments=parsed, arguments_parsed=ok
+            )
+        )
+    return tuple(assembled)

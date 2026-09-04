@@ -30,6 +30,7 @@ from sqlalchemy import or_, select
 from promptcadence.domain.trajectory import TrajectoryState
 from promptcadence.infrastructure.db import models
 from promptcadence.services.loop import LoopController, ReconcileOutcome, RunSignals
+from promptcadence.services.tools import ToolPlant
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -213,12 +214,17 @@ class TrajectoryWorker:
         poll_interval_seconds: How long an idle thread waits before looking again; a
             :meth:`wake` cuts the wait short.
         controller_factory: Builds a controller per thread; injected so a test can script it.
+        tools: The process's tool registry, sandbox and artifact store, shared by every thread so
+            the isolation probe runs once rather than once per worker. ``None`` lets each
+            controller build its own from ``[tools]``, which is right for a single-threaded test
+            and wasteful in a pool.
     """
 
     database: Database
     sink: TrajectoryEventSink
     loadcoach: LoadCoachClient
     settings: Settings
+    tools: ToolPlant | None = None
     owner_prefix: str = field(default_factory=process_owner_prefix)
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     poll_interval_seconds: float = 0.5
@@ -239,6 +245,7 @@ class TrajectoryWorker:
             settings=self.settings,
             owner=owner,
             clock=self.clock,
+            tools=self.tools,
         )
 
     def recover_at_startup(self) -> RecoverySummary:

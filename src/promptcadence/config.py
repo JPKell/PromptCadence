@@ -30,6 +30,7 @@ from typing import Any, ClassVar, Final, Literal
 from baseaicore import ConfigurationError, DataClassification, normalize_currency
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
+from toolyard import DEFAULT_CONTAINER_IMAGE
 
 __all__ = [
     "ENV_PREFIX",
@@ -281,7 +282,15 @@ class BudgetSettings(BaseModel):
 
 
 class ToolsSettings(BaseModel):
-    """``[tools]`` — the registry the loop draws from, from Phase 4 onward."""
+    """``[tools]`` — the registry the loop draws from, and where its side effects land.
+
+    ``enabled`` keeps spec §12's shipped list, ``http_fetch`` included, even though no tool
+    performs network egress before Phase 6. The tool is **withheld** from the registry with a named
+    cause the catalog shows rather than removed from this default: an operator who copied the
+    documented configuration keeps working, P6 flips one guard instead of editing a shipped list,
+    and a model asking for it is refused as an unknown tool and recorded. See
+    :mod:`promptcadence.services.tools`.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -291,9 +300,34 @@ class ToolsSettings(BaseModel):
     workspace_root: str = Field(
         default="", description="Default: <data>/workspaces, per-trajectory subdirectory."
     )
+    artifact_root: str = Field(
+        default="",
+        description=(
+            "Where an oversize tool output is filed, keyed by the digest of the whole output. "
+            "Default: <data>/artifacts."
+        ),
+    )
     read_roots: tuple[str, ...] = Field(default=())
     fetch_allowed_hosts: tuple[str, ...] = Field(default=())
     redact_args: tuple[str, ...] = Field(default=())
+    container_image: str = Field(
+        default=DEFAULT_CONTAINER_IMAGE,
+        description=(
+            "The image run_command's container rung uses. Probed and run with --pull=never, so it "
+            "must already be present locally; `doctor` shows which rung the ladder landed on."
+        ),
+    )
+    max_result_chars: int = Field(
+        default=8_192,
+        ge=256,
+        description=(
+            "How much of a tool result the model is shown before a labelled truncation. Separate "
+            "from what is stored: the whole output is kept as an artifact under its digest."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=30.0, gt=0, description="The per-call limit; there is no way to express no limit."
+    )
 
     _split_enabled = field_validator("enabled", mode="before")(_split_csv)
     _split_read_roots = field_validator("read_roots", mode="before")(_split_csv)
@@ -740,11 +774,21 @@ nanos = 20000000000           # $20.00
 # nanos = 50000000000         # $50.00, lifetime, until raised
 
 [tools]
+# http_fetch is listed and deliberately NOT registered before Phase 6: no tool performs network
+# egress until egress governance is in place. `promptcadence tools list` shows it as withheld with
+# the cause, and a model that asks for it is refused as an unknown tool and recorded.
 enabled = ["read_file", "list_dir", "write_file", "run_command", "http_fetch"]
 workspace_root = ""          # default: <data>/workspaces; per-trajectory subdirectory
-read_roots = []
+artifact_root = ""           # default: <data>/artifacts; oversize output, keyed by its digest
+read_roots = []              # extra read-only roots; absolute, and disjoint from workspace_root
 fetch_allowed_hosts = []
-redact_args = []
+redact_args = []             # these tools' arguments are stored as a hash only
+container_image = "python:3.12-slim"   # run_command's container rung; --pull=never, so it must
+                                       # already be present. `doctor` shows the rung and why.
+max_result_chars = 8192      # what the model sees of a result; the whole output is kept as an
+                             # artifact under its digest, never a truncated body pretending to be
+                             # the whole one
+timeout_seconds = 30.0       # per call; there is no way to express "no timeout"
 
 [compaction]
 threshold = 0.8               # compact when estimate > 0.8 x tier context budget

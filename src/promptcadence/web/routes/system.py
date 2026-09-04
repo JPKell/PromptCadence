@@ -1,9 +1,14 @@
-"""promptcadence.web.routes.system — `/health`, `/version` and `/system/status`.
+"""promptcadence.web.routes.system — `/health`, `/version`, `/system/status` and `/tools`.
 
 Health reports two components in Phase 1 (development plan Phase 1): ``database`` and
 ``loadcoach``. An unreachable LoadCoach makes health *degraded*, never *unavailable* and never a
 startup failure (ADR-0045 rule 3, spec §20 AC1) — PromptCadence requires LoadCoach for execution,
 and nothing executes yet.
+
+``GET /tools`` reports the registry as assembled, and it reports the tools configuration named that
+were **not** registered, with the cause. Listing only what works would leave an operator unable to
+tell a tool nobody asked for from one that was asked for and withheld — which is exactly the
+question ``http_fetch`` raises before Phase 6.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from mirrorwall import ComponentHealth, ComponentStatus, health_payload, json_re
 from starlette.responses import JSONResponse
 
 from promptcadence.__about__ import __version__
+from promptcadence.domain.errors import ToolNotFoundError
 from promptcadence.domain.trajectory import TrajectoryState
 
 __all__ = ["API_VERSION", "SCHEMA_VERSION", "router"]
@@ -105,3 +111,62 @@ def system_status(request: Request) -> JSONResponse:
         "last_recovery": last_recovery,
     }
     return json_response(payload)
+
+
+@router.get("/tools", summary="List the tool registry, including what was withheld")
+def tools(request: Request) -> JSONResponse:
+    """Report every tool ``[tools] enabled`` names, registered or not, and the isolation rung.
+
+    Returns:
+        ``{"tools": [...], "isolation": {...}}``. Each tool carries its risk class, egress class,
+        whether it requires isolation, whether its arguments are redacted, its argument schema, and
+        — for one that is not registered — the cause. ``isolation`` is ToolYard's probe result: the
+        rung ``run_command`` runs under, the runtime that provides it, and the reason naming every
+        rung the probe visited.
+    """
+    plant = _plant(request)
+    if plant is None:
+        return json_response({"tools": [], "isolation": None})
+    report = plant.isolation()
+    return json_response(
+        {
+            "tools": [entry.as_payload() for entry in plant.catalog()],
+            "isolation": {
+                "tier": report.tier.value,
+                "runtime": report.runtime,
+                "reason": report.reason,
+                "limits_unenforced": list(report.limits_unenforced),
+            },
+        }
+    )
+
+
+@router.get("/tools/{name}", summary="Show one tool")
+def tool(request: Request, name: str) -> JSONResponse:
+    """Report one tool by exact name.
+
+    Args:
+        request: The request.
+        name: The tool name, matched exactly — the registry's own lookup rule.
+
+    Returns:
+        The tool's payload.
+
+    Raises:
+        ToolNotFoundError: No configured tool has that name — ``422`` per spec §13's table, which
+            assigns one status to the code and the submit path needs it there. A *withheld* tool is
+            found, not missing: configuration names it, and saying "no such tool" would hide the
+            very thing an operator came to look up.
+    """
+    plant = _plant(request)
+    entry = plant.entry(name) if plant is not None else None
+    if entry is None:
+        message = f"no tool named {name!r} is configured"
+        raise ToolNotFoundError(message, details={"tool_name": name})
+    return json_response(entry.as_payload())
+
+
+def _plant(request: Request) -> Any:
+    """The runtime's tool plant, or ``None`` when the application is not serving."""
+    runtime = getattr(request.app.state, "runtime", None)
+    return getattr(runtime, "tools", None)

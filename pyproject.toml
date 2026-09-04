@@ -21,8 +21,8 @@ classifiers = [
 ]
 # modelrack and sweatmeter are deliberately absent (ADR-0045 rule 2): PromptCadence reaches a
 # model only through LoadCoach's HTTP API, and telemetry is displayed from LoadCoach's own
-# /system/status. cutctx, toolyard, loadledger and commissioner are not dependencies of Phase 1;
-# each is added when the phase that consumes it arrives (P4-P6).
+# /system/status. cutctx, loadledger and commissioner are not dependencies yet; each is added
+# when the phase that consumes it arrives. toolyard arrived at P4, below.
 dependencies = [
     "baseaicore>=0.4.1,<0.5",
     # Spec §5 requires setspec >= 0.5 (governance.egress_decision) and 0.6.0 is published, but
@@ -42,6 +42,10 @@ dependencies = [
     "typer>=0.12,<1",
     "jinja2>=3.1,<4",
     "httpx>=0.27,<1",
+    # P4: the loop executes model-directed tool calls, and every rule about how lives here
+    # (ADR-0053). A normal pin -- toolyard 0.1.0 is on PyPI. Its own dependencies (baseaicore,
+    # jsonschema, httpx) are already compatible with the pins above.
+    "toolyard>=0.1,<0.2",
 ]
 
 [project.optional-dependencies]

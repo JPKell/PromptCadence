@@ -37,7 +37,7 @@ def test_server_boots_with_zero_configuration_and_serves_degraded_health(
     body = response.json()
     assert body["status"] == "degraded"
     names = {component["name"] for component in body["components"]}
-    assert names == {"database", "loadcoach"}
+    assert names == {"database", "loadcoach", "tools"}
 
 
 def test_database_migrates_on_first_boot(client: TestClient) -> None:

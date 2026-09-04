@@ -50,9 +50,11 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from baseaicore import ValidationError, is_supported, new_id, sha256_of
+from baseaicore import ValidationError, canonical_json, is_supported, new_id, sha256_of
 from sqlalchemy import select, update
+from toolyard import MAX_RECORDED_NAME_CHARS, StoreFailure, ToolCallRequest
 
+from promptcadence.config import ConfigurationError
 from promptcadence.domain.deviation import (
     Deviation,
     DeviationDetected,
@@ -71,8 +73,9 @@ from promptcadence.domain.errors import (
     TierUnavailableError,
 )
 from promptcadence.domain.intent import ExecutionIntent, IntentMinted, mint_bypass_default
-from promptcadence.domain.threads import Thread, Turn, TurnRole
+from promptcadence.domain.threads import FinishReason, Thread, Turn, TurnRole
 from promptcadence.domain.tiers import Tier, TierPolicy
+from promptcadence.domain.tools import ToolCallCompleted, ToolCallStarted
 from promptcadence.domain.trajectory import (
     TrajectoryCancelled,
     TrajectoryClaimed,
@@ -103,9 +106,12 @@ from promptcadence.infrastructure.loadcoach import (
     GenerationResponse,
     LoadCoachClient,
     Message,
+    RequestedToolCall,
+    assemble_tool_calls,
     parse_generation,
 )
 from promptcadence.infrastructure.threads import SqlThreadStore, thread_row, turn_row
+from promptcadence.infrastructure.tool_calls import CollectingToolCallStore, ToolCallLinks
 from promptcadence.observability.logging import correlation
 from promptcadence.services.loadcoach_surface import (
     ProviderSurface,
@@ -116,6 +122,7 @@ from promptcadence.services.policy_assembly import (
     approval_policy_from_settings,
     tier_snapshot_from_document,
 )
+from promptcadence.services.tools import ToolPlant, TrajectoryTools, outcome_of
 from promptcadence.services.views import TrajectoryView, declaration_of, view_of
 
 if TYPE_CHECKING:
@@ -141,6 +148,25 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_STOPPING_DISPOSITIONS: Final[frozenset[Disposition]] = frozenset(
+    {Disposition.HALT, Disposition.SCOPED_REAPPROVAL}
+)
+"""The dispositions that end a trajectory in this phase, and the two that do not.
+
+:attr:`~promptcadence.domain.deviation.Disposition.CONTINUE_RECORDED` was already a continuation.
+:attr:`~promptcadence.domain.deviation.Disposition.REFUSED_NOT_REAPPROVABLE` joins it at Phase 4,
+and that is the phase's whole change to deviation handling: lifecycle §5 says a tool outside the
+**trajectory** allowlist has *the call* refused outright and recorded — never re-approvable,
+because the allowlist is the caller's — and says nothing about the trajectory ending. Before tools
+executed there was no way to refuse a call, so the only available reading of that cell was a halt.
+Now there is: ToolYard returns ``not_allowlisted``, the result is fed back as a ``TOOL`` turn, and
+the model gets to answer without it.
+
+:attr:`~promptcadence.domain.deviation.Disposition.SCOPED_REAPPROVAL` still halts, because the
+approver arrives at Phase 7 and continuing past a drift nobody can approve is the silent
+continuation lifecycle §5 forbids.
+"""
 
 _PLANNER_ABSENT: Final = (
     "planning is not available before Phase 7; submit with bypass_planning=true (or set "
@@ -269,6 +295,7 @@ class LoopController:
         "_sink",
         "_surface_loader",
         "_threads",
+        "_tools",
         "owner",
     )
 
@@ -283,6 +310,7 @@ class LoopController:
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] = new_id,
         surface_loader: Callable[[LoadCoachClient], ProviderSurface] = load_provider_surface,
+        tools: ToolPlant | None = None,
     ) -> None:
         """Bind the controller to one worker's identity and the process's handles.
 
@@ -295,6 +323,9 @@ class LoopController:
             clock: The instant source, injected for determinism.
             id_factory: The id source for turns and intents.
             surface_loader: How the provider surface is read; injected so a test can script it.
+            tools: The process's registry, sandbox and artifact store, or ``None`` to build one
+                from ``[tools]``. Injected so a test can shape the isolation probe's view of the
+                host — and so a worker's threads share one probe rather than each paying for it.
         """
         self._database = database
         self._sink = sink
@@ -305,6 +336,7 @@ class LoopController:
         self._ids = id_factory
         self._surface_loader = surface_loader
         self._threads = SqlThreadStore(database.sessions)
+        self._tools = tools if tools is not None else ToolPlant(settings)
 
     # ----------------------------------------------------------------------------------------
     # Claiming
@@ -713,7 +745,12 @@ class LoopController:
         request = GenerateRequest(
             task=tier.task_profile,
             messages=tuple(
-                Message(role=turn.role.value, content=turn.content or "") for turn in turns
+                Message(
+                    role=turn.role.value,
+                    content=turn.content or "",
+                    tool_call_id=turn.tool_call_id,
+                )
+                for turn in turns
             ),
             idempotency_key=turn_id,
         )
@@ -826,6 +863,7 @@ class LoopController:
             finish_reason=response.finish_reason,
             usage=response.usage,
         )
+        requested = assemble_tool_calls(response.tool_calls)
         prior_assistant = [turn for turn in turns if turn.role is TurnRole.ASSISTANT]
         spent = _tokens_spent([*prior_assistant, assistant])
         facts = TurnFacts(
@@ -835,9 +873,7 @@ class LoopController:
             governance.declaration.classification,
             len(prior_assistant) + 1,
             spent,
-            requested_tools=tuple(
-                str(call.get("name", "")) for call in response.tool_calls if call.get("name")
-            ),
+            requested_tools=_ordered_names(requested),
             trajectory_allowlist=governance.declaration.tool_allowlist,
             finish_declared=decision.outcome is FinishOutcome.COMPLETE,
         )
@@ -846,7 +882,7 @@ class LoopController:
         stopping = [
             deviation
             for deviation in deviations
-            if disposition(deviation, scope=scope) is not Disposition.CONTINUE_RECORDED
+            if disposition(deviation, scope=scope) in _STOPPING_DISPOSITIONS
         ]
         with self._sink.write() as (session, events):
             session.add(
@@ -936,29 +972,187 @@ class LoopController:
                 )
                 return TrajectoryState.COMPLETED
             if decision.outcome is FinishOutcome.CONTINUE:
+                cap = self._settings.execution.max_turns_per_step
+                round_trips = _round_trips(turns) + 1
+                if round_trips > cap:
+                    self._transition(
+                        session,
+                        events,
+                        trajectory_id,
+                        halt,
+                        cause=(
+                            f"{decision.cause}; the step's max_turns_per_step ({cap}) is spent "
+                            "with no declared finish"
+                        ),
+                        error_code=ErrorCode.STEP_LIMIT_EXCEEDED,
+                        now=now,
+                    )
+                    return TrajectoryState.HALTED
+            else:
                 self._transition(
                     session,
                     events,
                     trajectory_id,
                     halt,
-                    cause=(
-                        f"{decision.cause}; tool calls are not executed before Phase 4, and a "
-                        "requested tool that cannot run is not a completed turn"
-                    ),
-                    error_code=ErrorCode.TOOL_NOT_FOUND,
+                    cause=decision.cause,
+                    error_code=decision.error_code or ErrorCode.LOADCOACH_ERROR,
                     now=now,
                 )
                 return TrajectoryState.HALTED
-            self._transition(
-                session,
-                events,
+        return self._run_tool_calls(governance, turn_id=turn_id, sequence=sequence, calls=requested)
+
+    # ----------------------------------------------------------------------------------------
+    # Tool round trips
+    # ----------------------------------------------------------------------------------------
+
+    def _run_tool_calls(
+        self,
+        governance: _Governance,
+        *,
+        turn_id: str,
+        sequence: int,
+        calls: Sequence[RequestedToolCall],
+    ) -> TrajectoryState | None:
+        """Execute one assistant turn's tool calls and append each result as a ``TOOL`` turn.
+
+        Runs after the assistant turn is committed, so a crash mid-call leaves the turn that
+        requested the calls on the record. Each call is three steps: ``tool.call.started`` in its
+        own write, the call itself with **no** transaction open — a ``run_command`` may spend its
+        whole timeout inside a container, and holding a SQLite write lock for that would stall
+        every other worker — then one write holding the record, the ``TOOL`` turn and
+        ``tool.call.completed``.
+
+        **No exception a model can cause escapes this method.** ToolYard resolves everything the
+        model chose to a :class:`toolyard.ToolResult`; what is left is the application's own
+        failures — a workspace that cannot be created, a store that will not take a record — and
+        each of those halts the trajectory with its cause named rather than propagating.
+
+        Args:
+            governance: The run's declaration, policies and intent.
+            turn_id: The assistant turn whose ``tool_calls`` these are.
+            sequence: That turn's position; the ``TOOL`` turns follow it.
+            calls: The assembled calls, in the order the model made them.
+
+        Returns:
+            ``None`` to continue the loop — the ordinary outcome, including when every call was
+            refused, because a refusal is a result the model reads and answers (ADR-0053). A
+            terminal state when the application itself could not proceed.
+        """
+        trajectory_id = governance.view.trajectory_id
+        try:
+            tools = self._tools.for_trajectory(
+                trajectory_id, allowlist=governance.declaration.tool_allowlist
+            )
+        except ConfigurationError as exc:
+            return self._end_with(
+                trajectory_id, halt, cause=exc.message, error_code=ErrorCode.TOOL_EXECUTION_FAILED
+            )
+        position = sequence
+        for call in calls:
+            position += 1
+            state = self._run_one_tool_call(
+                governance, tools, turn_id=turn_id, sequence=position, call=call
+            )
+            if state is not None:
+                return state
+        return None
+
+    def _run_one_tool_call(
+        self,
+        governance: _Governance,
+        tools: TrajectoryTools,
+        *,
+        turn_id: str,
+        sequence: int,
+        call: RequestedToolCall,
+    ) -> TrajectoryState | None:
+        """Start, execute and record one call. See :meth:`_run_tool_calls` for the shape."""
+        trajectory_id = governance.view.trajectory_id
+        invocation_id = self._ids()
+        context = tools.context(invocation_id, approved_tools=governance.intent.approved_tools)
+        request = ToolCallRequest(name=call.name, args=call.arguments)
+        store = CollectingToolCallStore()
+        args_digest = sha256_of(_args_text(call))
+        with self._sink.write() as (session, events):
+            self._owned_cas(session, trajectory_id, values={"updated_at": self._clock()})
+            events.append(
                 trajectory_id,
-                halt,
-                cause=decision.cause,
-                error_code=decision.error_code or ErrorCode.LOADCOACH_ERROR,
+                ToolCallStarted(
+                    trajectory_id=trajectory_id,
+                    turn_id=turn_id,
+                    invocation_id=invocation_id,
+                    tool_name=_recorded_name(call.name),
+                    args_sha256=args_digest,
+                ),
+                now=self._clock(),
+            )
+        with correlation(turn_id=turn_id, tool_call_id=invocation_id):
+            try:
+                result = tools.executor(store).execute(request, context)
+            except StoreFailure as exc:
+                # The call ran and its record could not be collected. ToolYard carries both on the
+                # exception precisely so this is diagnosable; there is nothing safe to continue on.
+                return self._end_with(
+                    trajectory_id,
+                    halt,
+                    cause=f"a tool call ran and could not be recorded: {exc}",
+                    error_code=ErrorCode.TOOL_EXECUTION_FAILED,
+                )
+        record = store.records[0] if store.records else None
+        artifact_ref = (
+            self._tools.spill(result, result_sha256=record.result_sha256)
+            if record is not None
+            else None
+        )
+        shown, truncated = _shown_result(
+            result.content, limit=self._settings.tools.max_result_chars, artifact_ref=artifact_ref
+        )
+        now = self._clock()
+        tool_turn = Turn(
+            self._ids(),
+            governance.thread_id,
+            sequence,
+            TurnRole.TOOL,
+            governance.intent.provenance(
+                trajectory_id=trajectory_id, tier=governance.intent.approved_tier
+            ),
+            content=shown,
+            content_sha256=sha256_of(shown),
+            tool_call_id=invocation_id,
+        )
+        with self._sink.write() as (session, events):
+            self._owned_cas(session, trajectory_id, values={"updated_at": now})
+            session.add(turn_row(tool_turn))
+            if record is not None:
+                store.flush(
+                    session,
+                    trajectory_id=trajectory_id,
+                    turn_id=turn_id,
+                    links=ToolCallLinks(
+                        tool_turn_id=tool_turn.turn_id,
+                        artifact_ref=artifact_ref,
+                        output_truncated=truncated,
+                        isolation_tier=_isolation_of(self._tools, record.tool_name),
+                    ),
+                    row_ids=[self._ids() for _ in store.records],
+                )
+            events.append(
+                trajectory_id,
+                ToolCallCompleted(
+                    trajectory_id=trajectory_id,
+                    turn_id=turn_id,
+                    invocation_id=invocation_id,
+                    tool_name=_recorded_name(call.name),
+                    outcome=outcome_of(result.status),
+                    reason=result.reason,
+                    duration_ms=result.duration_ms,
+                    result_sha256=record.result_sha256 if record is not None else "",
+                    artifact_ref=artifact_ref,
+                    output_truncated=truncated,
+                ),
                 now=now,
             )
-            return TrajectoryState.HALTED
+        return None
 
     # ----------------------------------------------------------------------------------------
     # Endings
@@ -1404,3 +1598,96 @@ def _supported(value: object) -> int | None:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _round_trips(turns: Sequence[Turn[TurnProvenance]]) -> int:
+    """Count the tool round trips already spent in this step.
+
+    A round trip is one assistant turn that declared ``tool_calls``, read off the persisted turn
+    rather than recomputed from the ordering of ``TOOL`` turns: one assistant turn can request
+    several calls, so counting results would count a single round trip several times, and a
+    ``max_turns_per_step`` that fell with the number of tools a model asked for at once would
+    punish the model for batching.
+
+    Args:
+        turns: The thread's turns so far.
+
+    Returns:
+        How many round trips are already on the record.
+    """
+    return sum(
+        1
+        for turn in turns
+        if turn.role is TurnRole.ASSISTANT and turn.finish_reason is FinishReason.TOOL_CALLS
+    )
+
+
+def _ordered_names(calls: Sequence[RequestedToolCall]) -> tuple[str, ...]:
+    """The distinct tool names a turn requested, in first-requested order.
+
+    Deduplicated because :func:`~promptcadence.domain.deviation.compare` reports *which tools* were
+    undeclared, and naming one tool twice in a deviation says nothing the first mention did not.
+    Empty names are dropped: a call that named no tool is refused with ``unknown_tool`` at the
+    executor and recorded there, and it contradicts no intent field.
+    """
+    return tuple(dict.fromkeys(call.name for call in calls if call.name))
+
+
+def _args_text(call: RequestedToolCall) -> str:
+    """The text whose digest identifies one call's arguments in the ``tool.call.started`` event.
+
+    Deliberately *not* ToolYard's ``args_sha256``: that digest is computed inside ``execute``, and
+    this event is written before the call so a crash mid-call still leaves evidence of what was
+    attempted. Canonical JSON when the model produced an object, the raw text otherwise, so a call
+    whose arguments would not parse is still identified by what it actually said.
+    """
+    if call.arguments_parsed:
+        return canonical_json(call.arguments)
+    return call.arguments if isinstance(call.arguments, str) else repr(call.arguments)
+
+
+def _recorded_name(name: str) -> str:
+    """Cap a model-chosen tool name for an event body, the way ToolYard caps it for a record.
+
+    An unbounded name is a write amplification attack on the audit log, and an event body reaches
+    SSE and the logs before any record does.
+    """
+    cleaned = name.replace("\x00", "")
+    return cleaned[:MAX_RECORDED_NAME_CHARS]
+
+
+def _shown_result(content: str, *, limit: int, artifact_ref: str | None) -> tuple[str, bool]:
+    """Cap what the model sees of a tool result, and label the cap when there is one.
+
+    The label is part of the contract, not a courtesy: a model that assumes a result *ended* rather
+    than *stopped* answers from half a file. Where the whole output was filed as an artifact the
+    label names its digest, so an operator reading the transcript can find the rest.
+
+    Args:
+        content: What the executor returned — the whole cleaned output while it fits under
+            :data:`~promptcadence.services.tools.ARTIFACT_CEILING_BYTES`.
+        limit: ``[tools] max_result_chars``.
+        artifact_ref: The digest the whole output was filed under, or ``None``.
+
+    Returns:
+        The text for the ``TOOL`` turn, and whether it was truncated.
+    """
+    if len(content) <= limit:
+        return content, False
+    location = f"; full output recorded as {artifact_ref}" if artifact_ref else ""
+    label = f"\n[truncated by promptcadence: {limit} of {len(content)} characters shown{location}]"
+    return content[:limit] + label, True
+
+
+def _isolation_of(plant: ToolPlant, tool_name: str) -> str | None:
+    """The isolation rung to record for one call, or ``None`` when the tool runs no process.
+
+    Read from the plant's cached probe rather than from the result, because a refused
+    ``run_command`` never reached the sandbox and still ran under whatever rung the host has — the
+    record should say which rung *would* have run it, since ``isolation_unavailable`` is precisely
+    the refusal that names it.
+    """
+    entry = plant.entry(tool_name)
+    if entry is None or not entry.requires_isolation:
+        return None
+    return plant.isolation().tier.value

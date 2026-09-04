@@ -16,6 +16,7 @@ import typer
 from promptcadence.cli.commands import config as config_commands
 from promptcadence.cli.commands import db as db_commands
 from promptcadence.cli.commands import system as system_commands
+from promptcadence.cli.commands import tools as tools_commands
 from promptcadence.cli.commands import trajectories as trajectory_commands
 
 __all__ = ["app"]
@@ -65,3 +66,4 @@ app.command(name="run", help="Submit a trajectory (client mode; needs a running 
     trajectory_commands.run
 )
 app.add_typer(trajectory_commands.app, name="trajectory", help="List, show, cancel, wait.")
+app.add_typer(tools_commands.app, name="tools", help="The tool registry, and what was withheld.")

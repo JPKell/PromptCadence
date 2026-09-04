@@ -222,6 +222,7 @@ def _to_row(turn: Turn[TurnProvenance]) -> models.Turn:
         content_text=turn.content,
         content_hash=turn.content_sha256,
         finish_reason=turn.finish_reason.value if turn.finish_reason is not None else None,
+        tool_call_id=turn.tool_call_id,
         input_tokens=_counted(usage, "input_tokens"),
         output_tokens=_counted(usage, "output_tokens"),
         cache_write_tokens=_counted(usage, "cache_write_tokens"),
@@ -274,6 +275,7 @@ def _from_row(row: models.Turn) -> Turn[TurnProvenance]:
         model_canonical_id=row.model_canonical_id,
         finish_reason=FinishReason(row.finish_reason) if row.finish_reason else None,
         usage=_usage_of(row),
+        tool_call_id=row.tool_call_id,
     )
 
 

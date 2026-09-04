@@ -25,6 +25,7 @@ from promptcadence.infrastructure.loadcoach import LoadCoachClient
 from promptcadence.services.database import Database, database_health_component, ensure_ready
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.loadcoach_status import loadcoach_health_component
+from promptcadence.services.tools import ToolPlant, tools_health_component
 from promptcadence.services.trajectories import TrajectoryService
 from promptcadence.services.worker import TrajectoryWorker
 
@@ -41,7 +42,16 @@ __all__ = ["Runtime", "build_runtime"]
 class Runtime:
     """The handles this process owns: storage, events, the LoadCoach client and the worker."""
 
-    __slots__ = ("_database", "_started", "loadcoach", "settings", "sink", "trajectories", "worker")
+    __slots__ = (
+        "_database",
+        "_started",
+        "loadcoach",
+        "settings",
+        "sink",
+        "tools",
+        "trajectories",
+        "worker",
+    )
 
     def __init__(self, settings: Settings, *, loadcoach_http: httpx.Client | None = None) -> None:
         """Open storage and build the handles. Never raises for an unreachable LoadCoach.
@@ -77,8 +87,15 @@ class Runtime:
                 api_key_file=loadcoach.api_key_file,
             )
         )
+        # One plant per process: the isolation probe launches a real canary, and every worker
+        # thread asking the same question of the same host should ask it once.
+        self.tools = ToolPlant(settings)
         self.worker = TrajectoryWorker(
-            database=database, sink=self.sink, loadcoach=self.loadcoach, settings=settings
+            database=database,
+            sink=self.sink,
+            loadcoach=self.loadcoach,
+            settings=settings,
+            tools=self.tools,
         )
         self._started = False
 
@@ -89,8 +106,8 @@ class Runtime:
 
     @property
     def health_checkers(self) -> Sequence[Callable[[], ComponentHealth]]:
-        """The two components this build reports: ``database`` and ``loadcoach``."""
-        return (self._database_health, self._loadcoach_health)
+        """The three components this build reports: ``database``, ``loadcoach`` and ``tools``."""
+        return (self._database_health, self._loadcoach_health, self._tools_health)
 
     def start(self) -> None:
         """Run startup recovery and start the worker threads. Idempotent."""
@@ -108,6 +125,9 @@ class Runtime:
             api_key_env=loadcoach.api_key_env,
             api_key_file=loadcoach.api_key_file,
         )
+
+    def _tools_health(self) -> ComponentHealth:
+        return tools_health_component(self.tools)
 
     def close(self) -> None:
         """Stop the worker, close the LoadCoach client and dispose the database. Idempotent."""
