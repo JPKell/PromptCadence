@@ -478,3 +478,57 @@ def test_a_loopback_fetch_is_not_egress_and_is_approved(fetch_harness: Harness) 
     assert fetches[0].verdict is Verdict.APPROVED
     assert fetches[0].reason == "target_not_remote"
     assert fetches[0].request.target.remote is False
+
+
+def test_every_turn_of_a_multi_turn_tool_journey_carries_one(fetch_harness: Harness) -> None:
+    """Acceptance criterion 1 over Phase 4's journey shape, not only over a single-turn one.
+
+    A tool-using trajectory runs several assistant turns, and the count is what the criterion is
+    about: "every turn" is only checkable if the decisions and the assistant turns come out equal.
+    A per-turn decision that fired once and was reused would pass a spot check and fail this.
+
+    The fetch decisions are excluded from the comparison by target, because a tool call's decision
+    is about the host and a turn's is about the tier — two evaluation points, deliberately, and
+    conflating them would make the count meaningless.
+    """
+    fetch_harness.fake.script(
+        _fetch_call("https://docs.example.com/guide"), ScriptedGeneration(text="done")
+    )
+    trajectory_id, state = fetch_harness.run(classification=DataClassification.PUBLIC)
+    assert state is TrajectoryState.COMPLETED
+
+    assistant_turns = [
+        record
+        for record in fetch_harness.service.turns(trajectory_id)
+        if record.turn.role.value == "assistant"
+    ]
+    assert len(assistant_turns) > 1, "this journey is only meaningful with several turns"
+
+    tier_decisions = [
+        decision
+        for decision in fetch_harness.decisions(trajectory_id)
+        if decision.request.target.name == "local_fast"
+    ]
+    assert len(tier_decisions) == len(assistant_turns)
+    assert {decision.request.source_ref for decision in tier_decisions} == {
+        record.turn.turn_id for record in assistant_turns
+    }
+
+
+def test_a_priced_journey_records_a_decision_and_a_debit_for_the_same_turn(
+    harness: Harness,
+) -> None:
+    """Acceptance criterion 1 alongside Phase 5's ledger: both records name the same turn.
+
+    The budget debit and the egress decision are written by different machinery on different
+    tables, and the only thing tying them to one another is the turn they both name. Asserting
+    that here is what makes the explanation contract's "every turn with ... every ledger entry,
+    every egress decision" a join a reader can actually perform.
+    """
+    trajectory_id, state = harness.run()
+    assert state is TrajectoryState.COMPLETED
+
+    decisions = harness.decisions(trajectory_id)
+    debited = harness.budget.debited_turn_ids(trajectory_id)
+    assert decisions
+    assert {decision.request.source_ref for decision in decisions} == set(debited)

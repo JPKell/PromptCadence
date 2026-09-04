@@ -198,3 +198,33 @@ def test_egress_list_says_so_when_nothing_was_recorded(
     result = runner.invoke(app, ["egress", "list"])
     assert result.exit_code == 0, result.stdout
     assert "No egress decisions recorded." in result.stdout
+
+
+def test_denied_only_is_the_shipped_shorthand_for_verdict_denied(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Spec §7.2's flag, kept, with ``--verdict`` beside it because a boolean has two states.
+
+    The vocabulary has three: a violation is neither an approval nor a denial, so ``--denied-only``
+    cannot ask for one and cannot be the only filter.
+    """
+    database_path = tmp_path / "denied-only.sqlite3"
+    monkeypatch.setenv("PROMPTCADENCE_LOADCOACH__BASE_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("PROMPTCADENCE_STORAGE__DATABASE_URL", f"sqlite:///{database_path}")
+    with Database.from_url(f"sqlite:///{database_path}") as database:
+        ensure_ready(database, auto_migrate=True)
+        _seed(EgressService(database, clock=lambda: _NOW))
+
+    result = runner.invoke(app, ["egress", "list", "--denied-only", "--json"])
+    assert result.exit_code == 0, result.stdout
+    assert [row["verdict"] for row in json.loads(result.stdout)] == ["denied"]
+
+    violations = runner.invoke(app, ["egress", "list", "--verdict", "violation", "--json"])
+    assert [row["verdict"] for row in json.loads(violations.stdout)] == ["violation"]
+
+
+def test_denied_only_contradicting_verdict_is_refused_rather_than_resolved() -> None:
+    """Whichever flag silently won, the operator would read a list filtered by the other one."""
+    result = runner.invoke(app, ["egress", "list", "--denied-only", "--verdict", "approved"])
+    assert result.exit_code == 2
+    assert "VALIDATION_ERROR" in result.output

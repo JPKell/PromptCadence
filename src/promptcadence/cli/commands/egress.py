@@ -124,6 +124,9 @@ def list_decisions(
     verdict: Annotated[
         str | None, typer.Option("--verdict", help=f"One of: {', '.join(_VERDICTS)}.")
     ] = None,
+    denied_only: Annotated[
+        bool, typer.Option("--denied-only", help="Shorthand for --verdict denied.")
+    ] = False,
     limit: Annotated[int, typer.Option("--limit", help="How many to show.")] = 50,
     json_output: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
     config: Annotated[
@@ -136,12 +139,26 @@ def list_decisions(
     writes after the fact. Each row names the classification that was evaluated, the target it was
     evaluated against, and the policy's reason. ``--json`` prints SetSpec's
     ``governance.egress_decision`` 1.0 documents unchanged.
+
+    ``--denied-only`` is spec §7.2's shipped flag and is a shorthand for ``--verdict denied``.
+    ``--verdict`` exists beside it because the vocabulary has **three** members: a violation is
+    neither an approval nor a denial — it is written after the fact by the verification step
+    (ADR-0054 rule 7) — and a boolean flag cannot ask for one.
     """
     if verdict is not None and verdict not in _VERDICTS:
         typer.echo(
             f"Error: --verdict must be one of {', '.join(_VERDICTS)} (VALIDATION_ERROR)", err=True
         )
         raise typer.Exit(2)
+    if denied_only and verdict not in (None, "denied"):
+        # Refused rather than resolved by precedence: whichever one silently won, the operator
+        # would be reading a list filtered by the flag they did not intend.
+        typer.echo(
+            f"Error: --denied-only contradicts --verdict {verdict} (VALIDATION_ERROR)", err=True
+        )
+        raise typer.Exit(2)
+    if denied_only:
+        verdict = "denied"
     settings = _settings(config)
     documents = _documents(settings, trajectory_id=trajectory_id, verdict=verdict, limit=limit)
     if json_output:

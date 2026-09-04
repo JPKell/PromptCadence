@@ -160,7 +160,8 @@ promptcadence approvals list           promptcadence approve <id> | deny <id> [-
 promptcadence tiers list|show|check    # check: verifies each tier's task profile exists in LoadCoach
 promptcadence tools list|show
 promptcadence ledger show [--scope day|project|tier|trajectory] [--trajectory <id>] [--json]
-promptcadence egress list [--denied-only]
+promptcadence egress list [--denied-only] [--verdict approved|denied|violation]
+                                       [--trajectory <id>] [--limit N] [--json]
 promptcadence token create|list|revoke
 ```
 
@@ -247,11 +248,20 @@ deliberate rejection, like `LoadCoachClient`.
    configured provider, verifying that the response's provider *is* the configured one is the
    verification — and LC-E1's multi-provider registration must carry the serving provider's
    identity on every response so the resolution stays a check rather than an inference.
+   **Absence is a violation, not a pass**: a response naming no execution subject, and a surface
+   with no single configured provider to check against, both mean that something answered and
+   nothing here can establish that it was the tier that promised to. Both halt and record a
+   `VIOLATION` `EgressDecision` under the verification step's own policy name, never under the
+   evaluating policy's — that policy answers "may this go?" before the fact and never produced
+   this verdict ([ADR-0054](../../adr/0054-commissioner-records-the-caller-enforces.md) rule 7).
 5. **Budget contract.** Money ceilings govern priced usage; token ceilings govern all usage. A
    local model's cost is `UNSUPPORTED`, never `$0.00`
    ([ADR-0030](../../adr/0030-model-cost-and-pricing.md)); a remote tier with no configured
    `ModelPricing` record is refused with `UNPRICED_EGRESS_REFUSED` — unpriced egress is refused,
-   not free, because a ceiling cannot bind what cannot be priced. A priced response the provider
+   not free, because a ceiling cannot bind what cannot be priced. The check is on the **record**,
+   not on the `pricing_file` field: startup validation already refuses a remote tier that names no
+   file at all (§12), so what reaches the pre-flight is a tier whose price list holds no record
+   claiming the current instant — an expired list, or one that never covered the tier. A priced response the provider
    did not fully report accumulates as a floor and is rendered as one ("at least", never a bare
    figure); `[budget] partial_pricing = "strict"` makes such a response exceed the money ceiling
    instead, for budgets that must not be crossed
@@ -332,12 +342,13 @@ deliberate rejection, like `LoadCoachClient`.
                                                 # every day, until raised
                 # token_ceiling = 100_000_000   # optional; a project binding neither is refused
 [tools]         enabled = ["read_file", "list_dir", "write_file", "run_command", "http_fetch"]
-                                                # http_fetch is listed and NOT registered before
-                                                # P6: no tool performs network egress until egress
-                                                # governance is in place. `promptcadence tools
-                                                # list` shows it withheld with the cause, and a
-                                                # model asking for it is refused `unknown_tool`
-                                                # and recorded.
+                                                # All five are registered from P6. Before it,
+                                                # http_fetch was listed here and withheld from the
+                                                # registry with a named cause, because a fetch tool
+                                                # without egress governance is the hole this
+                                                # application exists to close. The governance now
+                                                # exists, so the tool is real and nothing shipped
+                                                # is withheld.
                 workspace_root = ""             # default: <data>/workspaces; per-trajectory subdir
                 artifact_root = ""              # default: <data>/artifacts; oversize tool output,
                                                 # keyed by the digest of the whole output
@@ -345,7 +356,18 @@ deliberate rejection, like `LoadCoachClient`.
                                                 # disjoint from workspace_root — an overlap is a
                                                 # startup refusal, because the path half and the
                                                 # subprocess half would disagree about it
-                fetch_allowed_hosts = []        # http_fetch hosts beyond loopback (ADR-0026 §3)
+                fetch_allowed_hosts = []        # http_fetch hosts beyond loopback (ADR-0026 §3).
+                                                # This answers "may anyone reach this host"; the
+                                                # ceiling below answers "may THIS trajectory's data
+                                                # reach it". Two gates, two questions.
+                # fetch_max_data_classification = "internal"
+                                                # The ceiling http_fetch's non-loopback egress is
+                                                # governed by. **Absent by default**, which denies
+                                                # every non-loopback fetch with
+                                                # `no_ceiling_declared` — an undeclared ceiling is
+                                                # never assumed public (ADR-0046 rule 3). Loopback
+                                                # needs none: it is not egress, and is approved
+                                                # with `target_not_remote`.
                 redact_args = []                # tool names whose args are stored as hash only
                 container_image = "python:3.12-slim"    # run_command's container rung. Probed and
                                                 # run with --pull=never, so it must already be
@@ -600,6 +622,15 @@ GPU and no network.
 4. A trajectory declared `confidential` can never reach a remote tier: the attempt is refused
    before any HTTP request leaves, and the refusal is a queryable `EgressDecision`.
 5. A remote tier with no pricing record refuses with `UNPRICED_EGRESS_REFUSED` before any call.
+
+   Criteria 4 and 5 are properties of *when* a turn's pre-flights run, so the order is fixed:
+   **egress, then pricing, then availability, then budget**, all before the turn is announced and
+   therefore before any request is built. Egress is first because it is the only unconditional
+   one — a trajectory that may not use a tier may not use it whatever the price, the availability
+   or the balance. It is decided on the tier's **configuration** and never gated on availability:
+   otherwise a confidential trajectory aimed at a remote tier would be refused today for
+   `loadcoach_has_no_remote_provider` and only for the real reason once LC-E1 registers a
+   provider, and the recorded reason would have changed because infrastructure changed.
 6. Crossing the money or token ceiling mid-trajectory halts (or pauses for approval) with the
    ledger showing every debit and the running balance that crossed.
 7. With `approval.mode = "hybrid"`, a step requiring `internal` egress pauses the trajectory,

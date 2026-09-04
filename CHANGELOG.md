@@ -111,6 +111,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
     still passes on the fake provider with no GPU, no Ollama and no network (spec §20 #10).
 
 ### Added
+- **Phase 6, gate E (cont.): `--denied-only`, and acceptance criterion 1 over the prior phases.**
+  - `promptcadence egress list --denied-only` is spec §7.2's shipped flag and is kept as a
+    shorthand for `--verdict denied`; `--verdict` ships beside it because the vocabulary has three
+    members and a boolean cannot ask for a `violation`. The two contradicting each other is
+    refused rather than resolved by precedence.
+  - Acceptance criterion 1 is demonstrated over **Phase 4's** multi-turn tool journey and
+    alongside **Phase 5's** ledger, not only over a new single-turn test: the tier decisions and
+    the assistant turns come out equal in count and name the same turns, and the egress decisions
+    and the budget debits name the same turns as each other.
+
+### Added
 - **Phase 6, gate E: the surfaces.** `GET /egress-decisions` and `promptcadence egress list`
   (mode: either), plus the fetch tests the plan names.
   - Both list **approvals, denials and violations together and unfiltered by default**. A surface
