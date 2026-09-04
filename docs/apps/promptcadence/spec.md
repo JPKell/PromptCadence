@@ -623,7 +623,8 @@ GPU and no network.
    before any HTTP request leaves, and the refusal is a queryable `EgressDecision`.
 5. A remote tier with no pricing record refuses with `UNPRICED_EGRESS_REFUSED` before any call.
 
-   Criteria 4 and 5 are properties of *when* a turn's pre-flights run, so the order is fixed:
+   Criteria 4 and 5 are properties of *when* a turn's pre-flights run, so the order is fixed by
+   [ADR-0073](../../adr/0073-egress-is-decided-on-configuration-before-availability.md):
    **egress, then pricing, then availability, then budget**, all before the turn is announced and
    therefore before any request is built. Egress is first because it is the only unconditional
    one — a trajectory that may not use a tier may not use it whatever the price, the availability
