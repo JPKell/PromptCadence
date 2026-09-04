@@ -12,7 +12,7 @@ event store to the threadpool itself (ADR-0003 §6-8).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 from baseaicore import DataClassification, Money
@@ -47,12 +47,18 @@ class MoneyBody(BaseModel):
 
 
 class BudgetBody(BaseModel):
-    """The optional per-trajectory ceilings (spec §7.1)."""
+    """The optional per-trajectory ceilings and their partial-pricing rule (spec §7.1).
+
+    ``partial_pricing`` is three-valued: absent means ``[budget] partial_pricing``, which is not
+    the same as either value pinned. A request that pinned the current default still pinned it,
+    and a later configuration change must not silently move it (ADR-0069).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     money: MoneyBody | None = Field(default=None)
     tokens: int | None = Field(default=None, ge=1)
+    partial_pricing: Literal["floor", "strict"] | None = Field(default=None)
 
 
 class TrajectoryBody(BaseModel):
@@ -105,6 +111,7 @@ def _submission_of(body: TrajectoryBody) -> TrajectorySubmission:
         project=body.project,
         token_budget=body.budget.tokens if body.budget is not None else None,
         money_budget=money,
+        partial_pricing=body.budget.partial_pricing if body.budget is not None else None,
     )
 
 

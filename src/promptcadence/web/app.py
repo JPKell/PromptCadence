@@ -28,6 +28,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from promptcadence.__about__ import __version__
 from promptcadence.config import LOOPBACK_HOSTS, Settings
+from promptcadence.web.routes import ledger as ledger_routes
 from promptcadence.web.routes import system as system_routes
 from promptcadence.web.routes import trajectories as trajectory_routes
 
@@ -223,6 +224,7 @@ def create_app(settings: Settings, *, runtime_builder: Any | None = None) -> Fas
     register_exception_handlers(app)
 
     app.include_router(system_routes.router, prefix="/api/v1")
+    app.include_router(ledger_routes.router, prefix="/api/v1")
     app.include_router(trajectory_routes.router, prefix="/api/v1")
 
     return app

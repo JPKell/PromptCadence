@@ -40,11 +40,12 @@ recovery debits only the rest — run it twice and the second run does nothing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
-from baseaicore import Money, estimate_cost, is_supported
+from baseaicore import Money, estimate_cost, is_supported, to_rfc3339
 from loadledger import (
     BudgetCeiling,
     CeilingScope,
@@ -52,6 +53,7 @@ from loadledger import (
     Debit,
     PartialPricing,
     UnknownRun,
+    utc_day_key,
     utc_day_start,
 )
 from loadledger.sql import SqlLedger
@@ -77,6 +79,8 @@ __all__ = [
     "BudgetPosition",
     "BudgetService",
     "CurrencyMismatchError",
+    "LedgerEntryView",
+    "LedgerView",
     "PricedUsage",
     "project_tag",
     "render_money",
@@ -181,6 +185,117 @@ class BudgetPosition:
         """Whether it is the ``per_day`` ceiling that refuses — the one that waiting can fix."""
         binding = self.binding
         return binding is not None and binding.scope == "day"
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerEntryView:
+    """One recorded debit as ``GET /ledger/entries`` and ``promptcadence ledger show`` render it.
+
+    The entry's own facts, never a money figure of this application's invention: the four token
+    counts, the pricing hash, and each ceiling's verdict as of that debit — which is where money
+    appears, as something a ceiling said (ADR-0030 rule 1).
+    """
+
+    entry_id: str
+    trajectory_id: str
+    turn_id: str
+    occurred_at: datetime
+    tags: tuple[str, ...]
+    unpriced: bool
+    pricing_hash: str | None
+    usage: Mapping[str, int | str]
+    headroom: tuple[BudgetHeadroom, ...]
+
+    def as_json(self) -> dict[str, Any]:
+        """Return the API document and ``--json`` line for one entry."""
+        return {
+            "entry_id": self.entry_id,
+            "trajectory_id": self.trajectory_id,
+            "turn_id": self.turn_id,
+            "occurred_at": to_rfc3339(self.occurred_at),
+            "tags": list(self.tags),
+            "unpriced": self.unpriced,
+            "pricing_hash": self.pricing_hash,
+            "usage": dict(self.usage),
+            "ceilings": [_headroom_json(one) for one in self.headroom],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerView:
+    """The ledger position ``GET /ledger`` reports: today, each project, and one trajectory.
+
+    Attributes:
+        as_of: The instant the position was taken; the UTC day it falls in is the ``per_day``
+            window every figure here is against.
+        day: The shared per-day ceiling's headroom, or ``None`` when the ledger has seen nothing
+            at all and there is no balance to report.
+        projects: One entry per configured ``[budget.projects.<name>]``, in configuration order.
+        trajectory: The named trajectory's own headroom, when one was asked about.
+        tier_debit_counts: How many debits each tier tag carries, ledger-wide.
+
+            **Counts, not balances, and deliberately.** No tier ceiling is configured (lifecycle
+            §6 — tier tags exist for the estimator and the views), and LoadLedger reports a
+            balance only *through* a ceiling. Summing the entries here to produce one would put
+            ledger arithmetic in an application, which is the thing ADR-0050's mount exists to
+            avoid; inventing an unreachable ceiling to read a number through would put a magic
+            figure in the record. So this reports what a ledger read can honestly answer, and the
+            gap is written up as a LoadLedger row rather than papered over here.
+    """
+
+    as_of: datetime
+    day: BudgetHeadroom | None
+    projects: tuple[tuple[str, BudgetHeadroom], ...]
+    trajectory: BudgetHeadroom | None = None
+    tier_debit_counts: Mapping[str, int] = field(default_factory=dict)
+
+    def as_json(self) -> dict[str, Any]:
+        """Return the ``GET /ledger`` document."""
+        return {
+            "as_of": to_rfc3339(self.as_of),
+            "utc_day": utc_day_key(self.as_of),
+            "day": _headroom_json(self.day) if self.day is not None else None,
+            "projects": [{"project": name, **_headroom_json(one)} for name, one in self.projects],
+            "trajectory": (
+                _headroom_json(self.trajectory) if self.trajectory is not None else None
+            ),
+            "tiers": [
+                {"tier": name, "debit_count": count}
+                for name, count in sorted(self.tier_debit_counts.items())
+            ],
+        }
+
+
+def _headroom_json(headroom: BudgetHeadroom) -> dict[str, Any]:
+    """Render one ceiling's headroom for the wire, with the rendered strings beside the numbers.
+
+    Both, on purpose. The numbers are what a caller computes with; the strings are what a caller
+    *displays*, and putting them here is what stops the API, the CLI and the dashboard each
+    inventing their own way to show a floor — or, worse, showing a floor as a bare figure.
+    """
+    return {
+        "scope": headroom.scope,
+        "exceeded": headroom.exceeded,
+        "binds": headroom.binds,
+        "money_remaining": (
+            headroom.money_remaining.as_canonical()
+            if headroom.money_remaining is not None
+            else None
+        ),
+        "money_remaining_display": render_money(
+            headroom.money_remaining, is_floor=headroom.money_is_floor
+        ),
+        "money_is_floor": headroom.money_is_floor,
+        "tokens_remaining": headroom.tokens_remaining,
+        "tokens_remaining_display": render_tokens(
+            headroom.tokens_remaining, is_floor=headroom.tokens_are_floor
+        ),
+        "tokens_are_floor": headroom.tokens_are_floor,
+        "unpriced_debit_count": headroom.unpriced_debit_count,
+        "untotalled_debit_count": headroom.untotalled_debit_count,
+        "unmetered_debit_count": headroom.unmetered_debit_count,
+        "partial_pricing": headroom.partial_pricing.value,
+    }
 
 
 class BudgetService:
@@ -522,6 +637,109 @@ class BudgetService:
         """Return recorded entries, oldest first, narrowed by whichever filters are given."""
         return self.ledger().entries(run_id=run_id, tag=tag, since=since)
 
+    def entry_views(
+        self, *, trajectory_id: str | None = None, tag: str | None = None, limit: int = 100
+    ) -> tuple[LedgerEntryView, ...]:
+        """Return the most recent entries as the API and CLI render them, newest first.
+
+        Args:
+            trajectory_id: Narrow to one trajectory, or ``None`` for the whole ledger.
+            tag: Narrow to one tag — ``tier:<name>`` or ``project:<name>``.
+            limit: How many to return, counted from the newest.
+
+        Returns:
+            The views, newest first. An entry read back carries ``debit.cost is None`` whatever it
+            cost, because a cost is not a stored fact; the money that *was* decided is in each
+            verdict, which is why those come across whole.
+        """
+        recorded = self.entries(run_id=trajectory_id, tag=tag)
+        newest = list(reversed(recorded))[: max(limit, 0)]
+        return tuple(
+            LedgerEntryView(
+                entry_id=entry.entry_id,
+                trajectory_id=entry.debit.run_id,
+                turn_id=entry.debit.source_ref,
+                occurred_at=_resolved(entry.debit.occurred_at),
+                tags=entry.debit.tags,
+                unpriced=entry.unpriced,
+                pricing_hash=entry.pricing_hash,
+                usage={
+                    name: (count if is_supported(count) else "unsupported")
+                    for name, count in entry.debit.usage.as_counts().items()
+                },
+                headroom=tuple(_headroom(verdict) for verdict in entry.verdicts),
+            )
+            for entry in newest
+        )
+
+    def ledger_view(
+        self, *, reference_run: str | None, trajectory: TrajectoryView | None
+    ) -> LedgerView:
+        """Build the ledger position ``GET /ledger`` and ``promptcadence ledger show`` report.
+
+        Args:
+            reference_run: **Any** run the ledger already knows — normally the most recent
+                trajectory. LoadLedger reports a balance only for a named run, but a ``per_day``
+                or ``per_tag`` verdict's window is ledger-wide, so the answer for those two is the
+                same whichever run is named. ``None`` (an empty ledger) reports the configured
+                caps with nothing spent, which is both true and the only useful answer.
+            trajectory: The trajectory to report a per-run position for, or ``None``.
+
+        Returns:
+            The view: today's per-day headroom, each configured project's, optionally one
+            trajectory's, and the per-tier debit counts.
+        """
+        now = self._clock()
+        day = BudgetCeiling(
+            scope=CeilingScope.PER_DAY,
+            money=_money(self._settings.budget.daily_money_ceiling),
+            partial_pricing=PartialPricing(self._settings.budget.partial_pricing),
+        )
+        projects = tuple(
+            (name, self._project_ceiling(name)) for name in self._settings.budget.projects
+        )
+        reported = self._report(reference_run, (day, *(ceiling for _, ceiling in projects)))
+        return LedgerView(
+            as_of=now,
+            day=reported[0],
+            projects=tuple(
+                (name, headroom) for (name, _), headroom in zip(projects, reported[1:], strict=True)
+            ),
+            trajectory=self.position(trajectory).headroom[0] if trajectory is not None else None,
+            tier_debit_counts=self._tier_debit_counts(),
+        )
+
+    def _project_ceiling(self, name: str) -> BudgetCeiling:
+        """The ``per_tag`` ceiling one configured project's work is capped by."""
+        configured = self._settings.budget.projects[name]
+        return BudgetCeiling(
+            scope=CeilingScope.PER_TAG,
+            tag=project_tag(name),
+            money=_money(configured.money_ceiling),
+            tokens=configured.token_ceiling,
+            partial_pricing=(
+                PartialPricing(self._settings.budget.partial_pricing)
+                if configured.money_ceiling is not None
+                else PartialPricing.FLOOR
+            ),
+        )
+
+    def _report(
+        self, reference_run: str | None, ceilings: Sequence[BudgetCeiling]
+    ) -> tuple[BudgetHeadroom, ...]:
+        """Ask the ledger what these ceilings say, falling back to "nothing spent" if it cannot."""
+        if reference_run is None:
+            return tuple(_empty(ceiling) for ceiling in ceilings)
+        try:
+            verdicts = self.ledger(ceilings=ceilings).remaining(reference_run)
+        except UnknownRun:
+            return tuple(_empty(ceiling) for ceiling in ceilings)
+        return tuple(_headroom(verdict) for verdict in verdicts)
+
+    def _tier_debit_counts(self) -> dict[str, int]:
+        """How many debits each configured tier's tag carries. See :class:`LedgerView`."""
+        return {name: len(self.entries(tag=tier_tag(name))) for name in self._settings.tiers}
+
     def debited_turn_ids(self, trajectory_id: str) -> frozenset[str]:
         """Return the turn ids this trajectory already has a debit for.
 
@@ -544,6 +762,14 @@ class BudgetService:
         one the worker woke for.
         """
         return utc_day_start(after) + timedelta(days=1)
+
+
+def _resolved(occurred_at: datetime | None) -> datetime:
+    """An entry the ledger stored always carries a resolved instant; this states that in types."""
+    if occurred_at is None:  # pragma: no cover — SqlLedger resolves it before writing
+        message = "a recorded entry has no occurred_at"
+        raise ValueError(message)
+    return occurred_at
 
 
 def _sortable_total(estimate: CostEstimate) -> int:

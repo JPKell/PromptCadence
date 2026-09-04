@@ -87,7 +87,7 @@ class Runtime:
         # is a refusal to start (ConfigurationError), which is the same shape as every other
         # configuration mistake.
         self.pricing = PricingCatalog.from_settings(settings)
-        self.budget = BudgetService(database, settings, self.pricing, clock=_utc_now)
+        self.budget = BudgetService(database, settings, self.pricing, clock=utc_now)
         self.trajectories = TrajectoryService(database, self.sink, settings, budget=self.budget)
         loadcoach = settings.loadcoach
         self.loadcoach = (
@@ -168,6 +168,6 @@ def build_runtime(settings: Settings, *, loadcoach_http: httpx.Client | None = N
     return runtime
 
 
-def _utc_now() -> datetime:
+def utc_now() -> datetime:
     """The process clock, injected everywhere below so a test can replace it with its own."""
     return datetime.now(UTC)

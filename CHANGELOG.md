@@ -88,6 +88,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
     spend appears exactly once keyed by the reconciled turn's own id, and a second recovery writes
     nothing and leaves every entry byte-identical.
 
+- **Phase 5, gate F: the surfaces.** `GET /ledger` reports today's position against the per-day
+  ceiling and each configured project's, plus one trajectory's when asked; `GET /ledger/entries`
+  returns recorded debits newest first, filterable by trajectory or tag. `promptcadence ledger
+  show [--scope day|project|tier|trajectory]` is mode **either** — it asks the server when one
+  answers and reads the database directly when none does.
+  - Every money figure crosses the boundary twice: as `{currency, nanos}` for a caller that
+    computes and as a rendered string for one that displays, so a floor reaches a UI as
+    `at least 0.004 USD` and an unpriced amount as `—`, rather than each surface inventing its own
+    way to show them.
+  - `--scope tier` reports debit **counts**, not balances: no tier ceiling is configured
+    (lifecycle §6), LoadLedger reports a balance only through a ceiling, and summing entries here
+    would put ledger arithmetic in an application. Recorded as a LoadLedger row rather than worked
+    around.
+  - The live journey now asserts the debits and the running balance a real run leaves behind, and
+    still passes on the fake provider with no GPU, no Ollama and no network (spec §20 #10).
+
 ### Fixed
 - **`trajectories.budget_money_nanos` and `budget_token_ceiling` were `Integer` and are now
   `BigInteger`** (migration `0005`). `Money` is whole nanos, so the shipped $5.00 default ceiling

@@ -35,6 +35,7 @@ from toolyard import ToolCallRequest, ToolStatus
 
 from promptcadence.config import load_settings
 from promptcadence.domain.trajectory import TrajectoryState
+from promptcadence.services.budget import NOT_PRICED, render_money
 from promptcadence.services.runtime import Runtime
 from promptcadence.services.trajectories import TrajectorySubmission
 
@@ -66,6 +67,31 @@ def test_every_configured_tier_profile_exists_and_a_bypass_journey_completes() -
         assert final.state is TrajectoryState.COMPLETED, (
             f"{final.state.value}: {final.halted_reason} ({final.error_code})"
         )
+
+        # P5: a real run leaves real debits and a running balance behind it. The tiers here are
+        # local, so every debit is **unpriced** and the money balance is `None` — never `$0.00`
+        # (ADR-0016). The token balance is what actually moved, and the running balance is read
+        # from the verdicts the ledger recorded, not recomputed here.
+        entries = list(runtime.budget.entries(run_id=final.trajectory_id))
+        assert entries, "a completed live run recorded no debit"
+        turn_ids = [turn.turn.turn_id for turn in runtime.trajectories.turns(final.trajectory_id)]
+        assert [entry.debit.source_ref for entry in entries] == [
+            turn_id for turn_id in turn_ids if turn_id in {e.debit.source_ref for e in entries}
+        ], "every debit is keyed by the turn it came from, in turn order"
+        assert all(entry.unpriced for entry in entries), "a local tier prices nothing"
+        running = [
+            verdict.tokens_spent
+            for entry in entries
+            for verdict in entry.verdicts
+            if verdict.ceiling.scope.value == "per_run"
+        ]
+        assert running == sorted(running) and running[-1] > 0, "a monotonic running balance"
+        position = runtime.budget.position(final)
+        trajectory = position.headroom[0]
+        assert trajectory.money_remaining is not None, "the configured cap is a real figure"
+        assert trajectory.money_is_floor, "nothing was priced, so the money figure is a floor"
+        rendered = render_money(None, is_floor=True)
+        assert rendered == NOT_PRICED and "0.00" not in rendered
     finally:
         runtime.close()
 
