@@ -110,6 +110,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   - The live journey now asserts the debits and the running balance a real run leaves behind, and
     still passes on the fake provider with no GPU, no Ollama and no network (spec §20 #10).
 
+### Changed
+- **`setspec` widened to `>=0.5,<0.7`** (E5's pin sweep). The old pin was `>=0.4,<0.5` with a
+  comment explaining that it could not move because `mirrorwall 0.2.1` required `setspec<0.5`;
+  `mirrorwall 0.2.2` lifted that cap, so the comment was stale and is deleted rather than amended.
+  The floor is **0.5, not 0.4**, because spec §5 requires `governance.egress_decision` and setspec
+  0.5 is where it appears — a floor below a component's own stated spec is drift that stays
+  invisible until someone installs the wrong thing. Resolves to `setspec 0.6.0` today; when Phase 6
+  adds `commissioner`, whose own pin is `>=0.5,<0.6`, the resolved version becomes 0.5.x. Nothing
+  is imported that was not imported before: this widens a range and adopts no payload.
+
 ### Fixed
 - **`trajectories.budget_money_nanos` and `budget_token_ceiling` were `Integer` and are now
   `BigInteger`** (migration `0005`). `Money` is whole nanos, so the shipped $5.00 default ceiling

@@ -25,12 +25,10 @@ classifiers = [
 # when the phase that consumes it arrives. toolyard arrived at P4, below.
 dependencies = [
     "baseaicore>=0.4.1,<0.5",
-    # Spec §5 requires setspec >= 0.5 (governance.egress_decision) and 0.6.0 is published, but
-    # this pin cannot move yet: mirrorwall 0.2.1 requires setspec>=0.4,<0.5, so >=0.6 makes the
-    # environment unresolvable (verified in C4). FreeWeight, IdeaPress and LoadCoach carry the
-    # same <0.5 pin for the same reason. The sequence is MirrorWall widens and releases, then
-    # every consumer moves. Nothing here consumes setspec before P6.
-    "setspec>=0.4,<0.5",
+    # The floor is 0.5 because spec §5 requires `governance.egress_decision`, which setspec 0.5
+    # introduced; a floor below a component's own stated spec is drift that stays invisible until
+    # someone installs the wrong thing. Widened from `<0.5` once mirrorwall 0.2.2 lifted its cap.
+    "setspec>=0.5,<0.7",
     "weightsdb>=0.2,<0.3",
     "mirrorwall>=0.2,<0.3",
     "fastapi>=0.115,<1",
