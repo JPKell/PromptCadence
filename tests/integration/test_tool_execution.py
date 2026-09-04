@@ -28,7 +28,7 @@ import pytest
 from baseaicore import sha256_of
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from tests.conftest import budget_and_estimator
+from tests.conftest import budget_and_estimator, egress_for
 from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
     ScriptedGeneration,
@@ -78,6 +78,7 @@ class Harness:
         self.clock = lambda: _NOW + timedelta(milliseconds=next(ticks))
         self.sink = TrajectoryEventSink(database, clock=self.clock)
         self.budget, self.estimator = budget_and_estimator(database, settings, clock=self.clock)
+        self.egress = egress_for(database, clock=self.clock)
         self.service = TrajectoryService(
             database, self.sink, settings, budget=self.budget, clock=self.clock
         )
@@ -97,6 +98,7 @@ class Harness:
         controller = LoopController(
             budget=self.budget,
             estimator=self.estimator,
+            egress=self.egress,
             database=self.database,
             sink=self.sink,
             loadcoach=self.loadcoach,
@@ -217,6 +219,7 @@ def test_a_symlink_out_of_the_workspace_is_refused_after_resolution(
     controller = LoopController(
         budget=harness.budget,
         estimator=harness.estimator,
+        egress=harness.egress,
         database=harness.database,
         sink=harness.sink,
         loadcoach=harness.loadcoach,

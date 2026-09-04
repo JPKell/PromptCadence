@@ -287,6 +287,11 @@ class ScriptedGeneration:
 
     Attributes:
         text: What the model said.
+        omit_subject: Render ``model.canonical_id`` as ``null``. A LoadCoach that names no
+            execution subject is out of contract (LoadCoach spec §9), which is exactly why it is
+            scriptable: contract 4 is fail-closed, so "the response declined to say what answered"
+            is a case the suite must be able to produce and assert on, and no honest fake produces
+            it by accident.
         structured: The parsed structured output, when the profile validates JSON.
         tool_calls: Tool calls the model requested, verbatim into ``output.tool_calls``.
         input_tokens: Reported input count, or ``None`` for unreported (``null`` on the wire).
@@ -309,6 +314,7 @@ class ScriptedGeneration:
     """
 
     text: str = "The notes describe three meetings."
+    omit_subject: bool = False
     structured: Any = None
     tool_calls: tuple[Mapping[str, Any], ...] = ()
     input_tokens: int | None = 812
@@ -616,7 +622,7 @@ class FakeLoadCoach:
             },
             "reasoning": {"available": False, "summary": None, "source": None},
             "model": {
-                "canonical_id": self.model.canonical_id,
+                "canonical_id": None if gen.omit_subject else self.model.canonical_id,
                 "model_ref": self.model.model_ref,
                 "runtime_profile_hash": self.model.runtime_profile_hash,
                 "served_context": self.model.served_context,

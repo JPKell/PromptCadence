@@ -18,7 +18,7 @@ import pytest
 from baseaicore import Money, is_supported
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from tests.conftest import budget_and_estimator
+from tests.conftest import budget_and_estimator, egress_for
 from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
     ScriptedGeneration,
@@ -94,6 +94,7 @@ class Harness:
         self.budget, self.estimator = budget_and_estimator(
             database, settings, clock=clock, pricing=pricing
         )
+        self.egress = egress_for(database, clock=clock)
         self.service = TrajectoryService(
             database, self.sink, settings, budget=self.budget, clock=clock
         )
@@ -114,6 +115,7 @@ class Harness:
             owner=owner,
             budget=self.budget,
             estimator=self.estimator,
+            egress=self.egress,
             clock=self.clock,
             tools=self.tools,
         )

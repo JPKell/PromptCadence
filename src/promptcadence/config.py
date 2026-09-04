@@ -309,6 +309,14 @@ class ToolsSettings(BaseModel):
     )
     read_roots: tuple[str, ...] = Field(default=())
     fetch_allowed_hosts: tuple[str, ...] = Field(default=())
+    fetch_max_data_classification: DataClassification | None = Field(
+        default=None,
+        description=(
+            "The ceiling http_fetch's non-loopback egress is governed by. Absent by default, "
+            "which denies every non-loopback fetch with `no_ceiling_declared` (ADR-0046: an "
+            "undeclared ceiling is never assumed public). Loopback needs none - it is not egress."
+        ),
+    )
     redact_args: tuple[str, ...] = Field(default=())
     container_image: str = Field(
         default=DEFAULT_CONTAINER_IMAGE,

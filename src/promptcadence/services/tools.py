@@ -19,16 +19,18 @@ again per invocation through ``ToolContext.approved_tools``. The direction is st
 intersection has no widening case — and it is what splits an ``undeclared_tool`` deviation into a
 drift the policy may continue past and a refusal that is never re-approvable (lifecycle §5).
 
-**`http_fetch` is withheld, not disabled.** The plan defers network egress for tools to Phase 6,
-because a fetch tool without egress governance in place is exactly the hole this application exists
-to close. ``[tools] enabled`` still lists it — spec §12's shipped default is not edited, so an
-operator's copied configuration keeps working and P6 flips one guard rather than a shipped list —
-and this module refuses to register it, with a named cause that reaches ``GET /tools``,
-``promptcadence tools list`` and ``doctor``. A model that asks for it is refused with
-``unknown_tool``, because it genuinely is not in the registry, and the refusal is a recorded
-result. Two independent facts keep it off the network: it is not registered, and every invocation's
-``max_egress`` is :attr:`toolyard.EgressClass.NONE`, which would refuse it at the egress check even
-if it were.
+**`http_fetch` is registered from Phase 6, and egress-checked.** Before it, the tool was listed in
+``[tools] enabled`` and deliberately withheld from the registry, because a fetch tool without
+egress governance in place is exactly the hole this application exists to close. The governance now
+exists, so the tool is real and the withheld cause is gone.
+
+Two independent gates stand between a model and a socket, and they answer different questions.
+ToolYard's own host allowlist (ADR-0026 §3, ``[tools] fetch_allowed_hosts``) answers *may anyone
+reach this host*; the :class:`~commissioner.EgressDecision` the loop records before the call
+answers *may this trajectory's data reach it*, from the trajectory's declared classification and
+never from model text (spec §14). A denial leaves the invocation's ``max_egress`` at
+:attr:`toolyard.EgressClass.NONE`, which ToolYard refuses with ``egress_not_permitted`` as a
+structured result — so a refusal travels the ordinary recorded path rather than a second one.
 
 **Workspace lifecycle.** One absolute directory per trajectory under ``[tools] workspace_root``,
 created on the first call that needs it, disjoint by construction from every configured read root
@@ -41,10 +43,12 @@ hashes in ``tool_call_records`` outlive it.
 from __future__ import annotations
 
 import shutil
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+import httpx
 from baseaicore import sha256_of
 from mirrorwall import ComponentHealth, ComponentStatus
 from toolyard import (
@@ -62,6 +66,7 @@ from toolyard import (
     ToolResult,
     ToolSpec,
     ToolStatus,
+    http_fetch_tool,
     list_dir_tool,
     read_file_tool,
     run_command_tool,
@@ -74,14 +79,13 @@ from promptcadence.domain.tools import ToolOutcome
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from toolyard import TierReport, ToolCallStore
+    from toolyard import Resolver, TierReport, ToolCallStore
 
     from promptcadence.config import Settings
 
 __all__ = [
     "ARTIFACT_CEILING_BYTES",
     "BUILTIN_TOOL_NAMES",
-    "DEFERRED_TOOL_CAUSE",
     "UNSHIPPED_TOOL_CAUSE",
     "ArtifactStore",
     "ToolCatalogEntry",
@@ -106,9 +110,6 @@ cannot become a tool however it is spelled. It is reported as withheld rather th
 startup: a typo should be *visible* to the operator who made it, and a server that will not boot
 tells them less than a catalog line that names the tool and says nothing ships under that name.
 """
-
-DEFERRED_TOOL_CAUSE: Final[str] = "egress_governance_deferred_to_p6"
-"""Why ``http_fetch`` is listed in configuration and absent from the registry."""
 
 UNSHIPPED_TOOL_CAUSE: Final[str] = "not_a_shipped_tool"
 """Why a name in ``[tools] enabled`` that ToolYard does not ship is absent from the registry."""
@@ -329,7 +330,13 @@ class TrajectoryTools:
             max_summary_bytes=DEFAULT_MAX_SUMMARY_BYTES,
         )
 
-    def context(self, invocation_id: str, *, approved_tools: frozenset[str]) -> ToolContext:
+    def context(
+        self,
+        invocation_id: str,
+        *,
+        approved_tools: frozenset[str],
+        max_egress: EgressClass = EgressClass.NONE,
+    ) -> ToolContext:
         """Build the trusted half of one invocation.
 
         Args:
@@ -337,17 +344,24 @@ class TrajectoryTools:
                 ``tool_call_id``. A model never supplies it.
             approved_tools: The intent's frozen subset of the trajectory allowlist. It can only
                 narrow.
+            max_egress: The egress ceiling for this one call. **Defaults closed**, and it is the
+                caller's job to widen it only after an :class:`~commissioner.EgressDecision`
+                approved this trajectory's data reaching this call's target (ADR-0046, ADR-0054).
+                Passing :attr:`toolyard.EgressClass.NETWORK` here is the *enforcement* of a
+                decision Commissioner rendered; the decision itself is recorded by
+                :class:`~promptcadence.services.egress.EgressService` whatever the verdict, so a
+                refusal is as auditable as a permission.
 
         Returns:
-            The context. ``max_egress`` is :attr:`toolyard.EgressClass.NONE` unconditionally: no
-            tool performs network egress before Phase 6, and a closed default is what stands in for
-            the decision nobody has made yet.
+            The context. A ``NETWORK`` tool invoked under a ``NONE`` ceiling is refused by
+            ToolYard's own egress check with ``egress_not_permitted`` — a structured
+            :class:`~toolyard.ToolResult`, recorded through the ordinary path, never an exception.
         """
         return ToolContext(
             invocation_id,
             workspace=self.workspace,
             approved_tools=approved_tools,
-            max_egress=EgressClass.NONE,
+            max_egress=max_egress,
         )
 
 
@@ -362,9 +376,12 @@ class ToolPlant:
     __slots__ = (
         "_artifacts",
         "_catalog",
+        "_fetch_hosts",
+        "_fetch_transport",
         "_read_roots",
         "_redact_args",
         "_registry",
+        "_resolver",
         "_sandbox",
         "_timeout_seconds",
         "_workspace_root",
@@ -376,6 +393,8 @@ class ToolPlant:
         *,
         sandbox: TieredSandbox | None = None,
         limits: ResourceLimits | None = None,
+        resolver: Resolver | None = None,
+        fetch_transport: httpx.BaseTransport | None = None,
     ) -> None:
         """Assemble the registry over one sandbox, and validate the roots before any call.
 
@@ -384,6 +403,13 @@ class ToolPlant:
             sandbox: The sandbox to register ``run_command`` against, or ``None`` to build one from
                 ``[tools] container_image``. Injected so a test can shape the probe's view of the
                 host without mutating the host.
+            resolver: How ``http_fetch`` resolves a hostname, or ``None`` for the real one.
+                Injected because ADR-0026 §3's literal-IP and rebinding checks are only testable
+                against a resolution the test controls.
+            fetch_transport: ``http_fetch``'s httpx transport, or ``None`` for the real one.
+                Injected so the whole fetch path — allowlist, redirects, media types, size caps —
+                is exercised without opening a socket, which is what keeps spec §20 #10 ("the
+                suite passes with no network") true now that a network tool ships.
             limits: The resource limits every isolated command runs under, or ``None`` for
                 ToolYard's defaults.
 
@@ -415,6 +441,9 @@ class ToolPlant:
                 "this low refuses every command including the probe's canary"
             )
             raise ConfigurationError(message, details={"field": "tools.process_count"})
+        self._fetch_hosts = tuple(host.lower() for host in tools.fetch_allowed_hosts)
+        self._resolver = resolver if resolver is not None else _resolve_host
+        self._fetch_transport = fetch_transport
         self._redact_args = frozenset(tools.redact_args)
         self._timeout_seconds = float(tools.timeout_seconds or DEFAULT_TIMEOUT_SECONDS)
         self._sandbox = (
@@ -435,9 +464,6 @@ class ToolPlant:
         registry = ToolRegistry()
         catalog: list[ToolCatalogEntry] = []
         for name in dict.fromkeys(enabled):
-            if name == "http_fetch":
-                catalog.append(_withheld(name, DEFERRED_TOOL_CAUSE, _HTTP_FETCH_DESCRIPTION))
-                continue
             built = self._build(name)
             if built is None:
                 catalog.append(_withheld(name, UNSHIPPED_TOOL_CAUSE, _UNSHIPPED_DESCRIPTION))
@@ -472,6 +498,16 @@ class ToolPlant:
             # allowlist: under bwrap `--clearenv` the child has no environment at all, and
             # `os.environ` is never the answer because the environment is the caller's input.
             pair = run_command_tool(self._sandbox)
+        elif name == "http_fetch":
+            # Registered from Phase 6, egress-checked. The host allowlist here is ToolYard's own
+            # ADR-0026 §3 check and is *not* the egress decision: an allowlisted host still has to
+            # clear the classification ceiling, and that verdict is recorded by
+            # `EgressService` before this handler is ever entered. Two independent gates, because
+            # the allowlist answers "may anyone reach this host" and the decision answers "may
+            # *this trajectory's data* reach it".
+            pair = http_fetch_tool(
+                self._fetch_hosts, resolve=self._resolver, transport=self._fetch_transport
+            )
         else:
             return None
         if name in self._redact_args:
@@ -639,17 +675,28 @@ class ToolPlant:
         return self._artifacts.put(result.content, digest=result_sha256)
 
 
-_HTTP_FETCH_DESCRIPTION: Final[str] = (
-    "Fetch a URL. Not registered before Phase 6: a fetch tool without egress governance in place "
-    "is the hole this application exists to close, so it is withheld rather than disabled, and a "
-    "call to it is refused as an unknown tool and recorded."
-)
-
 _UNSHIPPED_DESCRIPTION: Final[str] = (
     "Named by [tools] enabled and not shipped. Tool handlers are registered in code at startup "
     "(ADR-0053 decision 1), so no configuration can supply one; this line exists so a typo is "
     "visible rather than silent."
 )
+
+
+def _resolve_host(host: str) -> Sequence[str]:
+    """Resolve a hostname to its addresses, for ``http_fetch``'s ADR-0026 §3 checks.
+
+    The real resolution, kept to the one line ToolYard's :data:`~toolyard.Resolver` documents so
+    that the injected test double and the shipped behaviour differ in nothing but the addresses
+    they return.
+
+    Args:
+        host: The hostname from the URL the model asked for.
+
+    Returns:
+        Every address the host resolves to. ToolYard checks each one, so a name that resolves to a
+        mix of public and loopback addresses is judged on all of them, not on the first.
+    """
+    return [str(info[4][0]) for info in socket.getaddrinfo(host, None)]
 
 
 def _withheld(name: str, cause: str, description: str) -> ToolCatalogEntry:

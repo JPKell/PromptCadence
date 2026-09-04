@@ -32,7 +32,7 @@ import httpx
 import pytest
 import uvicorn
 from sqlalchemy import select
-from tests.conftest import budget_and_estimator, budget_for
+from tests.conftest import budget_and_estimator, budget_for, egress_for
 from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
     ScriptedGeneration,
@@ -73,6 +73,7 @@ from promptcadence.config import load_settings
 from promptcadence.infrastructure.loadcoach import LoadCoachClient
 from promptcadence.services.database import Database, ensure_ready
 from promptcadence.services.budget import BudgetService
+from promptcadence.services.egress import EgressService
 from promptcadence.services.estimates import StepEstimator
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.loop import LoopController, RunSignals
@@ -87,6 +88,9 @@ def _budget(database, settings, clock):
 
 def _estimator(database, settings, clock):
     return StepEstimator(_budget(database, settings, clock), settings, clock=clock)
+
+def _egress(database, clock):
+    return EgressService(database, clock=clock)
 
 mode = sys.argv[1]
 settings = load_settings().settings
@@ -115,6 +119,7 @@ loadcoach = client_class.from_settings(base_url=settings.loadcoach.base_url, tim
 controller = LoopController(
     budget=_budget(database, settings, _CLOCK),
     estimator=_estimator(database, settings, _CLOCK),
+    egress=_egress(database, _CLOCK),
     database=database, sink=sink, loadcoach=loadcoach, settings=settings, owner="child:1/0"
 )
 assert controller.claim(trajectory_id) is not None
@@ -221,6 +226,7 @@ class Recoverer:
         self.controller = LoopController(
             budget=self.budget,
             estimator=_estimator(self.database, self.settings, _CLOCK),
+            egress=egress_for(self.database, clock=_CLOCK),
             database=self.database,
             sink=self.sink,
             loadcoach=self.loadcoach,
@@ -401,6 +407,7 @@ def test_an_unreconcilable_turn_halts_recovered_after_crash(
     stale = LoopController(
         budget=_budget(recoverer.database, recoverer.settings, _CLOCK),
         estimator=_estimator(recoverer.database, recoverer.settings, _CLOCK),
+        egress=egress_for(recoverer.database, clock=_CLOCK),
         database=recoverer.database,
         sink=recoverer.sink,
         loadcoach=recoverer.loadcoach,
@@ -440,6 +447,7 @@ def test_recovery_is_deferred_when_loadcoach_is_unreachable(
     stale = LoopController(
         budget=_budget(recoverer.database, recoverer.settings, _CLOCK),
         estimator=_estimator(recoverer.database, recoverer.settings, _CLOCK),
+        egress=egress_for(recoverer.database, clock=_CLOCK),
         database=recoverer.database,
         sink=recoverer.sink,
         loadcoach=recoverer.loadcoach,
@@ -463,6 +471,7 @@ def test_recovery_is_deferred_when_loadcoach_is_unreachable(
     unreachable = LoopController(
         budget=_budget(recoverer.database, recoverer.settings, _CLOCK),
         estimator=_estimator(recoverer.database, recoverer.settings, _CLOCK),
+        egress=egress_for(recoverer.database, clock=_CLOCK),
         database=recoverer.database,
         sink=recoverer.sink,
         loadcoach=LoadCoachClient(httpx.Client(base_url="http://127.0.0.1:9", timeout=0.2)),
@@ -482,6 +491,7 @@ def test_the_reaper_takes_over_only_an_expired_lease(environment: dict[str, str]
     live = LoopController(
         budget=_budget(recoverer.database, recoverer.settings, _CLOCK),
         estimator=_estimator(recoverer.database, recoverer.settings, _CLOCK),
+        egress=egress_for(recoverer.database, clock=_CLOCK),
         database=recoverer.database,
         sink=recoverer.sink,
         loadcoach=recoverer.loadcoach,

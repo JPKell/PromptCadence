@@ -338,6 +338,11 @@ class BudgetService:
 
     # ---- ceilings ---------------------------------------------------------------------------
 
+    @property
+    def pricing(self) -> PricingCatalog:
+        """The price observations loaded at startup, one set per configured tier."""
+        return self._pricing
+
     def partial_pricing_for(self, view: TrajectoryView) -> PartialPricing:
         """Return the ``partial_pricing`` rule binding this trajectory's money ceilings.
 

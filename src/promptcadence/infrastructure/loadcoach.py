@@ -60,6 +60,7 @@ from promptcadence.observability.logging import current_correlation
 
 __all__ = [
     "CLIENT_NAME",
+    "SUBJECT_ABSENT",
     "LOADCOACH_CODE_MAP",
     "NON_TERMINAL_JOB_STATES",
     "CancelOutcome",
@@ -85,6 +86,15 @@ __all__ = [
 
 CLIENT_NAME: Final = "promptcadence"
 """The ``X-Client-Name`` every request carries; the ``source`` LoadCoach records (api.md §12)."""
+
+SUBJECT_ABSENT: Final[str] = "subject_absent"
+"""``details["reason"]`` on the error raised when a response names no execution subject.
+
+Contract 4 is fail-closed, so this is a *marker*, not a message: the loop matches on it to record
+a ``VIOLATION`` egress decision rather than treating the turn as an ordinary LoadCoach failure. It
+lives here, beside the check that raises it, so the string cannot drift from its one producer.
+"""
+
 
 API_PREFIX: Final = "/api/v1"
 SUPPORTED_API_MAJOR: Final = "v1"
@@ -567,7 +577,13 @@ def parse_generation(document: Mapping[str, Any]) -> GenerationResponse:
     canonical_id = _require(document, "model.canonical_id")
     if not isinstance(canonical_id, str) or not canonical_id:
         message = "LoadCoach's response names no model.canonical_id; a turn's subject is verified"
-        raise LoadCoachError(message, details={"field": "model.canonical_id"})
+        # `reason` is what the loop matches on to treat this as a contract-4 violation rather than
+        # as an ordinary transport failure. Absence of the subject is not a pass and not a
+        # degraded read: the response claims work was done and declines to say by what, which is
+        # the one shape a happy-path suite never produces and the known risk the plan names.
+        raise LoadCoachError(
+            message, details={"field": "model.canonical_id", "reason": SUBJECT_ABSENT}
+        )
     usage_block = _require(document, "usage")
     if not isinstance(usage_block, Mapping):
         message = "LoadCoach's 'usage' is not an object"

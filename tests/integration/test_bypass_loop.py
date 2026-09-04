@@ -14,7 +14,7 @@ import pytest
 from baseaicore import DataClassification
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from tests.conftest import budget_and_estimator
+from tests.conftest import budget_and_estimator, egress_for
 from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
     ScriptedError,
@@ -62,6 +62,7 @@ class Harness:
         self.budget, self.estimator = budget_and_estimator(
             database, settings, clock=self.clock, pricing=pricing
         )
+        self.egress = egress_for(database, clock=self.clock)
         self.service = TrajectoryService(
             database, self.sink, settings, budget=self.budget, clock=self.clock
         )
@@ -78,6 +79,7 @@ class Harness:
         return LoopController(
             budget=self.budget,
             estimator=self.estimator,
+            egress=self.egress,
             database=self.database,
             sink=self.sink,
             loadcoach=self.loadcoach,
@@ -526,6 +528,7 @@ def test_a_changed_approval_policy_refuses_to_run_under_an_envelope_nobody_minte
     changed = LoopController(
         budget=harness.budget,
         estimator=harness.estimator,
+        egress=harness.egress,
         database=harness.database,
         sink=harness.sink,
         loadcoach=harness.loadcoach,

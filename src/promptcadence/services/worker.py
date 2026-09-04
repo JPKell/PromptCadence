@@ -30,6 +30,7 @@ from sqlalchemy import or_, select
 from promptcadence.domain.trajectory import TrajectoryState
 from promptcadence.infrastructure.db import models
 from promptcadence.services.budget import BudgetService
+from promptcadence.services.egress import EgressService
 from promptcadence.services.estimates import StepEstimator
 from promptcadence.services.loop import LoopController, ReconcileOutcome, RunSignals
 from promptcadence.services.pricing import PricingCatalog
@@ -233,6 +234,7 @@ class TrajectoryWorker:
     settings: Settings
     budget: BudgetService | None = None
     tools: ToolPlant | None = None
+    egress: EgressService | None = None
     owner_prefix: str = field(default_factory=process_owner_prefix)
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     poll_interval_seconds: float = 0.5
@@ -255,9 +257,14 @@ class TrajectoryWorker:
             owner=owner,
             budget=budget,
             estimator=StepEstimator(budget, self.settings, clock=self.clock),
+            egress=self.egress if self.egress is not None else self._default_egress(),
             clock=self.clock,
             tools=self.tools,
         )
+
+    def _default_egress(self) -> EgressService:
+        """An egress service over Commissioner's shipped policy, for a worker built without one."""
+        return EgressService(self.database, clock=self.clock)
 
     def _default_budget(self) -> BudgetService:
         """A budget service over an empty pricing catalogue, for a worker built without one."""

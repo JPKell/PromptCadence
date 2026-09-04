@@ -36,6 +36,7 @@ from promptcadence.domain.tiers import EgressClass, Tier, TierPolicy, TierSnapsh
 from promptcadence.domain.trajectory import TrajectoryDeclaration
 from promptcadence.services.budget import BudgetService
 from promptcadence.services.database import Database
+from promptcadence.services.egress import EgressService
 from promptcadence.services.estimates import StepEstimator
 from promptcadence.services.pricing import PricingCatalog
 
@@ -195,6 +196,16 @@ def budget_for(
         pricing if pricing is not None else PricingCatalog(by_tier={}),
         clock=clock,
     )
+
+
+def egress_for(database: Database, *, clock: Callable[[], datetime]) -> EgressService:
+    """The egress service every :class:`~promptcadence.services.loop.LoopController` needs.
+
+    Over Commissioner's shipped :class:`~commissioner.OrderedClassificationPolicy`, so a test
+    exercises the policy the application ships rather than a stand-in that could agree with the
+    code and disagree with the package.
+    """
+    return EgressService(database, clock=clock)
 
 
 def budget_and_estimator(

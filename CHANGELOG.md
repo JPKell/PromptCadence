@@ -111,6 +111,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
     still passes on the fake provider with no GPU, no Ollama and no network (spec §20 #10).
 
 ### Added
+- **Phase 6, gate B: every turn and every `NETWORK` tool call carries a recorded egress decision.**
+  Commissioner renders the verdict and records it; enforcing it is this application's (ADR-0054).
+  - `services/egress.py` — `EgressService.evaluate` has no path that decides without recording, so
+    an approval is exactly as durable as a denial (spec §11 contract 3). Two evaluation points,
+    one policy: `tier_target` for a turn, `fetch_target` for an `http_fetch`.
+  - The classification is always the **trajectory's declaration**, never model text (spec §14). A
+    model can influence which target it asks for; it can never influence how sensitive the data is
+    said to be.
+  - **Defaults closed** (ADR-0046): a non-allowlisted or unparseable fetch host is given *no*
+    ceiling, so the shipped policy denies it with `no_ceiling_declared` — a recorded, queryable
+    refusal rather than an unlogged early return. New `[tools] fetch_max_data_classification`
+    declares the ceiling for allowlisted hosts; absent by default, which denies every non-loopback
+    fetch. Loopback is `remote=False` and approves with `target_not_remote`, because a fetch that
+    does not leave the machine is not egress.
+  - **`http_fetch` is registered**, egress-checked, and the `egress_governance_deferred_to_p6`
+    withheld cause is gone from the code, the catalog, `GET /tools`, `promptcadence tools list`
+    and `doctor`. A denied decision leaves the invocation's `max_egress` at `NONE` and ToolYard
+    refuses with `egress_not_permitted` — a structured result on the ordinary recorded path, not
+    a second refusal path. Its transport and resolver are injectable, so the suite still opens no
+    socket (spec §20 #10).
+  - **The four pre-flights are now ordered, and the order is the guarantee**: egress, then
+    pricing, then availability, then budget — all before `turn.started`, which is what makes
+    "refused before any HTTP request leaves" a property of the code's shape. `TierRouter.resolve`
+    splits into `tier_of` and `ensure_available` so a tier's *configured* egress class decides
+    governance and its *availability* does not: without the split, a confidential trajectory aimed
+    at a remote tier would be refused today for `loadcoach_has_no_remote_provider` and only for
+    the real reason once LC-E1 registers a provider.
+  - Spec §20 #5's unpriced refusal checks for a **`ModelPricing` record claiming the instant**,
+    not for the `pricing_file` field: startup validation already refuses a remote tier naming no
+    file, so a field check could never fire. An expired or empty price list is what reaches it.
+
+### Added
 - **Phase 6, gate A: Commissioner's table is mounted.** `commissioner[sql]>=0.1,<0.2` is a runtime
   dependency, and this is the second package-table mount here — a transcription of Phase 5's, not
   a second design (ADR-0050).

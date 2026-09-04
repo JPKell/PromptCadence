@@ -60,12 +60,15 @@ from baseaicore import (
     sha256_of,
 )
 from baseaicore.timeutil import to_rfc3339
+from commissioner import Verdict
 from sqlalchemy import select, true, update
 from toolyard import MAX_RECORDED_NAME_CHARS, StoreFailure, ToolCallRequest
+from toolyard import EgressClass as ToolEgressClass
 
 from promptcadence.config import ConfigurationError
 from promptcadence.domain.deviation import (
     Deviation,
+    DeviationCategory,
     DeviationDetected,
     Disposition,
     TurnFacts,
@@ -124,6 +127,7 @@ from promptcadence.infrastructure.db import models
 from promptcadence.infrastructure.db.models import ExecutionIntent as ExecutionIntentRow
 from promptcadence.infrastructure.loadcoach import (
     NON_TERMINAL_JOB_STATES,
+    SUBJECT_ABSENT,
     GenerateRequest,
     GenerationResponse,
     LoadCoachClient,
@@ -139,6 +143,12 @@ from promptcadence.services.budget import (
     CurrencyMismatchError,
     render_remaining_money,
     render_remaining_tokens,
+)
+from promptcadence.services.egress import (
+    EgressService,
+    fetch_target,
+    host_of,
+    tier_target,
 )
 from promptcadence.services.loadcoach_surface import (
     ProviderSurface,
@@ -177,6 +187,19 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_UNVERIFIED_SUBJECT_REASONS: Final[frozenset[str]] = frozenset(
+    {SUBJECT_ABSENT, "subject_unverifiable"}
+)
+"""The two ways a turn's execution subject fails to be verifiable, both violations.
+
+``subject_absent`` is the response naming no ``model.canonical_id`` — it claims work and declines
+to say by what. ``subject_unverifiable`` is
+:func:`~promptcadence.services.loadcoach_surface.resolve_subject` finding no single configured
+provider to check the answer against, which is LC-E1's era arriving before the response carries the
+serving provider's identity. They reach the loop as ordinary ``LoadCoachError``s and must not be
+handled as ordinary ones: fail closed, recorded (spec §11 contract 4).
+"""
 
 _STOPPING_DISPOSITIONS: Final[frozenset[Disposition]] = frozenset(
     {Disposition.HALT, Disposition.SCOPED_REAPPROVAL}
@@ -258,23 +281,52 @@ class TierRouter:
 
     tier_policy: TierPolicy
 
-    def resolve(self, intent: ExecutionIntent) -> Tier:
-        """Return the intent's approved tier, if it can serve.
+    def tier_of(self, intent: ExecutionIntent) -> Tier:
+        """Return the intent's approved tier as configured, asking nothing about availability.
+
+        Split from :meth:`ensure_available` at Phase 6, and the split is load-bearing. A tier's
+        **egress class is a property of its configuration**; whether it can serve right now is a
+        property of the deployment. Governance must be decided on the first and never gated on the
+        second, or a confidential trajectory aimed at a remote tier would be refused today for
+        "LoadCoach has no remote provider" — and then, the moment LC-E1 registers one, refused for
+        the real reason instead. The recorded refusal would have changed because infrastructure
+        changed, which is precisely the kind of accident spec §20 #4 exists to rule out.
+
+        Raises:
+            TierNotConfiguredError: The intent names a tier the snapshot does not define.
+        """
+        return self.tier_policy.snapshot.require(intent.approved_tier)
+
+    def ensure_available(self, tier: Tier) -> None:
+        """Refuse a tier that cannot serve right now.
+
+        Called **after** the egress decision has been rendered and recorded, so that a tier this
+        trajectory may not use is refused on those grounds whatever the deployment looks like.
 
         Raises:
             TierUnavailableError: The tier cannot serve right now — today only
                 ``loadcoach_has_no_remote_provider``. The automatic policy grants no fallbacks
                 (lifecycle §3), so there is nothing to fall to and the loop halts with the reason.
-            TierNotConfiguredError: The intent names a tier the snapshot does not define.
         """
-        availability = self.tier_policy.availability(intent.approved_tier)
+        availability = self.tier_policy.availability(tier.name)
         if not availability.available:
             reason = availability.reason.value if availability.reason is not None else "unknown"
-            message = f"tier {intent.approved_tier!r} cannot serve: {reason}"
-            raise TierUnavailableError(
-                message, details={"reason": reason, "tier": intent.approved_tier}
-            )
-        return self.tier_policy.snapshot.require(intent.approved_tier)
+            message = f"tier {tier.name!r} cannot serve: {reason}"
+            raise TierUnavailableError(message, details={"reason": reason, "tier": tier.name})
+
+    def resolve(self, intent: ExecutionIntent) -> Tier:
+        """Return the intent's approved tier, if it can serve.
+
+        The two checks in their pre-Phase-6 order, kept for callers that make no egress decision
+        of their own — recovery's reconciliation, which is re-reading a turn that already ran.
+
+        Raises:
+            TierUnavailableError: The tier cannot serve right now.
+            TierNotConfiguredError: The intent names a tier the snapshot does not define.
+        """
+        tier = self.tier_of(intent)
+        self.ensure_available(tier)
+        return tier
 
 
 class ReconcileOutcome(StrEnum):
@@ -319,6 +371,7 @@ class LoopController:
         "_budget",
         "_clock",
         "_database",
+        "_egress",
         "_estimator",
         "_ids",
         "_loadcoach",
@@ -340,6 +393,7 @@ class LoopController:
         owner: str,
         budget: BudgetService,
         estimator: StepEstimator,
+        egress: EgressService,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] = new_id,
         surface_loader: Callable[[LoadCoachClient], ProviderSurface] = load_provider_surface,
@@ -357,6 +411,10 @@ class LoopController:
                 a loop that could run without one would be a loop that could spend without
                 recording it, and every path below asks it something before it calls LoadCoach.
             estimator: The layered step estimator the pre-flight asks for a prospective spend.
+            egress: The egress policy and its ledger (P6). Required for the same reason ``budget``
+                is: a loop that could run without one would be a loop that could send data
+                somewhere without recording that it decided to, and governance is not conditional
+                on a mode (ADR-0048).
             clock: The instant source, injected for determinism.
             id_factory: The id source for turns and intents.
             surface_loader: How the provider surface is read; injected so a test can script it.
@@ -371,6 +429,7 @@ class LoopController:
         self.owner = owner
         self._budget = budget
         self._estimator = estimator
+        self._egress = egress
         self._clock = clock if clock is not None else _utc_now
         self._ids = id_factory
         self._surface_loader = surface_loader
@@ -742,12 +801,12 @@ class LoopController:
                     error_code=ErrorCode.STEP_LIMIT_EXCEEDED,
                 )
             try:
-                tier = router.resolve(governance.intent)
+                tier = router.tier_of(governance.intent)
             except (TierUnavailableError, TierNotConfiguredError) as exc:
                 return self._end_with(
                     trajectory_id, halt, cause=exc.message, error_code=ErrorCode(exc.code)
                 )
-            state = self._turn(governance, surface, tier, turns, flags)
+            state = self._turn(governance, surface, router, tier, turns, flags)
             if state is not None:
                 return state
 
@@ -755,16 +814,61 @@ class LoopController:
         self,
         governance: _Governance,
         surface: ProviderSurface,
+        router: TierRouter,
         tier: Tier,
         turns: Sequence[Turn[TurnProvenance]],
         flags: RunSignals,
     ) -> TrajectoryState | None:
-        """One turn: pre-flight, ``turn.started``, the call, the debit, then the turn row."""
+        """One turn: the four pre-flights, ``turn.started``, the call, the debit, the turn row.
+
+        **The pre-flights run in this order and the order is a decision.** Every one of them
+        happens before ``turn.started`` and therefore before any request is built, which is what
+        makes "refused before any HTTP request leaves" (spec §20 #4, #5) a property of the code's
+        shape rather than of a test that happens to check it.
+
+        1. **Egress**, from the trajectory's classification against the tier as configured. First
+           because it is the only unconditional one: a trajectory that may not use this tier may
+           not use it whatever the price, the availability or the balance, and deciding it first
+           means the recorded reason never depends on which other check happened to fire.
+        2. **Pricing**, because unpriced egress is refused rather than treated as free
+           (ADR-0016/ADR-0030) — and because a ceiling cannot bind what cannot be priced, so this
+           necessarily precedes the budget.
+        3. **Availability**, the deployment's answer rather than policy's.
+        4. **Budget**, the numbers, last: parking a trajectory for a day edge it should never have
+           reached would be the wrong answer written durably.
+        """
         trajectory_id = governance.view.trajectory_id
+        turn_id = self._ids()
+        refused = self._egress_preflight(governance, tier, turn_id=turn_id)
+        if refused is not None:
+            return refused
+        if tier.is_remote and not self._budget.pricing.claiming(tier=tier.name, at=self._clock()):
+            # Spec §11 contract 5, and the check is deliberately about the **record**, not about
+            # the `pricing_file` field: startup validation already refuses a remote tier that
+            # names no file at all, so a field check here could never fire. What reaches this
+            # point is a tier that names a file holding no record claiming *now* — an expired
+            # price list, or one that never covered this tier. Its egress cannot be priced, a
+            # ceiling cannot bind what cannot be priced, and unpriced egress is refused rather
+            # than treated as free (ADR-0016/ADR-0030).
+            return self._end_with(
+                trajectory_id,
+                halt,
+                cause=(
+                    f"remote tier {tier.name} has no ModelPricing record claiming this instant, "
+                    "so its egress cannot be priced and is refused rather than treated as free "
+                    "(spec §11 contract 5)"
+                ),
+                error_code=ErrorCode.UNPRICED_EGRESS_REFUSED,
+            )
+        try:
+            router.ensure_available(tier)
+        except TierUnavailableError as exc:
+            return self._end_with(
+                trajectory_id, halt, cause=exc.message, error_code=ErrorCode(exc.code)
+            )
         parked = self._preflight(governance, tier)
         if parked is not None:
             return parked
-        turn_id = self._ids()
         sequence = len(turns) + 1
         started = self._clock()
         started_clock = time.perf_counter()
@@ -810,6 +914,10 @@ class LoopController:
                 )
             except (TierUnavailableError, CompactionFailedError, LoadCoachError) as exc:
                 flags.in_flight_turn_id = None
+                if exc.details.get("reason") in _UNVERIFIED_SUBJECT_REASONS:
+                    return self._subject_violation(
+                        governance, tier, turn_id=turn_id, cause=exc.message
+                    )
                 note = (
                     self._abandon_in_flight(turn_id)
                     if exc.details.get("reason") == "client_timeout"
@@ -884,9 +992,10 @@ class LoopController:
         try:
             subject = resolve_subject(response.model, surface=surface)
         except LoadCoachError as exc:
-            return self._end_with(
-                trajectory_id, halt, cause=exc.message, error_code=ErrorCode.LOADCOACH_ERROR
-            )
+            # The turn ran and its subject cannot be verified. Contract 4 is fail-closed, so this
+            # is a violation and not a transport failure: something answered, and this build
+            # cannot say whether it was the tier that promised to.
+            return self._subject_violation(governance, tier, turn_id=turn_id, cause=exc.message)
         decision = decide_finish(
             finish_reason=response.finish_reason,
             schema_validated=response.validation.schema_validated,
@@ -971,6 +1080,22 @@ class LoopController:
                 body = DeviationDetected.of(deviation, trajectory_id=trajectory_id, scope=scope)
                 session.add(_deviation_row(deviation, trajectory_id=trajectory_id, body=body))
                 events.append(trajectory_id, body, now=now)
+                if deviation.category is DeviationCategory.TIER_VIOLATION:
+                    # Lifecycle §5's severity column: a tier violation is "recorded as a VIOLATION
+                    # EgressDecision where egress-relevant", and it always is — the category exists
+                    # because what answered contradicted the tier that promised to. Written on the
+                    # same session as the deviation row and the halt, so a reader never finds one
+                    # without the others (ADR-0044).
+                    self._egress.record_violation(
+                        run_id=trajectory_id,
+                        source_ref=turn_id,
+                        classification=governance.declaration.classification,
+                        target=tier_target(tier),
+                        reason=_violation_reason(deviation),
+                        decided_at=now,
+                        decision_id=self._ids(),
+                        session=session,
+                    )
             if recovered_from_job is not None:
                 events.append(
                     trajectory_id,
@@ -1057,6 +1182,97 @@ class LoopController:
     # ----------------------------------------------------------------------------------------
     # Budget (Phase 5)
     # ----------------------------------------------------------------------------------------
+
+    def _subject_violation(
+        self, governance: _Governance, tier: Tier, *, turn_id: str, cause: str
+    ) -> TrajectoryState:
+        """Record a ``VIOLATION`` and halt when a turn's execution subject cannot be verified.
+
+        **Absence is a violation, not a pass.** This is the fail-closed half of spec §11 contract
+        4, and the case a happy-path suite never reaches: a response that claims work was done and
+        does not say by what, or one this build cannot check against the configured provider. Both
+        mean the same thing — something answered and nothing here can establish that it was the
+        tier that promised to — and a build that read either as "probably fine" would have turned
+        a verified constraint back into an assumed one (ADR-0043).
+
+        The recorded target is the tier that *promised* to serve the turn, not where the data
+        actually went, because where it went is precisely what could not be established. The
+        record says a promise was broken and names the promise.
+
+        Args:
+            governance: The run's declaration, policies and intent.
+            tier: The tier the turn was dispatched on.
+            turn_id: The turn whose subject could not be verified.
+            cause: Why verification failed, from the error that discovered it.
+
+        Returns:
+            :attr:`~promptcadence.domain.trajectory.TrajectoryState.HALTED`. A violation is an
+            unconditional halt and is never re-approvable (lifecycle §5).
+        """
+        trajectory_id = governance.view.trajectory_id
+        self._egress.record_violation(
+            run_id=trajectory_id,
+            source_ref=turn_id,
+            classification=governance.declaration.classification,
+            target=tier_target(tier),
+            reason="execution_subject_unverified",
+            decided_at=self._clock(),
+            decision_id=self._ids(),
+        )
+        return self._end_with(
+            trajectory_id,
+            halt,
+            cause=(
+                f"the execution subject of turn {turn_id} on tier {tier.name} could not be "
+                f"verified, which is a violation and not a pass (spec §11 contract 4): {cause}"
+            ),
+            error_code=ErrorCode.DEVIATION_HALTED,
+        )
+
+    def _egress_preflight(
+        self, governance: _Governance, tier: Tier, *, turn_id: str
+    ) -> TrajectoryState | None:
+        """Decide whether this trajectory's data may reach this tier, and record the verdict.
+
+        Runs **before** ``turn.started`` and before any request is built, which is what makes spec
+        §20 #4 true as stated: a ``confidential`` trajectory aimed at a remote tier is refused
+        before an HTTP request leaves, not after one comes back. The ordering is the guarantee, so
+        this call sits above the request construction rather than beside it.
+
+        Runs on **every** turn, local tiers included. A local tier is approved with
+        ``target_not_remote`` rather than skipped, because contract 1's governance invariance is
+        structural: "every turn carries an egress decision" is a property a reader can check by
+        counting rows, and it stops being checkable the moment some turns are exempt. It is also
+        what makes the per-trajectory record answer "where did this data go" rather than only
+        "when was something refused".
+
+        Args:
+            governance: The run's declaration, policies and intent.
+            tier: The tier the router resolved for this turn.
+            turn_id: The turn this decision gates, recorded as the decision's ``source_ref`` so a
+                decision and the turn it governed can be matched afterwards.
+
+        Returns:
+            ``None`` when the turn may proceed — an approval, recorded. The halted state when the
+            verdict was a denial, which ends the turn with ``EGRESS_DENIED`` and the policy's own
+            reason, never as an exception reaching the caller as ``INTERNAL_ERROR`` (spec §13).
+        """
+        trajectory_id = governance.view.trajectory_id
+        decision = self._egress.evaluate(
+            run_id=trajectory_id,
+            source_ref=turn_id,
+            classification=governance.declaration.classification,
+            target=tier_target(tier),
+        )
+        if decision.verdict is Verdict.APPROVED:
+            return None
+        cause = (
+            f"egress to tier {tier.name} was denied for a "
+            f"{governance.declaration.classification.value} trajectory: {decision.reason} "
+            f"(decision {decision.decision_id}, policy {decision.policy_name} "
+            f"{decision.policy_version})"
+        )
+        return self._end_with(trajectory_id, halt, cause=cause, error_code=ErrorCode.EGRESS_DENIED)
 
     def _preflight(self, governance: _Governance, tier: Tier) -> TrajectoryState | None:
         """Ask every active ceiling about the next step, and act on the most restrictive answer.
@@ -1523,6 +1739,57 @@ class LoopController:
                 return state
         return None
 
+    def _tool_egress_ceiling(
+        self, governance: _Governance, *, call: RequestedToolCall, invocation_id: str
+    ) -> ToolEgressClass:
+        """Decide and record whether one tool call may reach the network.
+
+        Called for **every** tool call and evaluated for the ``NETWORK`` ones. A tool whose
+        declared egress is ``NONE`` cannot leave the machine whatever this returned, so evaluating
+        one would record a decision about an egress that cannot happen — noise in exactly the
+        record an auditor reads to find the egress that did.
+
+        The verdict is turned into a *ceiling*, not into a refusal written here: a denial leaves
+        the ceiling closed and ToolYard refuses the call itself with ``egress_not_permitted``, as a
+        structured :class:`~toolyard.ToolResult` recorded through the ordinary path. That keeps
+        spec §13's rule — "a tool refusal is returned to the model as a structured result, never an
+        exception" — with no second refusal path to keep in step with the first, and it keeps
+        Commissioner in its documented role: it rendered and recorded the verdict, and this
+        application acted on it (ADR-0054).
+
+        Args:
+            governance: The run's declaration — the source of the classification, which is the
+                trajectory's and never the model's (spec §14).
+            call: The requested call. Its ``arguments`` are model-supplied and untrusted; only the
+                URL's host is read from them, and only to name the target being judged.
+            invocation_id: The call's id, recorded as the decision's ``source_ref``.
+
+        Returns:
+            :attr:`toolyard.EgressClass.NETWORK` when a decision approved this trajectory's data
+            reaching this target, and :attr:`toolyard.EgressClass.NONE` in every other case —
+            including a tool that needs no egress, an unknown tool, and any denial.
+        """
+        entry = self._tools.entry(call.name)
+        if entry is None or entry.egress != ToolEgressClass.NETWORK.value:
+            return ToolEgressClass.NONE
+        url = call.arguments.get("url")
+        tools_settings = self._settings.tools
+        decision = self._egress.evaluate(
+            run_id=governance.view.trajectory_id,
+            source_ref=invocation_id,
+            classification=governance.declaration.classification,
+            target=fetch_target(
+                host_of(url) if isinstance(url, str) else None,
+                allowed_hosts=frozenset(
+                    host.lower() for host in tools_settings.fetch_allowed_hosts
+                ),
+                ceiling=tools_settings.fetch_max_data_classification,
+            ),
+        )
+        if decision.verdict is Verdict.APPROVED:
+            return ToolEgressClass.NETWORK
+        return ToolEgressClass.NONE
+
     def _run_one_tool_call(
         self,
         governance: _Governance,
@@ -1535,7 +1802,13 @@ class LoopController:
         """Start, execute and record one call. See :meth:`_run_tool_calls` for the shape."""
         trajectory_id = governance.view.trajectory_id
         invocation_id = self._ids()
-        context = tools.context(invocation_id, approved_tools=governance.intent.approved_tools)
+        context = tools.context(
+            invocation_id,
+            approved_tools=governance.intent.approved_tools,
+            max_egress=self._tool_egress_ceiling(
+                governance, call=call, invocation_id=invocation_id
+            ),
+        )
         request = ToolCallRequest(name=call.name, args=call.arguments)
         store = CollectingToolCallStore()
         args_digest = sha256_of(_args_text(call))
@@ -2026,6 +2299,27 @@ def _intent_document(row: ExecutionIntentRow) -> dict[str, Any]:
         "approval_request_id": row.approval_request_id,
         "gate": dict(row.gate_json),
     }
+
+
+def _violation_reason(deviation: Deviation) -> str:
+    """Describe a ``tier_violation`` in the vocabulary of the record, not of the log.
+
+    Args:
+        deviation: The tier violation. Its ``subject`` names who actually answered and its
+            ``permitted_tiers`` what the intent allowed.
+
+    Returns:
+        A machine-readable reason. It names the verified egress class rather than the provider
+        kind, because the kind is what contract 4 forbids reading the answer off (``ollama`` and a
+        paid endpoint can both be ``openai_compatible``), and a reason that named the kind would
+        invite exactly that inference from whoever reads the record next.
+    """
+    subject = deviation.subject
+    served = subject.egress_class.value if subject is not None else "unknown"
+    permitted = "|".join(deviation.permitted_tiers) or "none"
+    return (
+        f"tier_violation:served_{served}:executed_{deviation.executed_tier}:permitted_{permitted}"
+    )
 
 
 def _deviation_row(

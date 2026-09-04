@@ -26,7 +26,6 @@ from promptcadence.config import Settings, load_settings
 from promptcadence.domain.tools import ToolOutcome
 from promptcadence.services.tools import (
     ARTIFACT_CEILING_BYTES,
-    DEFERRED_TOOL_CAUSE,
     UNSHIPPED_TOOL_CAUSE,
     ArtifactStore,
     ToolPlant,
@@ -61,19 +60,38 @@ def plant(**environment: str) -> ToolPlant:
 # --------------------------------------------------------------------------------------------
 
 
-def test_the_four_filesystem_and_command_tools_are_registered_from_the_shipped_default() -> None:
-    assert set(plant().registry.names()) == {"read_file", "list_dir", "write_file", "run_command"}
+def test_all_five_shipped_tools_are_registered_from_the_shipped_default() -> None:
+    """Phase 6 registers the fifth. Before it, ``http_fetch`` was withheld pending egress
+    governance; the governance now exists, so the tool is real and the withheld cause is gone."""
+    assert set(plant().registry.names()) == {
+        "read_file",
+        "list_dir",
+        "write_file",
+        "run_command",
+        "http_fetch",
+    }
 
 
-def test_http_fetch_is_listed_and_withheld_with_the_cause_the_operator_reads() -> None:
-    """The P6 decision, made visible. Configuration names it; the registry does not hold it."""
+def test_http_fetch_is_registered_and_declares_network_egress() -> None:
+    """The whole point of registering it: it is the one tool that can leave the machine.
+
+    Declaring ``NETWORK`` is what makes it *checkable* — the loop reads this to decide whether an
+    egress decision is needed at all, so a tool that under-declared its egress would slip past the
+    check rather than fail it.
+    """
     built = plant()
     entry = built.entry("http_fetch")
     assert entry is not None
-    assert entry.registered is False
-    assert entry.withheld_cause == DEFERRED_TOOL_CAUSE
-    assert "http_fetch" not in built.registry.names()
-    assert built.registry.get("http_fetch") is None
+    assert entry.registered is True
+    assert entry.withheld_cause is None
+    assert entry.egress == "network"
+    assert built.registry.get("http_fetch") is not None
+
+
+def test_no_other_shipped_tool_declares_network_egress() -> None:
+    """``http_fetch`` is the only one, which is what makes "check the NETWORK ones" a small rule."""
+    networked = {entry.name for entry in plant().catalog() if entry.egress == "network"}
+    assert networked == {"http_fetch"}
 
 
 def test_a_name_nothing_ships_is_withheld_rather_than_crashing_the_process() -> None:
@@ -88,8 +106,8 @@ def test_a_name_nothing_ships_is_withheld_rather_than_crashing_the_process() -> 
 
 
 def test_the_catalog_keeps_configured_order_and_covers_both_halves() -> None:
-    built = plant(PROMPTCADENCE_TOOLS__ENABLED="write_file,http_fetch,read_file")
-    assert [entry.name for entry in built.catalog()] == ["write_file", "http_fetch", "read_file"]
+    built = plant(PROMPTCADENCE_TOOLS__ENABLED="write_file,reed_file,read_file")
+    assert [entry.name for entry in built.catalog()] == ["write_file", "reed_file", "read_file"]
     assert [entry.registered for entry in built.catalog()] == [True, False, True]
 
 
@@ -113,6 +131,7 @@ def test_run_command_declares_isolation_and_the_others_do_not() -> None:
         "list_dir": False,
         "write_file": False,
         "run_command": True,
+        "http_fetch": False,
     }
 
 
@@ -330,7 +349,7 @@ def test_health_is_degraded_when_run_command_is_enabled_and_no_rung_exists() -> 
     assert component.name == "tools"
     assert component.status.value == "degraded"
     assert "isolation unavailable" in component.detail
-    assert DEFERRED_TOOL_CAUSE in component.detail
+    assert "5 registered" in component.detail, "P6 registers http_fetch; nothing is withheld now"
 
 
 def test_health_is_ok_when_nothing_enabled_needs_isolation() -> None:

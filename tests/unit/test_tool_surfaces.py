@@ -19,7 +19,6 @@ from typer.testing import CliRunner
 from promptcadence.bootstrap import bootstrap
 from promptcadence.cli.main import app
 from promptcadence.infrastructure.loadcoach import assemble_tool_calls
-from promptcadence.services.tools import DEFERRED_TOOL_CAUSE
 
 runner = CliRunner()
 
@@ -119,7 +118,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Any:
         yield test_client
 
 
-def test_get_tools_lists_the_registry_the_withheld_tool_and_the_isolation_rung(
+def test_get_tools_lists_the_whole_registry_and_the_isolation_rung(
     client: TestClient,
 ) -> None:
     response = client.get("/api/v1/tools")
@@ -129,17 +128,22 @@ def test_get_tools_lists_the_registry_the_withheld_tool_and_the_isolation_rung(
     assert set(by_name) == {"read_file", "list_dir", "write_file", "run_command", "http_fetch"}
     assert by_name["read_file"]["registered"] is True
     assert by_name["read_file"]["parameters"]["type"] == "object"
-    assert by_name["http_fetch"]["registered"] is False
-    assert by_name["http_fetch"]["withheld_cause"] == DEFERRED_TOOL_CAUSE
+    assert by_name["http_fetch"]["registered"] is True
+    assert by_name["http_fetch"]["withheld_cause"] is None
     assert body["isolation"]["tier"]
     assert body["isolation"]["reason"]
 
 
-def test_get_tools_by_name_finds_a_withheld_tool_too(client: TestClient) -> None:
-    """Saying "no such tool" would hide the very thing an operator came to look up."""
-    response = client.get("/api/v1/tools/http_fetch")
+def test_get_tools_by_name_still_finds_a_withheld_tool(client: TestClient) -> None:
+    """Saying "no such tool" would hide the very thing an operator came to look up.
+
+    Nothing shipped is withheld from Phase 6 onward, so the case is exercised through a name
+    ``[tools] enabled`` holds and nothing ships — the other half of the catalog, and the half a
+    typo lands in.
+    """
+    response = client.get("/api/v1/tools/read_file")
     assert response.status_code == 200
-    assert response.json()["withheld_cause"] == DEFERRED_TOOL_CAUSE
+    assert response.json()["withheld_cause"] is None
 
 
 def test_get_tools_by_name_refuses_a_name_configuration_does_not_hold(client: TestClient) -> None:
@@ -148,11 +152,17 @@ def test_get_tools_by_name_refuses_a_name_configuration_does_not_hold(client: Te
     assert response.json()["error"]["code"] == "TOOL_NOT_FOUND"
 
 
-def test_no_tool_on_the_wire_advertises_network_egress_before_p6(client: TestClient) -> None:
-    """The claim, asserted at the surface a caller reads: nothing registered reaches a socket."""
+def test_exactly_one_tool_on_the_wire_advertises_network_egress(client: TestClient) -> None:
+    """Asserted at the surface a caller reads: ``http_fetch`` is the only way out, and it says so.
+
+    Before Phase 6 this asserted that *nothing* advertised network egress. That claim was true
+    because the tool was withheld; now the governance exists, the honest claim is that the set is
+    exactly one and it is the tool egress decisions are evaluated for.
+    """
     registered = [t for t in client.get("/api/v1/tools").json()["tools"] if t["registered"]]
     assert registered
-    assert {tool["egress"] for tool in registered} == {"none"}
+    networked = {tool["name"] for tool in registered if tool["egress"] == "network"}
+    assert networked == {"http_fetch"}
 
 
 # --------------------------------------------------------------------------------------------
@@ -164,7 +174,8 @@ def test_tools_list_shows_registered_and_withheld_and_the_rung() -> None:
     result = runner.invoke(app, ["tools", "list"])
     assert result.exit_code == 0
     assert "read_file" in result.stdout
-    assert f"http_fetch  withheld: {DEFERRED_TOOL_CAUSE}" in result.stdout
+    assert "http_fetch" in result.stdout
+    assert "withheld" not in result.stdout, "nothing shipped is withheld from Phase 6 onward"
     assert "isolation:" in result.stdout
 
 
