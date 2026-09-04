@@ -78,6 +78,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
     the LoadCoach client at all; both are asserted, because a model-generated number would arrive
     as an innocuous-looking parameter rather than an obviously wrong one (D-3).
 
+- **Phase 5, gate E: a crashed debit is reconciled exactly once.** The debit is written **before**
+  the turn row and in its own transaction, so a crash that loses the turn cannot leave spend
+  recorded for a turn that never existed, and a crash before the debit leaves a turn row that
+  recovery re-derives it from. `LoopController.reconcile_debits` is idempotent by `source_ref` and
+  runs at the head of every reconciliation pass; it also accounts for a database migrated into
+  Phase 5 with turns already in it, which are real spend the ledger never saw.
+  - Proved by running it: the existing `kill -9`-between-response-and-debit test now asserts the
+    spend appears exactly once keyed by the reconciled turn's own id, and a second recovery writes
+    nothing and leaves every entry byte-identical.
+
 ### Fixed
 - **`trajectories.budget_money_nanos` and `budget_token_ceiling` were `Integer` and are now
   `BigInteger`** (migration `0005`). `Money` is whole nanos, so the shipped $5.00 default ceiling

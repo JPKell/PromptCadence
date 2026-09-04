@@ -208,17 +208,18 @@ class Recoverer:
         self.database = Database.from_url(self.settings.storage.database_url or "")
         ensure_ready(self.database, auto_migrate=True)
         self.sink = TrajectoryEventSink(self.database)
+        self.budget = _budget(self.database, self.settings, _CLOCK)
         self.service = TrajectoryService(
             self.database,
             self.sink,
             self.settings,
-            budget=_budget(self.database, self.settings, _CLOCK),
+            budget=self.budget,
         )
         self.loadcoach = LoadCoachClient.from_settings(
             base_url=self.settings.loadcoach.base_url, timeout_seconds=30
         )
         self.controller = LoopController(
-            budget=_budget(self.database, self.settings, _CLOCK),
+            budget=self.budget,
             estimator=_estimator(self.database, self.settings, _CLOCK),
             database=self.database,
             sink=self.sink,
@@ -331,6 +332,62 @@ def test_kill_minus_nine_after_the_response_reconciles_the_completed_job_without
     assert types[-3:] == ["turn.completed", "trajectory.recovered", "trajectory.completed"]
     reconciled = recoverer.events(trajectory_id)[-2]["data"]
     assert reconciled["outcome"] == f"reconciled_completed_job:{job_id}"
+
+    # P5: the spend is on the ledger exactly once, keyed by the turn it came from. The child died
+    # between LoadCoach's response and the debit, so this debit exists only because recovery
+    # re-derived it -- and it is the *reconciled* turn's own id, not a fresh one, because that is
+    # what makes a second recovery a no-op rather than a second debit.
+    entries = list(recoverer.budget.entries(run_id=trajectory_id))
+    assert [entry.debit.source_ref for entry in entries] == [turns[1].turn.turn_id]
+    recorded = turns[1].turn.usage
+    assert recorded is not None
+    assert entries[0].debit.usage.as_counts() == recorded.as_counts()
+
+    # Idempotence, proved by doing it again rather than by reading the code that intends it.
+    assert recoverer.controller.reconcile_debits(trajectory_id) == 0
+    assert recoverer.recover().touched == 0, "a completed trajectory is not recovered again"
+    assert len(list(recoverer.budget.entries(run_id=trajectory_id))) == 1
+
+
+def test_reconcile_debits_re_derives_a_missing_debit_from_the_turn_row_and_only_once(
+    environment: dict[str, str], served_fake: tuple[FakeLoadCoach, str]
+) -> None:
+    """The other crash window, and the migration case: a turn on disk the ledger never saw.
+
+    The live path writes the debit before the turn row, so a crash between them cannot lose the
+    debit — but a database migrated into Phase 5 carries turns that predate the ledger entirely,
+    and they are real spend. The turn row is the source of truth and holds everything the debit
+    needs: four token classes, the tier, the answering model and the instant it happened.
+
+    Idempotence is proved directly. The first pass debits the turn; the second finds it already in
+    ``debited_turn_ids`` and writes nothing, and the ledger is byte-for-byte where it was.
+    """
+    recoverer = Recoverer()
+    trajectory_id = recoverer.service.submit(
+        TrajectorySubmission(task="already ran", bypass_planning=True)
+    ).trajectory_id
+    assert recoverer.controller.claim(trajectory_id) is TrajectoryState.EXECUTING
+    assert recoverer.controller.run(trajectory_id) is TrajectoryState.COMPLETED
+
+    # Delete the debit the loop wrote, leaving the turn row: exactly the state a pre-P5 database
+    # is in after migration 0005.
+    with recoverer.database.write() as session:
+        session.execute(models.LEDGER_TABLES.entries.delete())
+        session.execute(models.LEDGER_TABLES.balances.delete())
+        session.execute(models.LEDGER_TABLES.balance_money.delete())
+    assert list(recoverer.budget.entries(run_id=trajectory_id)) == []
+
+    assert recoverer.controller.reconcile_debits(trajectory_id) == 1
+    first = list(recoverer.budget.entries(run_id=trajectory_id))
+    turn = recoverer.service.turns(trajectory_id)[1].turn
+    assert turn.usage is not None
+    assert [entry.debit.source_ref for entry in first] == [turn.turn_id]
+    assert first[0].debit.usage.as_counts() == turn.usage.as_counts(), "re-derived from the row"
+
+    assert recoverer.controller.reconcile_debits(trajectory_id) == 0, "idempotent by source_ref"
+    second = list(recoverer.budget.entries(run_id=trajectory_id))
+    assert [entry.entry_id for entry in second] == [entry.entry_id for entry in first]
+    assert [entry.as_canonical() for entry in second] == [entry.as_canonical() for entry in first]
 
 
 def test_an_unreconcilable_turn_halts_recovered_after_crash(
