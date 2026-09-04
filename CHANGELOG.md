@@ -66,6 +66,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   - A local step trips neither rule: a debit that carried no estimate at all is *unpriced* and not
     *untotalled*, which is what keeps a mixed trajectory running under `strict`.
 
+- **Phase 5, gate D: the estimator's source is recorded, and a model can never be one.** The
+  ladder is historical p80 per token class over `entries()` at or above `estimate_min_samples`,
+  else the tier's configured per-step default — with the source label and the sample count on
+  every estimate either way (lifecycle §6, ADR-0047 §4). The threshold is tested on both sides of
+  20, because a test of one side passes on `>` as readily as on `>=`.
+  - The estimate is over observed **usage**, and the money it implies is derived by pricing it —
+    the same operation, against the same record, that costs a real turn. An estimator that stored
+    money would be a second place a money figure lived (ADR-0030 rule 1).
+  - `StepEstimator.estimate` takes a tier name and nothing else, and the module does not import
+    the LoadCoach client at all; both are asserted, because a model-generated number would arrive
+    as an innocuous-looking parameter rather than an obviously wrong one (D-3).
+
 ### Fixed
 - **`trajectories.budget_money_nanos` and `budget_token_ceiling` were `Integer` and are now
   `BigInteger`** (migration `0005`). `Money` is whole nanos, so the shipped $5.00 default ceiling
