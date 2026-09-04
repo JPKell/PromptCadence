@@ -25,7 +25,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from baseaicore import DataClassification, Money, ValidationError, new_id
 from baseaicore.timeutil import to_rfc3339
@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from promptcadence.config import Settings
+    from promptcadence.services.budget import BudgetService
     from promptcadence.services.database import Database
     from promptcadence.services.events import StoredEvent, TrajectoryEventSink
 
@@ -92,6 +93,10 @@ class TrajectorySubmission:
         project: A ``[budget.projects.<name>]`` label, or ``None``.
         token_budget: The trajectory's token ceiling, or ``None`` for the configured default.
         money_budget: Its money ceiling, or ``None`` for the configured default.
+        partial_pricing: ``"floor"`` or ``"strict"`` for this trajectory's money ceilings, or
+            ``None`` for ``[budget] partial_pricing`` (ADR-0069). A per-request override like the
+            ceilings themselves, because "never cross this cap" is a property of the piece of work
+            rather than of the installation.
     """
 
     task: str
@@ -104,12 +109,13 @@ class TrajectorySubmission:
     project: str | None = None
     token_budget: int | None = None
     money_budget: Money | None = None
+    partial_pricing: Literal["floor", "strict"] | None = None
 
 
 class TrajectoryService:
     """T1, T14 and the reads. One instance per process, over the shared handles."""
 
-    __slots__ = ("_clock", "_database", "_ids", "_settings", "_sink", "_threads")
+    __slots__ = ("_budget", "_clock", "_database", "_ids", "_settings", "_sink", "_threads")
 
     def __init__(
         self,
@@ -117,6 +123,7 @@ class TrajectoryService:
         sink: TrajectoryEventSink,
         settings: Settings,
         *,
+        budget: BudgetService | None = None,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] = new_id,
     ) -> None:
@@ -126,12 +133,17 @@ class TrajectoryService:
             database: The application's database handle.
             sink: The event sink every write goes through.
             settings: The validated configuration; the source of every default here.
+            budget: The budget service, whose ledger every trajectory is declared with at
+                creation. Optional only so a test that exercises the reads need not build one;
+                a runtime always passes it, and ``submit`` without one declares nothing, which
+                the pre-flight would meet as ``UnknownRun``.
             clock: The instant source, injected for determinism.
             id_factory: The id source, injected so a test can name its trajectories.
         """
         self._database = database
         self._sink = sink
         self._settings = settings
+        self._budget = budget
         self._clock = clock if clock is not None else _utc_now
         self._ids = id_factory
         self._threads = SqlThreadStore(database.sessions)
@@ -224,6 +236,7 @@ class TrajectoryService:
                     budget_money_currency=money.currency if money.nanos > 0 else None,
                     budget_money_nanos=money.nanos if money.nanos > 0 else None,
                     budget_token_ceiling=token_budget,
+                    budget_partial_pricing=submission.partial_pricing,
                     tier_snapshot_id=snapshot.snapshot_id,
                     approval_policy_version=policy_version,
                     created_at=now,
@@ -242,6 +255,15 @@ class TrajectoryService:
                 ),
                 now=now,
             )
+            if self._budget is not None:
+                # `declare_run` fires **here** — at trajectory creation, in the write that
+                # persists the row, before plan approval and long before the first turn. A run
+                # exists to LoadLedger "once debited or declared" (its spec §13), and a
+                # trajectory that had never been declared would meet `UnknownRun` on its very
+                # first pre-flight, which is every trajectory's first budget question. Moving
+                # this to the first turn would work for exactly as long as nothing checked a
+                # budget before spending against it.
+                self._budget.declare(session, trajectory_id)
         return self.get(trajectory_id)
 
     # ---- reads ------------------------------------------------------------------------------

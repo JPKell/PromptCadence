@@ -146,6 +146,7 @@ def test_the_stream_replays_from_last_event_id_without_gap_or_duplicate(
         "trajectory.claimed",
         "intent.minted",
         "turn.started",
+        "budget.debited",
         "turn.completed",
         "trajectory.completed",
     ]
@@ -156,7 +157,7 @@ def test_the_stream_replays_from_last_event_id_without_gap_or_duplicate(
     assert envelope["payload"]["sequence"] == 1
 
     resumed = _frames(client, trajectory_id, last_event_id="3")
-    assert [frame[0] for frame in resumed] == [4, 5, 6]
+    assert [frame[0] for frame in resumed] == [4, 5, 6, 7]
     assert resumed[-1][1] == "trajectory.completed"
 
     garbage = _frames(client, trajectory_id, last_event_id="not-a-number")

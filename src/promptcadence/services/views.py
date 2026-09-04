@@ -16,7 +16,11 @@ from baseaicore import DataClassification, Money, ValidationError
 from baseaicore.timeutil import to_rfc3339
 
 from promptcadence.domain.threads import Turn
-from promptcadence.domain.trajectory import TrajectoryDeclaration, TrajectoryState
+from promptcadence.domain.trajectory import (
+    TrajectoryDeclaration,
+    TrajectoryState,
+    WindowWait,
+)
 
 if TYPE_CHECKING:
     from promptcadence.domain.intent import TurnProvenance
@@ -41,6 +45,15 @@ class TrajectoryView:
     max_steps: int | None
     token_budget: int | None
     money_budget: Money | None
+    partial_pricing: str | None
+    """The request's ``partial_pricing`` override, or ``None`` for ``[budget] partial_pricing``.
+
+    Three-valued on purpose (ADR-0069): ``None`` is "whatever the operator configured", which is
+    not the same as either ``"floor"`` or ``"strict"`` written down. A request that pinned the
+    default still pinned it, and a later configuration change must not silently move it.
+    """
+    window: WindowWait | None
+    """The persisted ``awaiting_window`` clock, or ``None`` when the trajectory is not parked."""
     tier_snapshot_id: str | None
     approval_policy_version: str | None
     halted_reason: str | None
@@ -73,7 +86,17 @@ class TrajectoryView:
             "budget": {
                 "tokens": self.token_budget,
                 "money": self.money_budget.as_canonical() if self.money_budget else None,
+                "partial_pricing": self.partial_pricing,
             },
+            "window_wait": (
+                {
+                    "parked_from": self.window.parked_from.value,
+                    "next_edge_at": to_rfc3339(self.window.next_edge_at),
+                    "days_waited": self.window.days_waited,
+                }
+                if self.window is not None
+                else None
+            ),
             "tier_snapshot_id": self.tier_snapshot_id,
             "approval_policy_version": self.approval_policy_version,
             "cause": self.halted_reason,
@@ -154,6 +177,16 @@ def view_of(row: models.Trajectory) -> TrajectoryView:
         max_steps=row.max_steps,
         token_budget=row.budget_token_ceiling,
         money_budget=money,
+        partial_pricing=row.budget_partial_pricing,
+        window=(
+            WindowWait(
+                parked_from=TrajectoryState(row.window_parked_from),
+                next_edge_at=row.window_next_edge_at,
+                days_waited=row.window_days_waited,
+            )
+            if row.window_parked_from is not None and row.window_next_edge_at is not None
+            else None
+        ),
         tier_snapshot_id=row.tier_snapshot_id,
         approval_policy_version=row.approval_policy_version,
         halted_reason=row.halted_reason,

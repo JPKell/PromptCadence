@@ -17,14 +17,17 @@ threads builds the runtime and never starts it.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from mirrorwall import ComponentHealth
 
 from promptcadence.infrastructure.loadcoach import LoadCoachClient
+from promptcadence.services.budget import BudgetService
 from promptcadence.services.database import Database, database_health_component, ensure_ready
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.loadcoach_status import loadcoach_health_component
+from promptcadence.services.pricing import PricingCatalog
 from promptcadence.services.tools import ToolPlant, tools_health_component
 from promptcadence.services.trajectories import TrajectoryService
 from promptcadence.services.worker import TrajectoryWorker
@@ -45,7 +48,9 @@ class Runtime:
     __slots__ = (
         "_database",
         "_started",
+        "budget",
         "loadcoach",
+        "pricing",
         "settings",
         "sink",
         "tools",
@@ -65,6 +70,8 @@ class Runtime:
         Raises:
             weightsdb.DatabaseError: Storage could not be opened or migrated — see
                 :func:`promptcadence.services.database.ensure_ready`.
+            promptcadence.config.ConfigurationError: A configured tier's ``pricing_file`` is
+                missing, unreadable, or holds a record that is not a usable price observation.
         """
         self.settings = settings
         database_url = settings.storage.database_url
@@ -75,7 +82,13 @@ class Runtime:
         ensure_ready(database, auto_migrate=settings.storage.auto_migrate)
         self._database = database
         self.sink = TrajectoryEventSink(database)
-        self.trajectories = TrajectoryService(database, self.sink, settings)
+        # Loaded here, at startup, and never lazily: a price list that turns out to be unreadable
+        # halfway through a trajectory would leave real spend nobody can cost. An unreadable file
+        # is a refusal to start (ConfigurationError), which is the same shape as every other
+        # configuration mistake.
+        self.pricing = PricingCatalog.from_settings(settings)
+        self.budget = BudgetService(database, settings, self.pricing, clock=_utc_now)
+        self.trajectories = TrajectoryService(database, self.sink, settings, budget=self.budget)
         loadcoach = settings.loadcoach
         self.loadcoach = (
             LoadCoachClient(loadcoach_http)
@@ -96,6 +109,7 @@ class Runtime:
             loadcoach=self.loadcoach,
             settings=settings,
             tools=self.tools,
+            budget=self.budget,
         )
         self._started = False
 
@@ -152,3 +166,8 @@ def build_runtime(settings: Settings, *, loadcoach_http: httpx.Client | None = N
     runtime = Runtime(settings, loadcoach_http=loadcoach_http)
     runtime.start()
     return runtime
+
+
+def _utc_now() -> datetime:
+    """The process clock, injected everywhere below so a test can replace it with its own."""
+    return datetime.now(UTC)

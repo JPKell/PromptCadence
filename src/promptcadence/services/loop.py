@@ -50,8 +50,17 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from baseaicore import ValidationError, canonical_json, is_supported, new_id, sha256_of
-from sqlalchemy import select, update
+from baseaicore import (
+    UNSUPPORTED,
+    TokenUsage,
+    ValidationError,
+    canonical_json,
+    is_supported,
+    new_id,
+    sha256_of,
+)
+from baseaicore.timeutil import to_rfc3339
+from sqlalchemy import select, true, update
 from toolyard import MAX_RECORDED_NAME_CHARS, StoreFailure, ToolCallRequest
 
 from promptcadence.config import ConfigurationError
@@ -73,23 +82,36 @@ from promptcadence.domain.errors import (
     TierUnavailableError,
 )
 from promptcadence.domain.intent import ExecutionIntent, IntentMinted, mint_bypass_default
+from promptcadence.domain.policy import (
+    ApprovalRequested,
+    BudgetHeadroom,
+    PartialPricing,
+    VerdictReason,
+)
 from promptcadence.domain.threads import FinishReason, Thread, Turn, TurnRole
 from promptcadence.domain.tiers import Tier, TierPolicy
 from promptcadence.domain.tools import ToolCallCompleted, ToolCallStarted
 from promptcadence.domain.trajectory import (
+    BudgetWindowWait,
     TrajectoryCancelled,
     TrajectoryClaimed,
     TrajectoryCompleted,
     TrajectoryFailed,
     TrajectoryHalted,
     TrajectoryRecovered,
+    TrajectoryResumed,
     TrajectoryState,
+    WindowWait,
     cancel,
     claim_for_bypass,
     claim_for_planning,
     complete,
     fail,
     halt,
+    halt_window_wait,
+    park_for_window,
+    request_approval,
+    resume_from_window,
 )
 from promptcadence.domain.turns import (
     FinishDecision,
@@ -113,6 +135,7 @@ from promptcadence.infrastructure.loadcoach import (
 from promptcadence.infrastructure.threads import SqlThreadStore, thread_row, turn_row
 from promptcadence.infrastructure.tool_calls import CollectingToolCallStore, ToolCallLinks
 from promptcadence.observability.logging import correlation
+from promptcadence.services.budget import CurrencyMismatchError
 from promptcadence.services.loadcoach_surface import (
     ProviderSurface,
     load_provider_surface,
@@ -135,7 +158,9 @@ if TYPE_CHECKING:
     from promptcadence.domain.intent import TurnProvenance
     from promptcadence.domain.policy import ApprovalPolicy
     from promptcadence.domain.trajectory import TrajectoryDeclaration
+    from promptcadence.services.budget import BudgetService
     from promptcadence.services.database import Database
+    from promptcadence.services.estimates import StepEstimator
     from promptcadence.services.events import EventWriter, StoredEvent, TrajectoryEventSink
 
 __all__ = [
@@ -287,8 +312,10 @@ class LoopController:
     """Claim, run and reconcile bypassed trajectories. One per worker thread."""
 
     __slots__ = (
+        "_budget",
         "_clock",
         "_database",
+        "_estimator",
         "_ids",
         "_loadcoach",
         "_settings",
@@ -307,6 +334,8 @@ class LoopController:
         loadcoach: LoadCoachClient,
         settings: Settings,
         owner: str,
+        budget: BudgetService,
+        estimator: StepEstimator,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] = new_id,
         surface_loader: Callable[[LoadCoachClient], ProviderSurface] = load_provider_surface,
@@ -320,6 +349,10 @@ class LoopController:
             loadcoach: The LoadCoach client.
             settings: The validated configuration.
             owner: This worker's lease owner id, ``<process prefix>/<thread index>``.
+            budget: The ceilings, the ledger and the debits (P5). Required rather than optional:
+                a loop that could run without one would be a loop that could spend without
+                recording it, and every path below asks it something before it calls LoadCoach.
+            estimator: The layered step estimator the pre-flight asks for a prospective spend.
             clock: The instant source, injected for determinism.
             id_factory: The id source for turns and intents.
             surface_loader: How the provider surface is read; injected so a test can script it.
@@ -332,6 +365,8 @@ class LoopController:
         self._loadcoach = loadcoach
         self._settings = settings
         self.owner = owner
+        self._budget = budget
+        self._estimator = estimator
         self._clock = clock if clock is not None else _utc_now
         self._ids = id_factory
         self._surface_loader = surface_loader
@@ -720,8 +755,11 @@ class LoopController:
         turns: Sequence[Turn[TurnProvenance]],
         flags: RunSignals,
     ) -> TrajectoryState | None:
-        """One turn: ``turn.started``, the call, then the turn row with its verdict."""
+        """One turn: pre-flight, ``turn.started``, the call, the debit, then the turn row."""
         trajectory_id = governance.view.trajectory_id
+        parked = self._preflight(governance, tier)
+        if parked is not None:
+            return parked
         turn_id = self._ids()
         sequence = len(turns) + 1
         started = self._clock()
@@ -827,6 +865,17 @@ class LoopController:
                 ),
                 error_code=ErrorCode.LOADCOACH_ERROR,
                 recovered_note=recovered_from_job,
+            )
+        # The call happened and came back, so the spend is real whatever is decided about the
+        # answer below. Debit it **before** the turn row and before any halt: a debit written
+        # first can never be lost by a crash that also loses the turn, and can never be written
+        # twice, because `_debit_turn` refuses a `source_ref` the ledger already holds. Its own
+        # write, not this turn's, so a rolled-back turn row does not roll back recorded spend.
+        try:
+            self._debit_turn(governance, tier, turn_id=turn_id, response=response, now=now)
+        except CurrencyMismatchError as exc:
+            return self._end_with(
+                trajectory_id, halt, cause=str(exc), error_code=ErrorCode.BUDGET_EXCEEDED
             )
         try:
             subject = resolve_subject(response.model, surface=surface)
@@ -1000,6 +1049,419 @@ class LoopController:
                 )
                 return TrajectoryState.HALTED
         return self._run_tool_calls(governance, turn_id=turn_id, sequence=sequence, calls=requested)
+
+    # ----------------------------------------------------------------------------------------
+    # Budget (Phase 5)
+    # ----------------------------------------------------------------------------------------
+
+    def _preflight(self, governance: _Governance, tier: Tier) -> TrajectoryState | None:
+        """Ask every active ceiling about the next step, and act on the most restrictive answer.
+
+        The **only** place a ceiling stops work, and deliberately so. A ceiling crossed by a debit
+        is not acted on where the debit happens: the debit's own verdicts are recorded in
+        ``budget.debited``, and the next turn's pre-flight is what refuses to spend more. One rule
+        in one place, and no path where a step is refused after it has already run.
+
+        Returns:
+            The state the trajectory was moved to — ``awaiting_window``, ``awaiting_approval`` or
+            ``halted`` — or ``None`` when every ceiling admits the step and the turn may run.
+        """
+        view = governance.view
+        estimate, priced = self._estimator.estimate(tier=tier.name)
+        try:
+            position = self._budget.preflight(view, tier=tier.name, estimate=priced)
+        except CurrencyMismatchError as exc:
+            return self._end_with(
+                view.trajectory_id, halt, cause=str(exc), error_code=ErrorCode.BUDGET_EXCEEDED
+            )
+        binding = position.binding
+        if binding is None:
+            return None
+        budget = self._settings.budget
+        cause = (
+            f"the {binding.scope} budget refuses the next step on tier {tier.name}: "
+            f"{_ceiling_cause(binding)}; the estimate was {estimate.token_estimate} tokens "
+            f"(source {estimate.source.value}, {estimate.sample_count} samples)"
+        )
+        if position.daily_binds:
+            policy = budget.on_daily_exhausted
+            if policy == "window":
+                return self._park_for_window(governance, cause=cause)
+        else:
+            policy = budget.on_exhausted
+        if policy == "approval":
+            return self._request_ceiling_raise(governance, cause=cause)
+        return self._end_with(
+            view.trajectory_id, halt, cause=cause, error_code=_exceeded_code(binding)
+        )
+
+    def _debit_turn(
+        self,
+        governance: _Governance,
+        tier: Tier,
+        *,
+        turn_id: str,
+        response: GenerationResponse,
+        now: datetime,
+    ) -> None:
+        """Record one turn's spend, once, in its own write with its ``budget.debited`` event.
+
+        Idempotent by ``source_ref``: a turn the ledger already holds a debit for is skipped
+        silently, which is what makes both crash windows recoverable without a double debit — the
+        one between LoadCoach's response and this write, and the one between this write and the
+        turn row that follows it.
+
+        The usage is rebuilt from **all four** classes LoadCoach put on the wire (ADR-0070, row
+        C6); a class the protocol cannot bill is ``0`` and a class simply missing stays
+        ``UNSUPPORTED``, which the ledger excludes from the balance rather than counting as zero.
+
+        Raises:
+            CurrencyMismatchError: If the turn priced in a currency an active money ceiling caps in
+                another. Refused before anything is written (ADR-0030 rule 3).
+        """
+        view = governance.view
+        if turn_id in self._budget.debited_turn_ids(view.trajectory_id):
+            return
+        priced = self._budget.price(
+            tier=tier.name,
+            canonical_id=response.model.canonical_id,
+            usage=response.usage,
+            at=now,
+        )
+        with self._sink.write() as (session, events):
+            body = self._budget.debit(
+                session, view=view, turn_id=turn_id, tier=tier.name, priced=priced, at=now
+            )
+            events.append(view.trajectory_id, body, now=now)
+
+    def _park_for_window(self, governance: _Governance, *, cause: str) -> TrajectoryState:
+        """T15: park on the per-day ceiling until the next UTC-day edge, releasing the lease.
+
+        ``awaiting_window`` holds no lease (lifecycle §8.1) — a trajectory parked for up to
+        ``window_wait_max_days`` holding one would keep a worker slot for days — so the clock is a
+        persisted value on the row and the release is part of the same write.
+        """
+        view = governance.view
+        now = self._clock()
+        wait = WindowWait(
+            parked_from=TrajectoryState.EXECUTING,
+            next_edge_at=self._budget.next_day_edge(now),
+            days_waited=0,
+        )
+        outcome = park_for_window(
+            TrajectoryState.EXECUTING, wait=wait, lease_released=True, turns_settled=True
+        )
+        with self._sink.write() as (session, events):
+            self._owned_cas(
+                session,
+                view.trajectory_id,
+                values={
+                    "status": outcome.state.value,
+                    "halted_reason": cause,
+                    "window_parked_from": wait.parked_from.value,
+                    "window_next_edge_at": wait.next_edge_at,
+                    "window_days_waited": wait.days_waited,
+                    "updated_at": now,
+                    "lease_owner": None,
+                    "lease_expires_at": None,
+                },
+            )
+            events.append(
+                view.trajectory_id,
+                BudgetWindowWait(
+                    trajectory_id=view.trajectory_id,
+                    parked_from=wait.parked_from,
+                    next_edge_at=wait.next_edge_at,
+                    days_waited=wait.days_waited,
+                    window_wait_max_days=self._settings.budget.window_wait_max_days,
+                ),
+                now=now,
+            )
+        return outcome.state
+
+    def _request_ceiling_raise(self, governance: _Governance, *, cause: str) -> TrajectoryState:
+        """T10: park on one pending approval request asking for the ceiling to be raised.
+
+        **Granting the raise is Phase 7's**, and nothing here grants one. What this does is the
+        half the lifecycle table requires of the *parking* side: exactly one ``approval_request``
+        row exists before the state moves, because a trajectory parked with no request is one
+        nobody can release (ADR-0049 rule 6). Until P7 the request simply expires, which halts the
+        trajectory with the cause — a timeout is never a grant.
+        """
+        view = governance.view
+        now = self._clock()
+        request_id = self._ids()
+        expires = now + timedelta(hours=self._settings.approval.request_timeout_hours)
+        outcome = request_approval(TrajectoryState.EXECUTING, request_created=True)
+        with self._sink.write() as (session, events):
+            session.add(
+                models.ApprovalRequest(
+                    id=request_id,
+                    trajectory_id=view.trajectory_id,
+                    status="pending",
+                    reason=VerdictReason.BUDGET_EXCEEDED.value,
+                    step_ids_json=[],
+                    expires_at=expires,
+                    created_at=now,
+                )
+            )
+            self._owned_cas(
+                session,
+                view.trajectory_id,
+                values={
+                    "status": outcome.state.value,
+                    "halted_reason": cause,
+                    "updated_at": now,
+                    "lease_owner": None,
+                    "lease_expires_at": None,
+                },
+            )
+            events.append(
+                view.trajectory_id,
+                ApprovalRequested(
+                    trajectory_id=view.trajectory_id,
+                    approval_request_id=request_id,
+                    step_ids=(),
+                    reason=VerdictReason.BUDGET_EXCEEDED,
+                    expires_at=to_rfc3339(expires),
+                ),
+                now=now,
+            )
+        return outcome.state
+
+    def parked_trajectory_ids(self) -> Sequence[str]:
+        """Return every ``awaiting_window`` trajectory, oldest first.
+
+        A parked trajectory holds no lease, so the recovery pass — which reads lease-holding rows —
+        never sees it. Nothing else in the process would look at its clock either, which is why
+        the worker asks this on every pass.
+        """
+        with self._database.read() as session:
+            return list(
+                session.execute(
+                    select(models.Trajectory.id)
+                    .where(models.Trajectory.status == TrajectoryState.AWAITING_WINDOW.value)
+                    .order_by(models.Trajectory.window_next_edge_at, models.Trajectory.id)
+                ).scalars()
+            )
+
+    def release_window(self, trajectory_id: str) -> TrajectoryState | None:
+        """T16/T17: decide what a parked trajectory does now that the clock has been read.
+
+        Called by the worker on every pass. Three answers, and the *middle* one is the one a naive
+        implementation gets wrong:
+
+        * The edge has not arrived — nothing happens, and the trajectory stays parked.
+        * The edge arrived and the per-day ceiling **still refuses** (another trajectory has
+          already spent the new day) — one more edge is counted, the next edge is persisted, and
+          it **stays parked**. Waiting a day does not entitle it to run.
+        * The edge arrived and the ceiling admits — T16 back to the state it parked from, with the
+          lease re-acquired in the same write.
+
+        After ``window_wait_max_days`` edges have passed with the ceiling still refusing, T17
+        halts with the cause; it never waits forever.
+
+        Returns:
+            The state after this pass, or ``None`` when the trajectory is not parked or the row
+            moved under this worker.
+        """
+        now = self._clock()
+        with self._database.read() as session:
+            row = session.get(models.Trajectory, trajectory_id)
+            if row is None or row.status != TrajectoryState.AWAITING_WINDOW.value:
+                return None
+            view = view_of(row)
+        wait = view.window
+        if wait is None or now < wait.next_edge_at:
+            return TrajectoryState.AWAITING_WINDOW
+        crossed = WindowWait(
+            parked_from=wait.parked_from,
+            next_edge_at=self._budget.next_day_edge(now),
+            days_waited=wait.days_waited + 1,
+        )
+        maximum = self._settings.budget.window_wait_max_days
+        admits = not self._day_refuses(view)
+        if admits and crossed.days_waited <= maximum:
+            return self._resume_from_window(view, wait=crossed)
+        if crossed.days_waited >= maximum:
+            cause = (
+                f"the per-day budget still refused after {crossed.days_waited} UTC day edges, "
+                f"the configured window_wait_max_days ({maximum})"
+            )
+            return self._halt_window_wait(view, wait=crossed, cause=cause)
+        return self._keep_parked(view, wait=crossed)
+
+    def _day_refuses(self, view: TrajectoryView) -> bool:
+        """Whether the per-day ceiling would still refuse this trajectory's next step.
+
+        T16's guard is "the per-day ceiling now **admits the plan or step**", which is a different
+        question from "is the ceiling exceeded". A day with headroom smaller than the next step's
+        estimate is a day that still refuses, and asking the cheaper question would wake a
+        trajectory only for its next pre-flight to park it again — one park per day edge, forever,
+        with an event stream to match. So this asks exactly what the pre-flight asks.
+        """
+        tier = view.tier_override or self._settings.policy.default_tier
+        _, priced = self._estimator.estimate(tier=tier)
+        try:
+            return self._budget.preflight(view, tier=tier, estimate=priced).daily_binds
+        except CurrencyMismatchError:
+            return True
+
+    def _resume_from_window(self, view: TrajectoryView, *, wait: WindowWait) -> TrajectoryState:
+        """T16: the day rolled, the ceiling admits, and this worker takes the lease back."""
+        now = self._clock()
+        outcome = resume_from_window(
+            TrajectoryState.AWAITING_WINDOW,
+            wait=wait,
+            ceiling_admits=True,
+            window_wait_max_days=self._settings.budget.window_wait_max_days,
+            lease_acquired=True,
+        )
+        expires = now + timedelta(seconds=self._settings.execution.lease_seconds)
+        with self._sink.write() as (session, events):
+            if not self._cas(
+                session,
+                view.trajectory_id,
+                expected=TrajectoryState.AWAITING_WINDOW,
+                values={
+                    "status": outcome.state.value,
+                    "halted_reason": None,
+                    "window_parked_from": None,
+                    "window_next_edge_at": None,
+                    "window_days_waited": wait.days_waited,
+                    "lease_owner": self.owner,
+                    "lease_expires_at": expires,
+                    "updated_at": now,
+                },
+            ):
+                return TrajectoryState.AWAITING_WINDOW
+            events.append(
+                view.trajectory_id,
+                TrajectoryResumed(
+                    trajectory_id=view.trajectory_id,
+                    resumed_to=outcome.state,
+                    days_waited=wait.days_waited,
+                ),
+                now=now,
+            )
+        return outcome.state
+
+    def _keep_parked(self, view: TrajectoryView, *, wait: WindowWait) -> TrajectoryState:
+        """The day rolled and the new day is already spent: count the edge, wait for the next."""
+        now = self._clock()
+        with self._sink.write() as (session, events):
+            del events
+            self._cas(
+                session,
+                view.trajectory_id,
+                expected=TrajectoryState.AWAITING_WINDOW,
+                values={
+                    "window_next_edge_at": wait.next_edge_at,
+                    "window_days_waited": wait.days_waited,
+                    "updated_at": now,
+                },
+            )
+        return TrajectoryState.AWAITING_WINDOW
+
+    def _halt_window_wait(
+        self, view: TrajectoryView, *, wait: WindowWait, cause: str
+    ) -> TrajectoryState:
+        """T17: ``window_wait_max_days`` edges passed and the ceiling never admitted."""
+        now = self._clock()
+        outcome = halt_window_wait(
+            TrajectoryState.AWAITING_WINDOW,
+            wait=wait,
+            window_wait_max_days=self._settings.budget.window_wait_max_days,
+            cause=cause,
+        )
+        with self._sink.write() as (session, events):
+            if not self._cas(
+                session,
+                view.trajectory_id,
+                expected=TrajectoryState.AWAITING_WINDOW,
+                values={
+                    "status": outcome.state.value,
+                    "halted_reason": cause,
+                    "error_code": ErrorCode.BUDGET_EXCEEDED.value,
+                    "window_next_edge_at": wait.next_edge_at,
+                    "window_days_waited": wait.days_waited,
+                    "completed_at": now,
+                    "updated_at": now,
+                },
+            ):
+                return TrajectoryState.AWAITING_WINDOW
+            events.append(
+                view.trajectory_id,
+                TrajectoryHalted(
+                    trajectory_id=view.trajectory_id,
+                    cause=cause,
+                    error_code=ErrorCode.BUDGET_EXCEEDED.value,
+                ),
+                now=now,
+            )
+        return outcome.state
+
+    def reconcile_debits(self, trajectory_id: str) -> int:
+        """Debit every persisted turn the ledger has not seen. Idempotent by ``source_ref``.
+
+        **The turn row is the source of truth and this re-derives the debit from it.** A crash
+        between LoadCoach's response and the debit loses neither: the recorded turn carries the
+        four token classes, the tier, the answering model and the instant, which is everything the
+        debit needs and everything a re-costing needs. Run it twice and the second run debits
+        nothing, because every turn is then in ``debited_turn_ids``.
+
+        It also covers a database migrated into Phase 5 with turns already in it: those rows have
+        usage and no debit, and this is what accounts for them rather than leaving spend the ledger
+        never saw.
+
+        Args:
+            trajectory_id: The trajectory to reconcile.
+
+        Returns:
+            How many debits this pass wrote. ``0`` on a second pass, which is the property the
+            recovery test asserts directly.
+        """
+        already = self._budget.debited_turn_ids(trajectory_id)
+        with self._database.read() as session:
+            row = session.get(models.Trajectory, trajectory_id)
+            if row is None:
+                return 0
+            view = view_of(row)
+            pending = [
+                _TurnSpend(
+                    turn_id=turn.id,
+                    tier=turn.tier or "",
+                    canonical_id=turn.model_canonical_id or "",
+                    usage=_usage_of(turn),
+                    at=turn.created_at,
+                )
+                for turn in session.execute(
+                    select(models.Turn)
+                    .where(
+                        models.Turn.trajectory_id == trajectory_id,
+                        models.Turn.role == TurnRole.ASSISTANT.value,
+                        models.Turn.id.not_in(already) if already else true(),
+                    )
+                    .order_by(models.Turn.sequence)
+                ).scalars()
+            ]
+        written = 0
+        for spend in pending:
+            priced = self._budget.price(
+                tier=spend.tier, canonical_id=spend.canonical_id, usage=spend.usage, at=spend.at
+            )
+            with self._sink.write() as (session, events):
+                body = self._budget.debit(
+                    session,
+                    view=view,
+                    turn_id=spend.turn_id,
+                    tier=spend.tier,
+                    priced=priced,
+                    at=spend.at,
+                )
+                events.append(trajectory_id, body, now=self._clock())
+            written += 1
+        return written
 
     # ----------------------------------------------------------------------------------------
     # Tool round trips
@@ -1324,6 +1786,16 @@ class LoopController:
         with self._database.read() as session:
             row = session.get(models.Trajectory, trajectory_id)
             if row is None or row.status != TrajectoryState.EXECUTING.value:
+                return ReconcileOutcome.DEFERRED
+        # Before anything else: account for every turn already on disk that the ledger has not
+        # seen. A crash between a turn's debit and its row is impossible by construction (the
+        # debit is written first), but a crash *before* the debit is not, and a database migrated
+        # into Phase 5 carries turns that predate the ledger entirely. Idempotent by `source_ref`,
+        # so this is a no-op on the ordinary pass and the whole recovery on the crashed one.
+        self.reconcile_debits(trajectory_id)
+        with self._database.read() as session:
+            row = session.get(models.Trajectory, trajectory_id)
+            if row is None:  # pragma: no cover — the row was checked one statement ago
                 return ReconcileOutcome.DEFERRED
             if require_expired and not (
                 row.lease_expires_at is None or row.lease_expires_at <= now
@@ -1690,3 +2162,70 @@ def _isolation_of(plant: ToolPlant, tool_name: str) -> str | None:
     if entry is None or not entry.requires_isolation:
         return None
     return plant.isolation().tier.value
+
+
+@dataclass(frozen=True, slots=True)
+class _TurnSpend:
+    """One persisted turn's facts, read out of the row so the debit can be re-derived from it."""
+
+    turn_id: str
+    tier: str
+    canonical_id: str
+    usage: TokenUsage
+    at: datetime
+
+
+def _usage_of(row: models.Turn) -> TokenUsage:
+    """Rebuild a turn's usage from its row, keeping "not reported" distinct from zero.
+
+    ADR-0070 in the one place it is easiest to get wrong. A ``NULL`` column is a class LoadCoach
+    did not report and stays ``UNSUPPORTED``, which the ledger excludes from the token balance; a
+    stored ``0`` is a class that was reported as unused and counts as the zero it is. Reading
+    ``NULL`` as ``0`` here would make every unreported class look measured, and every money figure
+    downstream would be wrong in the same direction.
+    """
+    return TokenUsage(
+        input_tokens=row.input_tokens if row.input_tokens is not None else UNSUPPORTED,
+        output_tokens=row.output_tokens if row.output_tokens is not None else UNSUPPORTED,
+        cache_write_tokens=(
+            row.cache_write_tokens if row.cache_write_tokens is not None else UNSUPPORTED
+        ),
+        cache_read_tokens=(
+            row.cache_read_tokens if row.cache_read_tokens is not None else UNSUPPORTED
+        ),
+    )
+
+
+def _exceeded_code(headroom: BudgetHeadroom) -> ErrorCode:
+    """Which error code a refused pre-flight carries.
+
+    ``TOKEN_BUDGET_EXCEEDED`` when the token bound is the one with nothing left — the universal
+    brake, and the only one that can bind local work — and ``BUDGET_EXCEEDED`` otherwise. A
+    ceiling binding both reports whichever actually ran out, because "which cap stopped me" is the
+    first question an operator asks and a single code cannot answer it.
+    """
+    if headroom.tokens_remaining is not None and headroom.tokens_remaining < 0:
+        return ErrorCode.TOKEN_BUDGET_EXCEEDED
+    return ErrorCode.BUDGET_EXCEEDED
+
+
+def _ceiling_cause(headroom: BudgetHeadroom) -> str:
+    """Say which bound refused, rendering a floor as "at least" and never as a bare figure."""
+    kind = "tokens" if _exceeded_code(headroom) is ErrorCode.TOKEN_BUDGET_EXCEEDED else "money"
+    parts = [f"the {kind} cap is spent"]
+    if headroom.money_is_floor:
+        parts.append(
+            f"the money spent is a floor over {headroom.unpriced_debit_count} debit(s) that "
+            "could not be fully priced, so it is at least that much and possibly more"
+        )
+    if headroom.partial_pricing is PartialPricing.STRICT and headroom.untotalled_debit_count:
+        parts.append(
+            f"partial_pricing is strict and {headroom.untotalled_debit_count} debit(s) in this "
+            "window carried an estimate that did not total, which counts as exceeding"
+        )
+    if headroom.tokens_are_floor:
+        parts.append(
+            f"{headroom.unmetered_debit_count} debit(s) left a token class unreported, so the "
+            "token balance is a floor too"
+        )
+    return "; ".join(parts)

@@ -14,6 +14,7 @@ import pytest
 from baseaicore import DataClassification
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from tests.conftest import budget_and_estimator
 from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
     ScriptedError,
@@ -34,6 +35,7 @@ from promptcadence.infrastructure.loadcoach import LoadCoachClient
 from promptcadence.services.database import MIGRATIONS_LOCATION, Database
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.loop import LoopController, RunSignals
+from promptcadence.services.pricing import PricingCatalog
 from promptcadence.services.tools import ToolPlant
 from promptcadence.services.trajectories import TrajectoryService, TrajectorySubmission
 
@@ -43,14 +45,26 @@ _NOW = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
 class Harness:
     """Everything one loop test needs, over one database and one fake."""
 
-    def __init__(self, settings: Settings, database: Database, fake: FakeLoadCoach) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        database: Database,
+        fake: FakeLoadCoach,
+        *,
+        pricing: PricingCatalog | None = None,
+    ) -> None:
         self.settings = settings
         self.database = database
         self.fake = fake
         ticks = iter(range(100_000))
         self.clock = lambda: _NOW + timedelta(milliseconds=next(ticks))
         self.sink = TrajectoryEventSink(database, clock=self.clock)
-        self.service = TrajectoryService(database, self.sink, settings, clock=self.clock)
+        self.budget, self.estimator = budget_and_estimator(
+            database, settings, clock=self.clock, pricing=pricing
+        )
+        self.service = TrajectoryService(
+            database, self.sink, settings, budget=self.budget, clock=self.clock
+        )
         self.loadcoach = LoadCoachClient(
             TestClient(build_fake_app(fake), base_url="http://loadcoach.test")
         )
@@ -62,6 +76,8 @@ class Harness:
 
     def controller(self, owner: str = "host:1/0") -> LoopController:
         return LoopController(
+            budget=self.budget,
+            estimator=self.estimator,
             database=self.database,
             sink=self.sink,
             loadcoach=self.loadcoach,
@@ -191,6 +207,7 @@ def test_a_text_profile_turn_completes_on_a_declared_stop(harness: Harness) -> N
         "trajectory.claimed",
         "intent.minted",
         "turn.started",
+        "budget.debited",
         "turn.completed",
         "trajectory.completed",
     ]
@@ -375,11 +392,31 @@ def test_a_tool_outside_the_allowlist_is_refused_and_recorded_and_the_run_contin
     assert "not_allowlisted" in (tool_turn.turn.content or "")
 
 
+def _cheap_estimates(settings: Settings) -> Settings:
+    """Shrink the tiers' configured per-step estimates so a small ceiling still admits a step.
+
+    Two different mechanisms watch the same number and this separates them. The **ledger's**
+    per-run ceiling refuses a step whose *estimate* would not fit — correct, and what P5 added —
+    while the ``budget_overrun`` **deviation** these tests are about compares what a turn actually
+    spent against the intent's budget, after the fact. With the shipped 4096+1024 default estimate
+    a 1000-token ceiling admits nothing at all, so these tests would never reach the turn whose
+    overrun they are asserting on.
+    """
+    tiers = {
+        name: tier.model_copy(
+            update={"default_step_input_tokens": 400, "default_step_output_tokens": 100}
+        )
+        for name, tier in settings.tiers.items()
+    }
+    return settings.model_copy(update={"tiers": tiers})
+
+
 def test_a_budget_overrun_is_recorded_and_continued_under_the_default_scope(
     harness: Harness,
 ) -> None:
     """Lifecycle §5: under ``on_tier_or_classification_change`` a budget overrun is
     ``continue_recorded`` — an event *and* a row — and the turn's own verdict then decides."""
+    harness = Harness(_cheap_estimates(harness.settings), harness.database, harness.fake)
     harness.fake.script(ScriptedGeneration(input_tokens=900, output_tokens=200))
     trajectory_id, state = _claim_and_run(harness, token_budget=1000)
     assert state is TrajectoryState.COMPLETED  # the declared stop decided; the drift did not
@@ -397,7 +434,7 @@ def test_a_budget_overrun_halts_for_want_of_reapproval_under_any_deviation(
     harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PROMPTCADENCE_PLANNING__REAPPROVAL_SCOPE", "any_deviation")
-    strict = Harness(load_settings().settings, harness.database, harness.fake)
+    strict = Harness(_cheap_estimates(load_settings().settings), harness.database, harness.fake)
     strict.fake.script(ScriptedGeneration(input_tokens=900, output_tokens=200))
     trajectory_id, state = _claim_and_run(strict, token_budget=1000)
     assert state is TrajectoryState.HALTED
@@ -487,6 +524,8 @@ def test_a_changed_approval_policy_refuses_to_run_under_an_envelope_nobody_minte
     harness.controller().claim(trajectory_id)
     monkeypatch.setenv("PROMPTCADENCE_EXECUTION__MAX_STEPS", "7")  # the default max_turns moved
     changed = LoopController(
+        budget=harness.budget,
+        estimator=harness.estimator,
         database=harness.database,
         sink=harness.sink,
         loadcoach=harness.loadcoach,

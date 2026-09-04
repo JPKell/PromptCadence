@@ -32,6 +32,7 @@ import httpx
 import pytest
 import uvicorn
 from sqlalchemy import select
+from tests.conftest import budget_and_estimator, budget_for
 from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
     ScriptedGeneration,
@@ -51,23 +52,50 @@ from promptcadence.services.loop import LoopController, ReconcileOutcome
 from promptcadence.services.trajectories import TrajectoryService, TrajectorySubmission
 from promptcadence.services.worker import RecoverySummary, recover
 
+
+def _CLOCK() -> datetime:  # noqa: N802 — a fixed name shared with the child script below
+    """The recovery tests' clock: real time, because a kill -9 does not wait for an injected one."""
+    return datetime.now(UTC)
+
+
+def _budget(database: Database, settings: Any, clock: Any) -> Any:
+    return budget_for(database, settings, clock=clock)
+
+
+def _estimator(database: Database, settings: Any, clock: Any) -> Any:
+    return budget_and_estimator(database, settings, clock=clock)[1]
+
+
 _CHILD = r"""
 import os, signal, sys, threading
 from datetime import UTC, datetime
 from promptcadence.config import load_settings
 from promptcadence.infrastructure.loadcoach import LoadCoachClient
 from promptcadence.services.database import Database, ensure_ready
+from promptcadence.services.budget import BudgetService
+from promptcadence.services.estimates import StepEstimator
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.loop import LoopController, RunSignals
+from promptcadence.services.pricing import PricingCatalog
 from promptcadence.services.trajectories import TrajectoryService, TrajectorySubmission
 from promptcadence.services.worker import LeaseKeeper
+
+_CLOCK = lambda: datetime.now(UTC)
+
+def _budget(database, settings, clock):
+    return BudgetService(database, settings, PricingCatalog(by_tier={}), clock=clock)
+
+def _estimator(database, settings, clock):
+    return StepEstimator(_budget(database, settings, clock), settings, clock=clock)
 
 mode = sys.argv[1]
 settings = load_settings().settings
 database = Database.from_url(settings.storage.database_url)
 ensure_ready(database, auto_migrate=True)
 sink = TrajectoryEventSink(database)
-service = TrajectoryService(database, sink, settings)
+service = TrajectoryService(
+    database, sink, settings, budget=_budget(database, settings, _CLOCK)
+)
 submission = TrajectorySubmission(task="reconcile me", bypass_planning=True)
 trajectory_id = service.submit(submission).trajectory_id
 
@@ -85,6 +113,8 @@ class DiesAfterResponse(LoadCoachClient):
 client_class = DiesAfterResponse if mode == "after_response" else LoadCoachClient
 loadcoach = client_class.from_settings(base_url=settings.loadcoach.base_url, timeout_seconds=600)
 controller = LoopController(
+    budget=_budget(database, settings, _CLOCK),
+    estimator=_estimator(database, settings, _CLOCK),
     database=database, sink=sink, loadcoach=loadcoach, settings=settings, owner="child:1/0"
 )
 assert controller.claim(trajectory_id) is not None
@@ -178,11 +208,18 @@ class Recoverer:
         self.database = Database.from_url(self.settings.storage.database_url or "")
         ensure_ready(self.database, auto_migrate=True)
         self.sink = TrajectoryEventSink(self.database)
-        self.service = TrajectoryService(self.database, self.sink, self.settings)
+        self.service = TrajectoryService(
+            self.database,
+            self.sink,
+            self.settings,
+            budget=_budget(self.database, self.settings, _CLOCK),
+        )
         self.loadcoach = LoadCoachClient.from_settings(
             base_url=self.settings.loadcoach.base_url, timeout_seconds=30
         )
         self.controller = LoopController(
+            budget=_budget(self.database, self.settings, _CLOCK),
+            estimator=_estimator(self.database, self.settings, _CLOCK),
             database=self.database,
             sink=self.sink,
             loadcoach=self.loadcoach,
@@ -245,6 +282,10 @@ def test_kill_minus_nine_with_a_turn_in_flight_cancels_the_orphan_and_resumes(
         "turn.started",
         "trajectory.recovered",
         "turn.started",
+        # The debit is written before the turn row and in its own transaction (P5): a debit that
+        # a crash could lose alongside the turn is a debit reconciliation has to reconstruct, and
+        # writing it first makes the ordinary path the same shape as the recovered one.
+        "budget.debited",
         "turn.completed",
         "trajectory.completed",
     ]
@@ -301,6 +342,8 @@ def test_an_unreconcilable_turn_halts_recovered_after_crash(
         TrajectorySubmission(task="lost", bypass_planning=True)
     ).trajectory_id
     stale = LoopController(
+        budget=_budget(recoverer.database, recoverer.settings, _CLOCK),
+        estimator=_estimator(recoverer.database, recoverer.settings, _CLOCK),
         database=recoverer.database,
         sink=recoverer.sink,
         loadcoach=recoverer.loadcoach,
@@ -338,6 +381,8 @@ def test_recovery_is_deferred_when_loadcoach_is_unreachable(
         TrajectorySubmission(task="lost", bypass_planning=True)
     ).trajectory_id
     stale = LoopController(
+        budget=_budget(recoverer.database, recoverer.settings, _CLOCK),
+        estimator=_estimator(recoverer.database, recoverer.settings, _CLOCK),
         database=recoverer.database,
         sink=recoverer.sink,
         loadcoach=recoverer.loadcoach,
@@ -359,6 +404,8 @@ def test_recovery_is_deferred_when_loadcoach_is_unreachable(
             ),
         )
     unreachable = LoopController(
+        budget=_budget(recoverer.database, recoverer.settings, _CLOCK),
+        estimator=_estimator(recoverer.database, recoverer.settings, _CLOCK),
         database=recoverer.database,
         sink=recoverer.sink,
         loadcoach=LoadCoachClient(httpx.Client(base_url="http://127.0.0.1:9", timeout=0.2)),
@@ -376,6 +423,8 @@ def test_the_reaper_takes_over_only_an_expired_lease(environment: dict[str, str]
         TrajectorySubmission(task="live", bypass_planning=True)
     ).trajectory_id
     live = LoopController(
+        budget=_budget(recoverer.database, recoverer.settings, _CLOCK),
+        estimator=_estimator(recoverer.database, recoverer.settings, _CLOCK),
         database=recoverer.database,
         sink=recoverer.sink,
         loadcoach=recoverer.loadcoach,

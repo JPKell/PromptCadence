@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 import socket
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,9 +30,14 @@ from typing import Any
 import pytest
 from baseaicore import DataClassification, Money
 
+from promptcadence.config import Settings
 from promptcadence.domain.policy import ApprovalMode, ApprovalPolicy
 from promptcadence.domain.tiers import EgressClass, Tier, TierPolicy, TierSnapshot
 from promptcadence.domain.trajectory import TrajectoryDeclaration
+from promptcadence.services.budget import BudgetService
+from promptcadence.services.database import Database
+from promptcadence.services.estimates import StepEstimator
+from promptcadence.services.pricing import PricingCatalog
 
 _REAL_SOCKET_CONNECT = socket.socket.connect
 
@@ -169,3 +174,36 @@ def declaration() -> TrajectoryDeclaration:
 def minted_at() -> datetime:
     """A fixed instant, so every minting golden is byte-identical on re-derivation."""
     return datetime(2026, 9, 2, 12, 0, 0, tzinfo=UTC)
+
+
+def budget_for(
+    database: Database,
+    settings: Settings,
+    *,
+    clock: Callable[[], datetime],
+    pricing: PricingCatalog | None = None,
+) -> BudgetService:
+    """Build a budget service over one test's database, clock and (usually empty) price list.
+
+    A helper rather than a fixture because most callers need it beside a ``Database`` they built
+    themselves, and because the clock is the point: every window, day edge and expiry assertion in
+    Phase 5 depends on injecting one.
+    """
+    return BudgetService(
+        database,
+        settings,
+        pricing if pricing is not None else PricingCatalog(by_tier={}),
+        clock=clock,
+    )
+
+
+def budget_and_estimator(
+    database: Database,
+    settings: Settings,
+    *,
+    clock: Callable[[], datetime],
+    pricing: PricingCatalog | None = None,
+) -> tuple[BudgetService, StepEstimator]:
+    """The pair every :class:`~promptcadence.services.loop.LoopController` needs."""
+    budget = budget_for(database, settings, clock=clock, pricing=pricing)
+    return budget, StepEstimator(budget, settings, clock=clock)

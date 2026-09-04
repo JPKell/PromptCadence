@@ -29,7 +29,10 @@ from sqlalchemy import or_, select
 
 from promptcadence.domain.trajectory import TrajectoryState
 from promptcadence.infrastructure.db import models
+from promptcadence.services.budget import BudgetService
+from promptcadence.services.estimates import StepEstimator
 from promptcadence.services.loop import LoopController, ReconcileOutcome, RunSignals
+from promptcadence.services.pricing import PricingCatalog
 from promptcadence.services.tools import ToolPlant
 
 if TYPE_CHECKING:
@@ -214,6 +217,10 @@ class TrajectoryWorker:
         poll_interval_seconds: How long an idle thread waits before looking again; a
             :meth:`wake` cuts the wait short.
         controller_factory: Builds a controller per thread; injected so a test can script it.
+        budget: The ceilings, the ledger and the debits (P5), shared by every thread — a ledger
+            is stateless, and one instance keeps the pricing catalogue loaded once. ``None``
+            builds one over an empty pricing catalogue, which is the right default for a test
+            running only local tiers and never for a served process.
         tools: The process's tool registry, sandbox and artifact store, shared by every thread so
             the isolation probe runs once rather than once per worker. ``None`` lets each
             controller build its own from ``[tools]``, which is right for a single-threaded test
@@ -224,6 +231,7 @@ class TrajectoryWorker:
     sink: TrajectoryEventSink
     loadcoach: LoadCoachClient
     settings: Settings
+    budget: BudgetService | None = None
     tools: ToolPlant | None = None
     owner_prefix: str = field(default_factory=process_owner_prefix)
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
@@ -238,14 +246,23 @@ class TrajectoryWorker:
         """The controller a thread runs with."""
         if self.controller_factory is not None:
             return self.controller_factory(owner)
+        budget = self.budget if self.budget is not None else self._default_budget()
         return LoopController(
             database=self.database,
             sink=self.sink,
             loadcoach=self.loadcoach,
             settings=self.settings,
             owner=owner,
+            budget=budget,
+            estimator=StepEstimator(budget, self.settings, clock=self.clock),
             clock=self.clock,
             tools=self.tools,
+        )
+
+    def _default_budget(self) -> BudgetService:
+        """A budget service over an empty pricing catalogue, for a worker built without one."""
+        return BudgetService(
+            self.database, self.settings, PricingCatalog(by_tier={}), clock=self.clock
         )
 
     def recover_at_startup(self) -> RecoverySummary:
@@ -303,6 +320,13 @@ class TrajectoryWorker:
                 for trajectory_id in summary.resumed:
                     self._run_held(controller, trajectory_id)
                 next_reap = now + _seconds(self.settings.execution.lease_seconds)
+            # `awaiting_window` holds no lease, so recovery never sees a parked trajectory and
+            # nothing else would ever look at its clock. This pass is what makes the UTC day edge
+            # arrive: it resumes what the new day admits, counts an edge for what it still
+            # refuses, and halts what has waited `window_wait_max_days` (T16/T17).
+            for parked in controller.parked_trajectory_ids():
+                if controller.release_window(parked) is TrajectoryState.EXECUTING:
+                    self._run_held(controller, parked)
             candidate = controller.next_queued()
             if candidate is None:
                 self._wake.wait(self.poll_interval_seconds)

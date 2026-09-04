@@ -24,6 +24,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
     `window_next_edge_at`, `window_days_waited` — `domain.trajectory.WindowWait` field for field)
     and `budget_partial_pricing`, the per-request override of `[budget] partial_pricing`.
 
+- **Phase 5, gate B: the ceilings bind.** `declare_run` fires at trajectory creation, in the same
+  write that persists the row and before plan approval, so no pre-flight ever meets `UnknownRun`.
+  - `services/budget.py` — the application's half of the budget: which ceilings are active
+    (per-trajectory, per-day, per-project — up to three at once, the most restrictive binding),
+    the debit, the pre-flight and the adapter from `loadledger.CeilingVerdict` to `domain.policy.
+    BudgetHeadroom`. No arithmetic of its own: LoadLedger keeps the balances and decides every
+    `exceeded`.
+  - `services/pricing.py` — a tier's `pricing_file`, read once at startup into
+    `baseaicore.ModelPricing`. PromptCadence is the suite's first consumer of that type, so the
+    file format is defined here: JSON with a `records` array, rates as decimal **strings**, and an
+    omitted rate meaning "not stated" rather than free. An unreadable file refuses at startup.
+  - `services/estimates.py` — the layered estimator over `entries()`: historical p80 per token
+    class at or above `estimate_min_samples`, else the tier's configured per-step default, with
+    the source recorded either way. A model-generated number is never an input (ADR-0047 / D-3).
+  - Debits carry `tier:<name>` and `project:<name>`, rebuild `TokenUsage` from all four classes
+    (ADR-0070), and store usage plus a `pricing_hash` and never a money figure (ADR-0030).
+  - Exhaustion routes per ceiling: `on_exhausted` halts or parks on one pending approval request
+    (T10 — granting the raise stays P7's), and `on_daily_exhausted = "window"` parks in
+    `awaiting_window` with the persisted clock, resuming on the UTC day edge (T16), staying parked
+    when the new day is already spent, and halting after `window_wait_max_days` (T17).
+  - **Money ceilings bind priced usage only** (ADR-0047 §3). A money cap that someone else's
+    priced work exhausted does not stop a local step, whose cost is `UNSUPPORTED` and which cannot
+    add a nano to it; the token ceiling is the universal brake and binds every step on every tier.
+  - `[tiers.<name>]` gains `default_step_input_tokens` and `default_step_output_tokens` — the
+    estimator's `configured_default` rung, which lifecycle §6 names and configuration had no field
+    for. Two numbers rather than one total, because the classes price differently.
+  - `POST /trajectories` accepts `partial_pricing` as a per-request override of `[budget]
+    partial_pricing`, persisted on the row; `NULL` means "the configured default", which is not
+    the same as either value written down.
+
 ### Fixed
 - **`trajectories.budget_money_nanos` and `budget_token_ceiling` were `Integer` and are now
   `BigInteger`** (migration `0005`). `Money` is whole nanos, so the shipped $5.00 default ceiling

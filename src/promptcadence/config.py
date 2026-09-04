@@ -354,6 +354,14 @@ class Tier(BaseModel):
 
     PromptCadence performs no routing math of its own (ADR-0047) — *which* model within the tier
     stays LoadCoach's filter/score/rank/select, driven by ``task_profile``.
+
+    ``default_step_input_tokens`` and ``default_step_output_tokens`` are the estimator's
+    ``configured_default`` rung (lifecycle §6): what a step on this tier is assumed to use before
+    ``budget.estimate_min_samples`` observations of it exist. They are **two** numbers rather than
+    one total because the two classes are priced at different rates, and a single total split by a
+    fixed ratio would be a magic number sitting between an operator's configuration and the money
+    a ceiling binds. A model never supplies either (D-3 / ADR-0047): a number the model invented
+    must not size the budget that constrains the model.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -367,6 +375,8 @@ class Tier(BaseModel):
     pricing_file: str = Field(
         default="", description="ModelPricing records; required when remote (ADR-0047 §3)."
     )
+    default_step_input_tokens: int = Field(default=4_096, ge=1)
+    default_step_output_tokens: int = Field(default=1_024, ge=1)
 
 
 class PolicySettings(BaseModel):
@@ -800,11 +810,15 @@ protected_recent_turns = 4
 task_profile = "tools.agent.local_fast"
 remote = false                # local => max classification implicitly confidential
 context_budget_tokens = 16384
+default_step_input_tokens = 4096    # the estimator's configured_default rung (lifecycle §6),
+default_step_output_tokens = 1024   # used until estimate_min_samples observations exist
 
 [tiers.local_large]
 task_profile = "tools.agent.local_large"
 remote = false
 context_budget_tokens = 32768
+default_step_input_tokens = 8192
+default_step_output_tokens = 2048
 
 # Remote tiers are unusable until pricing is supplied (ADR-0047 §3) -- uncomment and fill in
 # pricing_file before adding either to policy.escalation_order.
@@ -813,13 +827,20 @@ context_budget_tokens = 32768
 # remote = true
 # max_data_classification = "internal"      # never confidential
 # context_budget_tokens = 128000
-# pricing_file = ""            # ModelPricing records; required for a remote tier
+# default_step_input_tokens = 8192
+# default_step_output_tokens = 2048
+# pricing_file = ""            # a JSON file of ModelPricing observations; required for a remote
+#                              # tier. See services/pricing.py for the record shape: rates are
+#                              # decimal *strings*, and an omitted rate is "not stated", which is
+#                              # not "free" -- a call using that class prices as a floor (ADR-0069)
 #
 # [tiers.remote_frontier]
 # task_profile = "tools.agent.remote_frontier"
 # remote = true
 # max_data_classification = "public"
 # context_budget_tokens = 200000
+# default_step_input_tokens = 16384
+# default_step_output_tokens = 4096
 # pricing_file = ""
 
 [policy]

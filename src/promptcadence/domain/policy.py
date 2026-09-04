@@ -60,6 +60,7 @@ __all__ = [
     "ApprovalMode",
     "ApprovalPolicy",
     "ApprovalRequested",
+    "BudgetDebited",
     "BudgetHeadroom",
     "EstimateSource",
     "GateVerdict",
@@ -888,6 +889,63 @@ class PlanRejected:
                 {"step_id": step_id, "reason": reason.value} for step_id, reason in self.reasons
             ],
             "approval_policy_version": self.approval_policy_version,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetDebited:
+    """``budget.debited`` — one recorded debit, in this application's own vocabulary.
+
+    ``loadledger.LedgerEntry.as_canonical()`` is the shape the suite's ``budget.debited`` event
+    carries (LoadLedger spec §17), and this is that shape said in PromptCadence's terms: the four
+    token classes, the pricing hash, and every active ceiling's verdict after the debit.
+
+    **There is no money field, and that is the point** (ADR-0030 rule 1). The stored facts are the
+    usage and the ``pricing_hash`` the cost was derived from; a money figure here would be a
+    derived number in a record of truth, and a later price correction would have nowhere to go. The
+    only money in this body rides inside :attr:`headroom`, where it is a *verdict* — what a ceiling
+    said, with the counts that say whether it said it from a floor.
+
+    Attributes:
+        trajectory_id: The run the debit was recorded against.
+        turn_id: The debit's ``source_ref`` — the turn this spend came from. Reconciliation is
+            idempotent by this, so it is the field a reader needs to tie a debit to its turn.
+        entry_id: The ledger's own id for the entry.
+        tier: The tier that ran the turn, matching the debit's ``tier:<name>`` tag.
+        project: The project label, matching its ``project:<name>`` tag, or ``None``.
+        usage: The four token classes, ``"unsupported"`` where the provider reported none — never
+            ``0``, which would claim a class was used zero times (ADR-0016, ADR-0070).
+        unpriced: Whether the debit added less than its full cost: no estimate at all (the local
+            case), or one that did not total.
+        pricing_hash: The price record the cost was derived from, carried even when the estimate
+            came out unpriced — knowing *which* price list failed to price a call is how the gap
+            gets closed. ``None`` when no pricing was applied at all.
+        headroom: One verdict per active ceiling, in configuration order, as of this debit.
+    """
+
+    event_type: ClassVar[EventType] = EventType.BUDGET_DEBITED
+    trajectory_id: str
+    turn_id: str
+    entry_id: str
+    tier: str
+    project: str | None
+    usage: Mapping[str, int | str]
+    unpriced: bool
+    pricing_hash: str | None
+    headroom: tuple[BudgetHeadroom, ...]
+
+    def as_canonical(self) -> dict[str, Any]:
+        """Return the persisted and streamed mapping form."""
+        return {
+            "trajectory_id": self.trajectory_id,
+            "turn_id": self.turn_id,
+            "entry_id": self.entry_id,
+            "tier": self.tier,
+            "project": self.project,
+            "usage": dict(self.usage),
+            "unpriced": self.unpriced,
+            "pricing_hash": self.pricing_hash,
+            "headroom": [one.as_canonical() for one in self.headroom],
         }
 
 
