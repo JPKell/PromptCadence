@@ -382,8 +382,17 @@ a relative `tools.workspace_root`, `tools.artifact_root` or read root; and a rea
 contains or sits inside the workspace root — that last one because containment's path half and its
 subprocess half would then disagree about the same directory, and the disagreement would surface
 on one tool call of one trajectory rather than at startup.
-Tier names are operator-chosen; the four above are the shipped defaults, not a fixed taxonomy
-(roadmap §2, D-3).
+Tier names are operator-chosen; the four above are the documented defaults, not a fixed taxonomy
+(roadmap §2, D-3). **Two of them ship active and two ship commented out**, and the reason is this
+section's own validation: a remote tier with an empty `pricing_file` is refused at startup, so
+shipping `remote_cheap` and `remote_frontier` as active defaults would make a zero-configuration
+`promptcadence serve` refuse to boot — breaking §20 AC1. So `config.py` ships `local_fast` and
+`local_large` active, and the shipped `config.toml` example carries the remote pair commented out
+with the pricing line an operator has to fill in. Uncommenting one without supplying a pricing
+source is refused, loudly, at startup; a correctly configured one that LoadCoach cannot serve
+halts with `TIER_UNAVAILABLE` and the reason `loadcoach_has_no_remote_provider` — which
+`TierPolicy` decides before any call is made, so a remote tier is never *quietly* served by a
+local model.
 
 The tier task profiles (`tools.plan`, `tools.agent.local_fast`, `tools.agent.local_large`,
 `tools.agent.remote_cheap`, `tools.agent.remote_frontier`) are **LoadCoach configuration, not
