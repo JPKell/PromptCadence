@@ -282,7 +282,17 @@ Debits store `TokenUsage` + `pricing_hash`, never a money figure as the primary 
 (`per-trajectory`, `per-day` UTC, `per-tag` — the project) may be active simultaneously and the
 most restrictive binds, with every entry recording its balance after against each active ceiling
 ([LoadLedger §7](../../packages/loadledger/spec.md)). Every debit is tagged with its tier too,
-for the estimator and the ledger views; no tier ceiling is configured.
+for the estimator and the ledger views; no tier ceiling is configured, so a tier has a *history*
+and not a balance — the ledger views report its debit count and LoadLedger, which reports a
+balance only through a ceiling, is not asked for one it was never given.
+
+**A money ceiling binds a step only when that step's usage is priced** (ADR-0047 §3, "money
+ceilings bind priced usage"). LoadLedger evaluates every ceiling and reports every verdict; which
+of them *refuses the next step* is the application's policy, and a money cap exhausted by
+somebody's priced work does not stop a local step that cannot add a nano to it. The token ceiling
+is the universal brake and binds every step on every tier, which is exactly why there are two.
+A *balance report* — what `GET /ledger` shows — makes no such distinction: it says what the
+ceilings say, not what one particular step may do.
 
 Three ceilings are active on a labelled trajectory: its own (the request's `budget` or the
 configured default, `per-trajectory`), the `per-day` ceiling every trajectory shares, and its
@@ -294,6 +304,12 @@ asks for a raise (`on_exhausted`), because waiting would not help; the per-day c
 park the trajectory in `awaiting_window` until the next UTC day (`on_daily_exhausted = "window"`,
 §8), which is what lets any amount of work run while only so much is spent in a day.
 
+A trajectory parked in `awaiting_window` is released by asking the pre-flight's question — *does
+the per-day ceiling now admit the next step* — and not the cheaper *is the ceiling exceeded*. A day
+whose remaining headroom is smaller than the next step's estimate still refuses, and waking a
+trajectory only for its next pre-flight to park it again would spend a day edge per day, forever,
+with an event stream to match.
+
 **Pre-execution step estimates** (the skeleton's open question, resolved as roadmap §2, D-3) use a
 layered estimator whose source is always recorded, mirroring the suite's served-context labelling:
 
@@ -303,6 +319,15 @@ estimate = p80 of observed cost for (tier, task_profile)   when ≥ estimate_min
            configured per-tier default                      otherwise
                                                             → source "configured_default"
 ```
+
+The estimate is over observed **usage**, and the money it implies is derived by pricing that usage
+through the tier's own price records — the same operation, against the same record, that costs a
+real turn (ADR-0030 rule 1: a ledger entry stores usage and a pricing hash, and no money figure to
+average). The p80 is taken per token class rather than over one total, because the classes price
+differently. A pre-flight has no model identity to price against, since which model answers is
+LoadCoach's choice and is not known until it has answered, so an estimate is costed against every
+record the tier still claims and the **largest** total wins: the only estimate that cannot
+under-state a budget is the tier's worst case, and under-stating is the failure that matters.
 
 A model-generated cost guess is never an estimator input — a number the model invented must not
 size the budget that constrains the model. `PlanApprover` approves a plan only if the sum of step

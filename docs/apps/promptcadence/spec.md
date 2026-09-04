@@ -131,7 +131,9 @@ GET  /settings                    PUT  /settings
 
 * `POST /trajectories` — `task`, `data_classification` (default `"confidential"` — the safe
   default; unclassified data is treated as most restrictive), optional `budget`
-  (`money` and/or `tokens`), optional `project` (must name a configured
+  (`money` and/or `tokens`, and `partial_pricing` — `"floor"` or `"strict"`, a per-request
+  override of `[budget] partial_pricing`; absent means "the configured default", which is not the
+  same as either value pinned), optional `project` (must name a configured
   `[budget.projects.<name>]`, else `PROJECT_UNKNOWN`; every debit is tagged `project:<name>` and
   the project's ceiling binds), optional `tools` allowlist (must be a subset of the registry),
   optional `bypass_planning`, optional `tier` pin (recorded as an override; policy still applies),
@@ -157,7 +159,7 @@ promptcadence trajectory list|show|cancel|wait|explain
 promptcadence approvals list           promptcadence approve <id> | deny <id> [--reason …]
 promptcadence tiers list|show|check    # check: verifies each tier's task profile exists in LoadCoach
 promptcadence tools list|show
-promptcadence ledger show [--scope trajectory|day|tier]
+promptcadence ledger show [--scope day|project|tier|trajectory] [--trajectory <id>] [--json]
 promptcadence egress list [--denied-only]
 promptcadence token create|list|revoke
 ```
@@ -319,6 +321,11 @@ deliberate rejection, like `LoadCoachClient`.
                 on_daily_exhausted = "window"   # window | approval | halt — window parks the
                                                 # trajectory until the next UTC day (lifecycle §8)
                 window_wait_max_days = 3        # then halted with the cause; never waits forever
+                # There is deliberately **no** daily_token_ceiling. The per-day ceiling caps what
+                # is *spent* in a day, and local work is unpriced and never counts against it
+                # (§11.5); a per-day token cap would stop the local half of an installation at
+                # midnight for something nobody budgeted. The universal brake is the
+                # per-trajectory token ceiling, which binds every turn on every tier.
 [budget.projects.research]
                 money_ceiling = { currency = "USD", nanos = 50_000_000_000 }   # $50.00, lifetime:
                                                 # every trajectory labelled project = "research",
@@ -363,7 +370,28 @@ deliberate rejection, like `LoadCoachClient`.
                 remote = true
                 max_data_classification = "internal"      # never confidential
                 context_budget_tokens = 128000
-                pricing_file = ""               # ModelPricing records; required for a remote tier
+                pricing_file = ""               # ModelPricing records; required for a remote tier.
+                                                # A JSON file (ADR-0019: config is TOML, data is
+                                                # JSON) with a `records` array of ModelPricing
+                                                # observations written field for field:
+                                                # provider_kind, provider_model_name, optional
+                                                # artifact_digest, source, observed_at, optional
+                                                # effective_from/until, price_tier, region, and a
+                                                # `rates` object naming a currency and any of the
+                                                # four per-million-token rates as **decimal
+                                                # strings** ("2.50", never a JSON number, which is
+                                                # a float). An omitted rate is "not stated", not
+                                                # free: a call using that class prices as a floor
+                                                # (ADR-0069). A record stating a digest matches
+                                                # only those weights; one stating none matches the
+                                                # model under any digest, so a retag stays priced.
+                                                # Among records claiming the instant, the most
+                                                # recently observed wins.
+                default_step_input_tokens = 4096   # the estimator's configured_default rung
+                default_step_output_tokens = 1024  # (lifecycle §6). Two numbers, not one total:
+                                                # the classes price differently, and a total split
+                                                # by a fixed ratio would be a magic number between
+                                                # an operator and the cap that binds them.
 [tiers.remote_frontier]
                 task_profile = "tools.agent.remote_frontier"
                 remote = true
