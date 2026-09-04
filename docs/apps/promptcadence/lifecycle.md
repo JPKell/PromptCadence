@@ -326,7 +326,7 @@ real turn (ADR-0030 rule 1: a ledger entry stores usage and a pricing hash, and 
 average). The p80 is taken per token class rather than over one total, because the classes price
 differently. A pre-flight has no model identity to price against, since which model answers is
 LoadCoach's choice and is not known until it has answered, so an estimate is costed against every
-record the tier still claims and the **largest** total wins: the only estimate that cannot
+record the tier still claims and the **largest** total wins ([ADR-0072](../../adr/0072-the-model-pricing-record-file.md) §6): the only estimate that cannot
 under-state a budget is the tier's worst case, and under-stating is the failure that matters.
 
 A model-generated cost guess is never an estimator input — a number the model invented must not

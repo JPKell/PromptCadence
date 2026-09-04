@@ -370,23 +370,11 @@ deliberate rejection, like `LoadCoachClient`.
                 remote = true
                 max_data_classification = "internal"      # never confidential
                 context_budget_tokens = 128000
-                pricing_file = ""               # ModelPricing records; required for a remote tier.
-                                                # A JSON file (ADR-0019: config is TOML, data is
-                                                # JSON) with a `records` array of ModelPricing
-                                                # observations written field for field:
-                                                # provider_kind, provider_model_name, optional
-                                                # artifact_digest, source, observed_at, optional
-                                                # effective_from/until, price_tier, region, and a
-                                                # `rates` object naming a currency and any of the
-                                                # four per-million-token rates as **decimal
-                                                # strings** ("2.50", never a JSON number, which is
-                                                # a float). An omitted rate is "not stated", not
-                                                # free: a call using that class prices as a floor
-                                                # (ADR-0069). A record stating a digest matches
-                                                # only those weights; one stating none matches the
-                                                # model under any digest, so a retag stays priced.
-                                                # Among records claiming the instant, the most
-                                                # recently observed wins.
+                pricing_file = ""               # required for a remote tier. A ModelPricing
+                                                # record file per ADR-0072 — JSON, a `records`
+                                                # array, rates as decimal strings, an omitted rate
+                                                # meaning "not stated" rather than free. Read once
+                                                # at startup; an unreadable one refuses the boot.
                 default_step_input_tokens = 4096   # the estimator's configured_default rung
                 default_step_output_tokens = 1024  # (lifecycle §6). Two numbers, not one total:
                                                 # the classes price differently, and a total split
