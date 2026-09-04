@@ -34,7 +34,13 @@ from promptcadence.domain.errors import ErrorCode, ProjectUnknownError
 from promptcadence.domain.trajectory import TrajectoryState
 from promptcadence.infrastructure.db import models
 from promptcadence.infrastructure.loadcoach import LoadCoachClient
-from promptcadence.services.budget import NOT_PRICED, project_tag, render_money, tier_tag
+from promptcadence.services.budget import (
+    NOT_PRICED,
+    project_tag,
+    render_money,
+    render_remaining_money,
+    tier_tag,
+)
 from promptcadence.services.database import Database, ensure_ready
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.loop import LoopController
@@ -317,6 +323,10 @@ def test_crossing_the_token_ceiling_mid_trajectory_halts_with_every_debit_on_the
     view = harness.service.get(trajectory_id)
     assert view.error_code == ErrorCode.TOKEN_BUDGET_EXCEEDED.value
     assert "trajectory budget refuses the next step" in (view.halted_reason or "")
+    assert "the tokens cap cannot admit it" in (view.halted_reason or "")
+    assert "over by 50" in (view.halted_reason or ""), (
+        "the cause is about the pre-flight -- 1 000 spent plus a 150 estimate against a 1 100 cap"
+    )
     entries = harness.entries(trajectory_id)
     assert len(entries) == 1, "the turn that ran is on the ledger; the refused one never ran"
     verdict = next(one for one in entries[0].verdicts if one.ceiling.tokens == 1_100)
@@ -688,9 +698,12 @@ def test_under_floor_the_trajectory_continues_and_the_balance_reads_at_least(
     position = harness.budget.position(harness.service.get(trajectory_id))
     trajectory = position.headroom[0]
     assert trajectory.money_is_floor is True, "render it 'at least', never as a bare figure"
-    assert render_money(trajectory.money_remaining, is_floor=trajectory.money_is_floor).startswith(
-        "at least"
+    left = render_remaining_money(trajectory.money_remaining, is_floor=trajectory.money_is_floor)
+    assert left.startswith("at most "), (
+        "what is *left* is an upper bound when the spend it was derived from is a floor -- "
+        "rendering it 'at least' would reassure in exactly the case where less may remain"
     )
+    assert render_money(verdict.money_spent, is_floor=True).startswith("at least ")
 
 
 def test_under_strict_the_next_step_is_refused_at_preflight_not_detected_afterwards(

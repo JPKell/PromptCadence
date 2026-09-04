@@ -94,9 +94,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   show [--scope day|project|tier|trajectory]` is mode **either** — it asks the server when one
   answers and reads the database directly when none does.
   - Every money figure crosses the boundary twice: as `{currency, nanos}` for a caller that
-    computes and as a rendered string for one that displays, so a floor reaches a UI as
-    `at least 0.004 USD` and an unpriced amount as `—`, rather than each surface inventing its own
-    way to show them.
+    computes and as a rendered string for one that displays, so a floor reaches a UI qualified and
+    an unpriced amount as `—`, rather than each surface inventing its own way to show them. The
+    qualifier depends on the direction: a **spend** derived from a floor is `at least 0.004 USD`,
+    while what is **left** is `at most 20 USD` — the opposite bound, because the cap less a floor
+    is an upper bound, and "at least" there would reassure in exactly the case where less headroom
+    may remain than the number says.
+  - A refused pre-flight says so in those terms — "the tokens cap cannot admit it — counting this
+    step the cap is over by 1 120" — rather than "the cap is spent", which was wrong on the common
+    case of a ceiling too small to admit the very first step, where the ledger is still empty.
   - `--scope tier` reports debit **counts**, not balances: no tier ceiling is configured
     (lifecycle §6), LoadLedger reports a balance only through a ceiling, and summing entries here
     would put ledger arithmetic in an application. Recorded as a LoadLedger row rather than worked

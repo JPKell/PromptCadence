@@ -135,7 +135,11 @@ from promptcadence.infrastructure.loadcoach import (
 from promptcadence.infrastructure.threads import SqlThreadStore, thread_row, turn_row
 from promptcadence.infrastructure.tool_calls import CollectingToolCallStore, ToolCallLinks
 from promptcadence.observability.logging import correlation
-from promptcadence.services.budget import CurrencyMismatchError
+from promptcadence.services.budget import (
+    CurrencyMismatchError,
+    render_remaining_money,
+    render_remaining_tokens,
+)
 from promptcadence.services.loadcoach_surface import (
     ProviderSurface,
     load_provider_surface,
@@ -2210,18 +2214,32 @@ def _exceeded_code(headroom: BudgetHeadroom) -> ErrorCode:
 
 
 def _ceiling_cause(headroom: BudgetHeadroom) -> str:
-    """Say which bound refused, rendering a floor as "at least" and never as a bare figure."""
+    """Say which bound refused, and say it about a **pre-flight** rather than about history.
+
+    Every figure here is the verdict ``would_exceed`` gave for the *prospective* spend, so the
+    counts include the step that has not run. A cause reading "the cap is spent" would be wrong
+    on the common case — a ceiling too small to admit the first step, with nothing spent against
+    it at all — and a reader who then found an empty ledger would conclude the ledger was broken.
+    """
     kind = "tokens" if _exceeded_code(headroom) is ErrorCode.TOKEN_BUDGET_EXCEEDED else "money"
-    parts = [f"the {kind} cap is spent"]
-    if headroom.money_is_floor:
-        parts.append(
-            f"the money spent is a floor over {headroom.unpriced_debit_count} debit(s) that "
-            "could not be fully priced, so it is at least that much and possibly more"
-        )
+    left = (
+        render_remaining_tokens(headroom.tokens_remaining, is_floor=False)
+        if kind == "tokens"
+        else render_remaining_money(headroom.money_remaining, is_floor=False)
+    )
+    parts = [
+        f"the {kind} cap cannot admit it — counting this step the cap is over by {left.lstrip('-')}"
+    ]
     if headroom.partial_pricing is PartialPricing.STRICT and headroom.untotalled_debit_count:
         parts.append(
             f"partial_pricing is strict and {headroom.untotalled_debit_count} debit(s) in this "
             "window carried an estimate that did not total, which counts as exceeding"
+        )
+    elif headroom.money_is_floor:
+        parts.append(
+            f"the money in this window is a floor over {headroom.unpriced_debit_count} debit(s) "
+            "that could not be fully priced — this step included — so what is left is at most "
+            f"{render_remaining_money(headroom.money_remaining, is_floor=False)}"
         )
     if headroom.tokens_are_floor:
         parts.append(

@@ -84,6 +84,8 @@ __all__ = [
     "PricedUsage",
     "project_tag",
     "render_money",
+    "render_remaining_money",
+    "render_remaining_tokens",
     "render_tokens",
     "tier_tag",
 ]
@@ -97,6 +99,7 @@ forbids because it reads as "this was free" (spec §20 criterion 1).
 """
 
 _AT_LEAST: Final = "at least "
+_AT_MOST: Final = "at most "
 
 TIER_TAG_PREFIX: Final = "tier:"
 _UNTOTALLED_IS_WORST: Final = 2**62
@@ -282,12 +285,12 @@ def _headroom_json(headroom: BudgetHeadroom) -> dict[str, Any]:
             if headroom.money_remaining is not None
             else None
         ),
-        "money_remaining_display": render_money(
+        "money_remaining_display": render_remaining_money(
             headroom.money_remaining, is_floor=headroom.money_is_floor
         ),
         "money_is_floor": headroom.money_is_floor,
         "tokens_remaining": headroom.tokens_remaining,
-        "tokens_remaining_display": render_tokens(
+        "tokens_remaining_display": render_remaining_tokens(
             headroom.tokens_remaining, is_floor=headroom.tokens_are_floor
         ),
         "tokens_are_floor": headroom.tokens_are_floor,
@@ -865,10 +868,10 @@ def _scope_label_of(ceiling: BudgetCeiling) -> str:
 
 
 def render_money(amount: Money | None, *, is_floor: bool) -> str:
-    """Render one money figure the one way this application is allowed to.
+    """Render one money figure that has been **spent**, the one way this application allows.
 
-    The single renderer behind ``GET /ledger``, ``promptcadence ledger show`` and every cause
-    string, so the three cannot disagree about what a floor looks like.
+    Part of the single renderer behind ``GET /ledger``, ``promptcadence ledger show`` and every
+    cause string, so the surfaces cannot disagree about what a floor looks like.
 
     Args:
         amount: The figure, or ``None`` when nothing has been priced in this scope or the ceiling
@@ -881,18 +884,41 @@ def render_money(amount: Money | None, *, is_floor: bool) -> str:
         otherwise. A floor is never rendered as a bare figure, because "under budget" over an
         incomplete sum is a claim nobody can make (ADR-0069).
     """
-    if amount is None:
-        return NOT_PRICED
-    rendered = f"{amount.to_decimal()} {amount.currency}"
-    return f"{_AT_LEAST}{rendered}" if is_floor else rendered
+    return _render(
+        f"{amount.to_decimal()} {amount.currency}" if amount else None, _AT_LEAST, is_floor=is_floor
+    )
+
+
+def render_remaining_money(amount: Money | None, *, is_floor: bool) -> str:
+    """Render one money figure that is **left**, which a floor turns into an *upper* bound.
+
+    The direction is the whole reason this is a second function. ``money_remaining`` is the cap
+    less a spend that is a floor, so a floor makes it "**at most** this much is left" — the
+    opposite qualifier to the spend it was derived from. Rendering it "at least" would be a
+    reassurance in exactly the case where less headroom may remain than the number says, which is
+    the failure ADR-0069's floor rule exists to prevent.
+    """
+    return _render(
+        f"{amount.to_decimal()} {amount.currency}" if amount else None, _AT_MOST, is_floor=is_floor
+    )
 
 
 def render_tokens(count: int | None, *, is_floor: bool) -> str:
-    """Render one token figure, with the same floor rule as :func:`render_money`.
+    """Render one token count that has been **spent**, with :func:`render_money`\'s floor rule.
 
     A token balance is a floor too whenever a provider left a class unreported: those classes are
     excluded rather than counted as zero, so the count is a lower bound.
     """
-    if count is None:
+    return _render(None if count is None else str(count), _AT_LEAST, is_floor=is_floor)
+
+
+def render_remaining_tokens(count: int | None, *, is_floor: bool) -> str:
+    """Render one token count that is **left**, which a floor turns into an upper bound."""
+    return _render(None if count is None else str(count), _AT_MOST, is_floor=is_floor)
+
+
+def _render(rendered: str | None, qualifier: str, *, is_floor: bool) -> str:
+    """The one place a figure becomes text: an em dash for absent, a qualifier for a bound."""
+    if rendered is None:
         return NOT_PRICED
-    return f"{_AT_LEAST}{count}" if is_floor else str(count)
+    return f"{qualifier}{rendered}" if is_floor else rendered

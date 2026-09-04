@@ -12,6 +12,7 @@ The whole file runs on the fake LoadCoach: no GPU, no Ollama, no network (spec �
 from __future__ import annotations
 
 import json
+import socket
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +36,13 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 _TERMINAL = {"completed", "halted", "failed", "cancelled", "rejected"}
+
+
+def _closed_port() -> int:
+    """A port nothing is listening on, so an "either"-mode command takes its local path."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
 
 
 @pytest.fixture
@@ -94,7 +102,9 @@ def test_an_unpriced_position_renders_an_em_dash_and_never_a_zero(client: TestCl
     assert entries, "the turn was debited"
     trajectory = next(one for one in entries[0]["ceilings"] if one["scope"] == "trajectory")
     assert trajectory["money_is_floor"] is True
-    assert trajectory["money_remaining_display"].startswith("at least ")
+    assert trajectory["money_remaining_display"].startswith("at most "), (
+        "a *remaining* figure derived from a floor is an upper bound, not a lower one"
+    )
     assert "0.00" not in json.dumps(entries), "no fabricated zero anywhere in the document"
 
 
@@ -140,8 +150,11 @@ def test_ledger_show_prints_the_same_figures_the_api_returns(
     """The CLI and the API agree because they share one renderer, not because they were compared."""
     _run(client, project="research")
     body = client.get("/api/v1/ledger").json()
-    # Local mode: no server is listening on the configured port, so the command reads the
-    # database directly — the mode an operator with a stopped server actually gets.
+    # Local mode, forced: the served application under test is in-process (Starlette's TestClient
+    # binds no socket), so pointing the CLI at a closed port is what makes "no server answers"
+    # true rather than merely likely — a stray PromptCadence on the default port would otherwise
+    # answer from a different database and this test would fail for a reason it is not about.
+    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
     result = CliRunner().invoke(cli_app, ["ledger", "show", "--scope", "project", "--json"])
     assert result.exit_code == 0, result.output
     printed = json.loads(result.stdout)
@@ -153,9 +166,10 @@ def test_ledger_show_prints_the_same_figures_the_api_returns(
 
 
 def test_ledger_show_text_output_names_the_scope_and_never_prints_a_bare_floor(
-    client: TestClient,
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _run(client)
+    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
     runner = CliRunner()
     day = runner.invoke(cli_app, ["ledger", "show"])
     assert day.exit_code == 0, day.output
