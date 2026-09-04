@@ -9,10 +9,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from loadledger.sql import DEFAULT_TABLE_PREFIX
+from sqlalchemy import inspect
 from weightsdb import MigrationRunner, restore
 from weightsdb.testing import temporary_postgres, temporary_sqlite
 
-from promptcadence.infrastructure.db.models import Base
+from promptcadence.infrastructure.db.models import LEDGER_TABLES, Base
 from promptcadence.services.database import (
     MIGRATIONS_LOCATION,
     Database,
@@ -34,7 +36,7 @@ def test_fresh_database_migrates_to_head_sqlite() -> None:
         runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
         assert runner.current() is None
         outcome = runner.upgrade(backup=False)
-        assert outcome.to_revision == _head() == "0004"
+        assert outcome.to_revision == _head() == "0005"
         assert runner.is_at_head()
 
 
@@ -62,6 +64,40 @@ def test_downgrade_to_base_removes_every_table() -> None:
         runner.upgrade(backup=False)
         runner.downgrade("base")
         assert runner.current() is None
+
+
+def test_upgrade_from_empty_creates_exactly_the_mounted_ledger_schema() -> None:
+    """0005 is the first package mount, so its DDL is proved against the package's own shapes.
+
+    ADR-0050's whole promise is that a mounted table upgrades with the host's history and is
+    identical to what the package declared. Comparing the migrated database column-for-column
+    against ``mount_ledger_tables``' output is what makes that a fact rather than an intention —
+    and it is what catches the failure mode the pattern names, where a hand-edited revision drifts
+    from the mount and the parity check below is the only thing that would have noticed.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        inspector = inspect(engine)
+        created = set(inspector.get_table_names())
+        for table in LEDGER_TABLES.all_tables:
+            assert table.name in created, f"{table.name} was mounted but never migrated"
+            columns = {column["name"]: column for column in inspector.get_columns(table.name)}
+            assert set(columns) == {column.name for column in table.columns}
+            for column in table.columns:
+                assert columns[column.name]["nullable"] == column.nullable, column.name
+        assert LEDGER_TABLES.prefix == DEFAULT_TABLE_PREFIX
+
+
+def test_downgrade_removes_the_mounted_ledger_tables() -> None:
+    """A mount that cannot be undone is a mount that pins a host to one package version."""
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade(backup=False)
+        runner.downgrade("0004")
+        remaining = set(inspect(engine).get_table_names())
+        assert not remaining & {table.name for table in LEDGER_TABLES.all_tables}
+        assert "trajectories" in remaining
 
 
 def test_check_parity_matches_models_after_upgrade() -> None:

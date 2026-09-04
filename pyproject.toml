@@ -46,6 +46,13 @@ dependencies = [
     # (ADR-0053). A normal pin -- toolyard 0.1.0 is on PyPI. Its own dependencies (baseaicore,
     # jsonschema, httpx) are already compatible with the pins above.
     "toolyard>=0.1,<0.2",
+    # P5: the budget. A normal pin -- loadledger 0.1.0 is on PyPI, and its only runtime
+    # dependency is baseaicore>=0.4,<0.5, already pinned above. The **[sql] extra** is what is
+    # needed and not the bare package: LoadLedger keeps SQLAlchemy behind an extra deliberately
+    # (ADR-0050 decision 4 -- a consumer that only wants to add up tokens must not acquire an ORM
+    # to do it), and PromptCadence mounts `loadledger.sql`'s four tables into its own metadata and
+    # its own Alembic history, so it needs that half.
+    "loadledger[sql]>=0.1,<0.2",
 ]
 
 [project.optional-dependencies]

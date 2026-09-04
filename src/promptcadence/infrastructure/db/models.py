@@ -36,12 +36,22 @@ keep the link. A tool result and the call it answers must survive a compaction t
 this field (``domain.threads``), which is why it is a column and not a fact recomputed from the
 ordering of rows.
 
-``ledger_entries`` (LoadLedger) and ``egress_decisions`` (Commissioner) are **not** created here.
-They arrive *mounted* into this same metadata and Alembic history at Phase 5/6
-(ADR-0050): each package exports a ``mount_*_tables(metadata, ...)`` function the application
-calls at module import, which is why the mount calls belong right here, once those packages are a
-dependency — the named failure mode of the pattern is a host that mounts too late and
-autogenerates a migration dropping the package's own tables.
+Phase 5 mounts LoadLedger's four tables (migration ``0005``) and is the **first** package mount in
+this application, so :data:`LEDGER_TABLES` is the example Commissioner's ``egress_decisions`` mount
+at Phase 6 and CutCtx's later one should copy. Three things make it an example rather than a call:
+
+* **It runs at module import**, at the bottom of this module, unconditionally and behind no flag.
+  Autogenerate only sees what was mounted before the metadata was inspected, so a host that mounts
+  lazily gets a revision that silently *drops* the package's tables. That is the named failure mode
+  of ADR-0050's pattern and it is why the mount lives here rather than in a service.
+* **The prefix stays the package's default** (``loadledger.sql.DEFAULT_TABLE_PREFIX``, ``ledger_``).
+  It is part of the mounted contract: changing it in a host that has already migrated is a table
+  rename, not a configuration change.
+* **Nothing joins to a mounted table.** They carry no foreign key out of the mounted set and
+  ``run_id``/``source_ref`` are opaque strings; the application reads them through the package's
+  own ledger class (ADR-0050 decision 2), never through a ``select`` written here.
+
+``egress_decisions`` (Commissioner) is **not** created here yet; it arrives the same way at Phase 6.
 
 SQLAlchemy models never leave the repository layer: a service returns a frozen domain value
 object, never one of these.
@@ -50,9 +60,11 @@ object, never one of these.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Final
 
+from loadledger.sql import mount_ledger_tables
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Float,
     ForeignKey,
@@ -68,6 +80,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from weightsdb import PortableJSON, UtcDateTime, ulid_primary_key
 
 __all__ = [
+    "LEDGER_TABLES",
     "ApiToken",
     "ApprovalRequest",
     "Base",
@@ -141,8 +154,16 @@ class Trajectory(Base):
     max_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_turns: Mapped[int | None] = mapped_column(Integer, nullable=True)
     budget_money_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
-    budget_money_nanos: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    budget_token_ceiling: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # BigInteger, not Integer. Money is whole nanos, so the shipped $5.00 default is
+    # 5_000_000_000 -- already past a 4-byte integer's 2_147_483_647. SQLite's dynamic typing
+    # stores it regardless, so a SQLite-only suite never sees the DataError PostgreSQL raises;
+    # migration 0005 widens both, and the same rule governs every accumulating column here.
+    budget_money_nanos: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    budget_token_ceiling: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    budget_partial_pricing: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    window_parked_from: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    window_next_edge_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    window_days_waited: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tier_snapshot_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
     approval_policy_version: Mapped[str | None] = mapped_column(String(71), nullable=True)
     halted_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -520,3 +541,24 @@ class ToolCallRecord(Base):
         Index("ix_tool_call_records_trajectory_id", "trajectory_id"),
         Index("ix_tool_call_records_turn_id", "turn_id"),
     )
+
+
+LEDGER_TABLES: Final = mount_ledger_tables(Base.metadata)
+"""LoadLedger's four tables, mounted into this application's metadata (ADR-0050, migration 0005).
+
+**Mounted here, at module import, on purpose.** ``Base.metadata`` is what Alembic's ``env.py``
+names as ``target_metadata`` and what ``MigrationRunner.check_parity`` compares the live schema
+against; both read the metadata *as it is when they inspect it*. A mount performed later — inside a
+service, a request handler or behind a configuration flag — is a mount autogenerate never sees, and
+the revision it then generates does not merely omit these tables, it **drops** them. So this line
+has no condition on it and never will.
+
+The prefix is left at ``loadledger.sql.DEFAULT_TABLE_PREFIX`` (``ledger_``), giving
+``ledger_entries``, ``ledger_balances``, ``ledger_balance_money`` and ``ledger_runs``. Changing it
+once a deployment has migrated is a table rename, not a setting, so it is not configurable here.
+
+The handle is kept rather than dropped so tests can assert the prefix and the shapes; no query in
+this application is written against these :class:`~sqlalchemy.Table` objects. Reads and writes go
+through :class:`loadledger.sql.SqlLedger` (ADR-0050 decision 2) — a join from an application entity
+to a mounted table would freeze a shape the package is free to change under an upgrade note.
+"""

@@ -7,6 +7,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ## [Unreleased]
 
 ### Added
+- **Phase 5, gate A: LoadLedger's tables are mounted.** `loadledger[sql]>=0.1,<0.2` is a runtime
+  dependency, and this is the **first package-table mount in the application** (ADR-0050) — the
+  example Commissioner's `egress_decisions` mount at Phase 6 and CutCtx's later one copy.
+  - `infrastructure/db/models.py` — `LEDGER_TABLES = mount_ledger_tables(Base.metadata)` at module
+    import, unconditionally and behind no flag: autogenerate only sees what was mounted before it
+    inspected the metadata, so a lazy mount produces a revision that *drops* the package's tables.
+    The prefix stays the package default `ledger_`, which is part of the mounted contract —
+    changing it after a deployment has migrated is a table rename, not a setting.
+  - Migration `0005` creates `ledger_entries`, `ledger_balances`, `ledger_balance_money` and
+    `ledger_runs`; a test proves `alembic upgrade head` from empty produces exactly the mounted
+    shapes, and that `downgrade` removes them and nothing else. The `[sql]` extra is what is
+    needed and not the bare package: LoadLedger keeps SQLAlchemy behind an extra by decision
+    (ADR-0050 decision 4), and a host that mounts tables needs that half.
+  - `trajectories` gains the persisted `awaiting_window` clock (`window_parked_from`,
+    `window_next_edge_at`, `window_days_waited` — `domain.trajectory.WindowWait` field for field)
+    and `budget_partial_pricing`, the per-request override of `[budget] partial_pricing`.
+
+### Fixed
+- **`trajectories.budget_money_nanos` and `budget_token_ceiling` were `Integer` and are now
+  `BigInteger`** (migration `0005`). `Money` is whole nanos, so the shipped $5.00 default ceiling
+  is 5 000 000 000 — past a 4-byte integer's 2 147 483 647. SQLite's dynamic typing stores it
+  regardless, so no SQLite test could have caught it; on PostgreSQL every trajectory carrying a
+  money ceiling above $2.14 would have failed to insert. Widened in the revision that first makes
+  those columns bind anything.
+
+### Added
 - **Phase 4: the loop executes tool calls under full ToolYard discipline.** `toolyard>=0.1,<0.2`
   is a runtime dependency now that `0.1.0` is on PyPI, and the Phase-3 placeholder — *"tool calls
   are not executed before Phase 4, and a requested tool that cannot run is not a completed turn"* —
