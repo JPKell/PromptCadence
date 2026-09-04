@@ -51,6 +51,15 @@ dependencies = [
     # to do it), and PromptCadence mounts `loadledger.sql`'s four tables into its own metadata and
     # its own Alembic history, so it needs that half.
     "loadledger[sql]>=0.1,<0.2",
+    # P6: egress governance. A normal pin -- commissioner 0.1.0 is on PyPI. The **[sql] extra**,
+    # for the same reason LoadLedger's is: Commissioner keeps SQLAlchemy behind an extra so a
+    # consumer wanting only the policy and the payload does not acquire an ORM (ADR-0050
+    # decision 4), and PromptCadence mounts `commissioner.sql`'s table into its own metadata and
+    # its own Alembic history. Note this pin decides the resolved `setspec`: commissioner requires
+    # `setspec>=0.5,<0.6`, so the environment resolves 0.5.x even though the range above admits
+    # 0.6. That is intended and costs nothing today -- nothing here consumes a 0.6 payload -- but
+    # Commissioner will need widening before PromptCadence can adopt one.
+    "commissioner[sql]>=0.1,<0.2",
 ]
 
 [project.optional-dependencies]

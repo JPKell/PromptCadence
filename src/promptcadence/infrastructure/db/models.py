@@ -62,6 +62,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Final
 
+from commissioner.sql import mount_egress_tables
 from loadledger.sql import mount_ledger_tables
 from sqlalchemy import (
     BigInteger,
@@ -80,6 +81,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from weightsdb import PortableJSON, UtcDateTime, ulid_primary_key
 
 __all__ = [
+    "EGRESS_TABLES",
     "LEDGER_TABLES",
     "ApiToken",
     "ApprovalRequest",
@@ -561,4 +563,23 @@ The handle is kept rather than dropped so tests can assert the prefix and the sh
 this application is written against these :class:`~sqlalchemy.Table` objects. Reads and writes go
 through :class:`loadledger.sql.SqlLedger` (ADR-0050 decision 2) — a join from an application entity
 to a mounted table would freeze a shape the package is free to change under an upgrade note.
+"""
+
+
+EGRESS_TABLES: Final = mount_egress_tables(Base.metadata)
+"""Commissioner's ``egress_decisions`` table, mounted into this application's metadata.
+
+The second package mount here, and a **transcription** of :data:`LEDGER_TABLES` above rather than a
+second design (ADR-0050; migration ``0006``). Everything that made that one an example applies
+unchanged, so only what differs is written down again:
+
+The prefix stays ``commissioner.sql.DEFAULT_TABLE_PREFIX`` (``egress_``), giving one table,
+``egress_decisions``. Changing it once a deployment has migrated is a table rename, not a setting,
+so it is not configurable here either.
+
+Reads and writes go through :class:`commissioner.sql.SqlEgressLedger`, never through this handle
+(ADR-0050 decision 2). That matters more here than it did for the ledger: an egress decision is the
+audit record of a refusal, and a query this application wrote against the table directly would be
+one the package could not keep honest across an upgrade. The handle is kept only so the migration
+parity test can assert the shape and the prefix.
 """

@@ -110,6 +110,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   - The live journey now asserts the debits and the running balance a real run leaves behind, and
     still passes on the fake provider with no GPU, no Ollama and no network (spec §20 #10).
 
+### Added
+- **Phase 6, gate A: Commissioner's table is mounted.** `commissioner[sql]>=0.1,<0.2` is a runtime
+  dependency, and this is the second package-table mount here — a transcription of Phase 5's, not
+  a second design (ADR-0050).
+  - `infrastructure/db/models.py` — `EGRESS_TABLES = mount_egress_tables(Base.metadata)` at module
+    import, unconditionally, for the reason `LEDGER_TABLES` documents: autogenerate only sees what
+    was mounted before it inspected the metadata, so a lazy mount yields a revision that *drops*
+    the package's table. The prefix stays the package default `egress_`.
+  - Migration `0006` creates `egress_decisions` and its two indexes. Tests prove `alembic upgrade
+    head` from empty equals the mounted shape column-for-column, that the index names match the
+    mount, that `downgrade` removes it and leaves `0005`'s tables alone, and that the migrated
+    schema leaves no pending autogenerate diff against `Base.metadata`.
+  - Reads and writes go through `commissioner.sql.SqlEgressLedger`; nothing queries the mounted
+    `Table` handle, which is kept only so the parity test can assert the shape.
+  - **This pin decides the resolved `setspec`.** Commissioner requires `setspec>=0.5,<0.6`, so the
+    environment now resolves `setspec 0.5.0` where it resolved 0.6.0 an entry above. That is
+    intended, costs nothing today, and is recorded because it will need lifting before
+    PromptCadence can adopt a 0.6 payload.
+
 ### Changed
 - **`setspec` widened to `>=0.5,<0.7`** (E5's pin sweep). The old pin was `>=0.4,<0.5` with a
   comment explaining that it could not move because `mirrorwall 0.2.1` required `setspec<0.5`;
