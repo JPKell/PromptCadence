@@ -111,6 +111,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
     still passes on the fake provider with no GPU, no Ollama and no network (spec §20 #10).
 
 ### Added
+- **Phase 6, gate D: the deviation matrix, as the bypass path actually mints it.** The comparison
+  machinery was already wired end to end at Phase 4; what this adds is the evidence that it is
+  wired against the *default* intent, not only against a hand-built one.
+  - `tests/golden/deviation_matrix_bypass.json` renders every lifecycle §5 category, its severity
+    and its disposition under both `reapproval_scope` values, over the intent
+    `mint_bypass_default` produces from `TierPolicy`. All six categories are asserted present, so
+    a golden that silently stopped covering one still fails.
+  - This is the baseline Phase 7's contract-1 invariance diff is written against: when a planner
+    mints the intent instead, these rows must not move — only `intent_id` and the `minted_by`
+    kind may.
+  - A tool outside the *trajectory* allowlist is asserted `refused_not_reapprovable` under **both**
+    scopes, which is what makes "never re-approvable" a claim about the policy rather than about
+    one code path.
+
+### Added
 - **Phase 6, gate B: every turn and every `NETWORK` tool call carries a recorded egress decision.**
   Commissioner renders the verdict and records it; enforcing it is this application's (ADR-0054).
   - `services/egress.py` — `EgressService.evaluate` has no path that decides without recording, so

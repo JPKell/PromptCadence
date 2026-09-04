@@ -503,6 +503,103 @@ def test_deviation_matrix_golden(intent: ExecutionIntent) -> None:
     assert produced + "\n" == golden.read_text(encoding="utf-8")
 
 
+def test_deviation_matrix_bypass_rows_golden(
+    declaration: TrajectoryDeclaration,
+    tier_policy: TierPolicy,
+    approval_policy: ApprovalPolicy,
+    minted_at: datetime,
+) -> None:
+    """The plan's named golden: every category, against the intent the **bypass path** mints.
+
+    The golden above renders the matrix over a hand-built intent, which proves the comparison. This
+    one renders it over the intent ``mint_bypass_default`` actually produces from ``TierPolicy``,
+    which proves something different and is the reason the plan asks for it by name: the full
+    lifecycle §5 category set applies to a bypassed trajectory **unchanged**, because the intent is
+    the comparison source in both modes and Phase 7 changes only who mints it (ADR-0048, ADR-0056).
+
+    So this file is the baseline Phase 7's contract-1 invariance diff is written against. When a
+    planner mints the intent instead, these rows must not move; only the ``intent_id`` and the
+    ``minted_by`` kind may. A diff here after P7 is either a real governance change or a bug, and
+    either way it should be seen rather than inferred.
+    """
+    bypassed = mint_bypass_default(
+        intent_id="01BYPASSINTENT00000000000",
+        declaration=dataclasses.replace(
+            declaration, tool_allowlist=frozenset({"read_file", "list_dir"})
+        ),
+        tier_policy=tier_policy,
+        policy=approval_policy,
+        minted_at=minted_at,
+    )
+    assert bypassed.minted_by.kind is MintKind.BYPASS_DEFAULT
+
+    executed = _facts(
+        executed_tier="local_large",
+        subject=_REMOTE,
+        observed_classification=DataClassification.CONFIDENTIAL,
+        requested_tools=("rm_rf", "list_dir"),
+        step_tokens_spent=(bypassed.token_budget or 0) + 1,
+        turns_used=bypassed.max_turns,
+        finish_declared=False,
+    )
+    unserved = _facts(
+        executed_tier=None,
+        subject=None,
+        tier_service_failure=TierServiceFailure.NO_ELIGIBLE_MODEL,
+    )
+    deviations = [*compare(executed, bypassed), *compare(unserved, bypassed)]
+
+    # Every category the bypass path can raise is actually exercised here; a golden that silently
+    # stopped covering one would still pass byte-for-byte.
+    assert {deviation.category for deviation in deviations} == set(DeviationCategory)
+
+    cases = {
+        "minted_by": bypassed.minted_by.kind.value,
+        "deviations": [deviation.as_canonical() for deviation in deviations],
+        "severities": {
+            deviation.category.value: deviation.severity.value for deviation in deviations
+        },
+        "dispositions": {
+            f"{deviation.category.value}|{scope.value}": disposition(deviation, scope=scope).value
+            for deviation in deviations
+            for scope in ReapprovalScope
+        },
+    }
+    golden = _GOLDEN_DIR / "deviation_matrix_bypass.json"
+    produced = canonical_json(cases)
+    if not golden.exists():  # pragma: no cover — first run writes the golden
+        golden.write_text(produced + "\n", encoding="utf-8")
+    assert produced + "\n" == golden.read_text(encoding="utf-8")
+
+
+def test_a_tool_outside_the_trajectory_allowlist_is_never_reapprovable(
+    declaration: TrajectoryDeclaration,
+    tier_policy: TierPolicy,
+    approval_policy: ApprovalPolicy,
+    minted_at: datetime,
+) -> None:
+    """Lifecycle §5's split, on the bypass default intent, under **both** scopes.
+
+    The allowlist is the caller's, not the model's, so a tool outside it is refused outright and no
+    re-approval can grant it. A tool inside the allowlist but outside the intent is the other half:
+    a drift whose disposition follows ``reapproval_scope``. Asserting both under both scopes is
+    what makes "never re-approvable" a claim about the policy rather than about one code path.
+    """
+    bypassed = mint_bypass_default(
+        intent_id="01BYPASSINTENT00000000000",
+        declaration=dataclasses.replace(declaration, tool_allowlist=frozenset({"read_file"})),
+        tier_policy=tier_policy,
+        policy=approval_policy,
+        minted_at=minted_at,
+    )
+    outside = compare(_facts(requested_tools=("rm_rf",)), bypassed)
+    (refused,) = [d for d in outside if d.category is DeviationCategory.UNDECLARED_TOOL]
+    assert refused.outside_trajectory_allowlist is True
+    assert refused.is_reapprovable is False
+    for scope in ReapprovalScope:
+        assert disposition(refused, scope=scope) is Disposition.REFUSED_NOT_REAPPROVABLE
+
+
 def test_turn_facts_refuse_a_negative_token_count() -> None:
     with pytest.raises(ValidationError, match="step_tokens_spent"):
         _facts(step_tokens_spent=-1)
