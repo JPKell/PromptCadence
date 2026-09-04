@@ -50,17 +50,16 @@ def get_ledger(request: Request, trajectory_id: str | None = Query(default=None)
 
     ``trajectory_id`` adds that trajectory's own per-run position. ``404 TRAJECTORY_NOT_FOUND``
     if it names one that does not exist.
+
+    The per-day, per-project and per-tier figures name **no run at all** — they are ledger-wide
+    windows and LoadLedger answers them as such since 0.2.0. Until then this handler had to pass
+    an arbitrary known trajectory as a reference run to satisfy a signature.
     """
     runtime = _runtime(request)
     trajectory: TrajectoryView | None = (
         runtime.trajectories.get(trajectory_id) if trajectory_id is not None else None
     )
-    view = runtime.budget.ledger_view(
-        reference_run=trajectory.trajectory_id
-        if trajectory is not None
-        else runtime.trajectories.most_recent_id(),
-        trajectory=trajectory,
-    )
+    view = runtime.budget.ledger_view(trajectory=trajectory)
     return json_response(view.as_json(), request_id=_request_id(request))
 
 

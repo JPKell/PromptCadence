@@ -282,22 +282,6 @@ class TrajectoryService:
                 )
             return view_of(row)
 
-    def most_recent_id(self) -> str | None:
-        """Return the newest trajectory's id, or ``None`` when none has been submitted.
-
-        The ledger's reference run for a position that is *not* about one trajectory. LoadLedger
-        reports a balance only for a named run, and the ``per_day`` and ``per_tag`` windows a
-        dashboard asks about are ledger-wide — so the answer is the same whichever known run is
-        named, and any real trajectory is a better one to name than a synthetic id invented to
-        satisfy the signature.
-        """
-        with self._database.read() as session:
-            return session.execute(
-                select(models.Trajectory.id)
-                .order_by(models.Trajectory.created_at.desc(), models.Trajectory.id.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-
     def resolve(self, reference: str) -> TrajectoryView:
         """Return the trajectory a full id or an unambiguous prefix names (CLI standards §7).
 

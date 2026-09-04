@@ -708,6 +708,41 @@ def test_under_floor_the_trajectory_continues_and_the_balance_reads_at_least(
     assert render_money(verdict.money_spent, is_floor=True).startswith("at least ")
 
 
+def test_a_tier_with_an_untotalled_estimate_reports_its_spend_as_a_floor(
+    database: Database, fake: FakeLoadCoach, partial_pricing_file: Path
+) -> None:
+    """The per-tier view of the same floor, read through `balances()` and not through a ceiling.
+
+    No tier ceiling is configured (lifecycle §6), so before `loadledger 0.2.0` this could only be
+    reported as a debit count. It is now a balance — and the honesty counts ride on it, so the
+    figure says "at least" exactly as the ceiling-bearing scopes do. Nothing here is summed by
+    this application: `_tier_balances` asks the ledger and renders what it is given.
+    """
+    harness = _partial(database, fake, partial_pricing_file, partial_pricing="floor")
+    harness.run()
+
+    tiers = {
+        one["tier"]: one for one in harness.budget.ledger_view(trajectory=None).as_json()["tiers"]
+    }
+    spent = tiers["local_fast"]
+
+    assert spent["untotalled_debit_count"] == 1, "the cache-read class could not be priced"
+    assert spent["money_is_floor"] is True
+    assert spent["money_spent"] == [
+        {"currency": "USD", "nanos": 4_000_000, "display": "at least 0.004 USD"}
+    ]
+    assert spent["money_spent_display"] == "at least 0.004 USD"
+    # The same number the ceiling-bearing scopes report over the same window, and it is a *spend*:
+    # "at least", never "at most", which is what a figure that is *left* becomes over a floor.
+    assert not spent["money_spent_display"].startswith("at most ")
+
+    # A tier nothing ran on: no money at all, and not a zero (ADR-0016).
+    idle = tiers["local_large"]
+    assert idle["tokens_spent"] == 0
+    assert idle["money_spent"] == []
+    assert idle["money_spent_display"] == NOT_PRICED
+
+
 def test_under_strict_the_next_step_is_refused_at_preflight_not_detected_afterwards(
     database: Database, fake: FakeLoadCoach, partial_pricing_file: Path
 ) -> None:

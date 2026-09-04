@@ -53,6 +53,7 @@ from loadledger import (
     Debit,
     PartialPricing,
     UnknownRun,
+    WindowBalance,
     utc_day_key,
     utc_day_start,
 )
@@ -231,42 +232,82 @@ class LedgerView:
     Attributes:
         as_of: The instant the position was taken; the UTC day it falls in is the ``per_day``
             window every figure here is against.
-        day: The shared per-day ceiling's headroom, or ``None`` when the ledger has seen nothing
-            at all and there is no balance to report.
+        day: The shared per-day ceiling's headroom. Always present: the ledger answers a
+            ledger-wide position without being told a run, so an empty ledger reports the cap with
+            nothing spent rather than having nothing to report.
         projects: One entry per configured ``[budget.projects.<name>]``, in configuration order.
         trajectory: The named trajectory's own headroom, when one was asked about.
-        tier_debit_counts: How many debits each tier tag carries, ledger-wide.
+        tier_balances: What each configured tier's tag has accumulated, ledger-wide.
 
-            **Counts, not balances, and deliberately.** No tier ceiling is configured (lifecycle
-            §6 — tier tags exist for the estimator and the views), and LoadLedger reports a
-            balance only *through* a ceiling. Summing the entries here to produce one would put
-            ledger arithmetic in an application, which is the thing ADR-0050's mount exists to
-            avoid; inventing an unreachable ceiling to read a number through would put a magic
-            figure in the record. So this reports what a ledger read can honestly answer, and the
-            gap is written up as a LoadLedger row rather than papered over here.
+            **Spend, and it took a LoadLedger release to say so honestly.** No tier ceiling is
+            configured (lifecycle §6 — tier tags exist for the estimator and the views), and
+            LoadLedger 0.1.0 could report a balance only *through* a ceiling, so this was a debit
+            **count**. `loadledger 0.2.0` added ``balances(scope, window_key)``, which answers a
+            window with no cap over it, so the count is now a real balance — read from the ledger,
+            never summed here. A tier still has no headroom and nothing about it can be exceeded;
+            it has spend, and that is a different thing from a cap with room left in it.
     """
 
     as_of: datetime
-    day: BudgetHeadroom | None
+    day: BudgetHeadroom
     projects: tuple[tuple[str, BudgetHeadroom], ...]
     trajectory: BudgetHeadroom | None = None
-    tier_debit_counts: Mapping[str, int] = field(default_factory=dict)
+    tier_balances: Mapping[str, WindowBalance] = field(default_factory=dict)
 
     def as_json(self) -> dict[str, Any]:
         """Return the ``GET /ledger`` document."""
         return {
             "as_of": to_rfc3339(self.as_of),
             "utc_day": utc_day_key(self.as_of),
-            "day": _headroom_json(self.day) if self.day is not None else None,
+            "day": _headroom_json(self.day),
             "projects": [{"project": name, **_headroom_json(one)} for name, one in self.projects],
             "trajectory": (
                 _headroom_json(self.trajectory) if self.trajectory is not None else None
             ),
             "tiers": [
-                {"tier": name, "debit_count": count}
-                for name, count in sorted(self.tier_debit_counts.items())
+                {"tier": name, **_balance_json(one)}
+                for name, one in sorted(self.tier_balances.items())
             ],
         }
+
+
+def _balance_json(balance: WindowBalance) -> dict[str, Any]:
+    """Render one window's accumulated **spend** for the wire, strings beside the numbers.
+
+    The counterpart of :func:`_headroom_json`, and the differences between them are the whole
+    point. A window with no ceiling over it has no ``remaining`` and nothing that can be
+    ``exceeded``, so neither appears — inventing either would mean inventing a cap. And its money
+    is rendered with :func:`render_money`, the **spent** renderer, which qualifies a floor with
+    "at least"; :func:`render_remaining_money` qualifies with "at most", because a cap less a
+    floor is an upper bound, and using it on a spend would qualify in the wrong direction.
+
+    Money is a **list**, one entry per currency, even where today's configuration only ever
+    produces one. A window's currency set is open and the figures are never summed across it
+    (ADR-0030 rule 3), so a single total would be a conversion this application must not perform.
+    ``money_spent_display`` is the same information as one string for a surface that prints a
+    line rather than a table — :data:`NOT_PRICED` when nothing here was priced at all, which is
+    what stops a local tier being shown as ``$0.00`` (ADR-0016).
+    """
+    money_is_floor = balance.unpriced_debit_count > 0
+    displays = [render_money(one, is_floor=money_is_floor) for one in balance.money_spent]
+    return {
+        "tokens_spent": balance.tokens_spent,
+        "tokens_spent_display": render_tokens(
+            balance.tokens_spent, is_floor=balance.unmetered_debit_count > 0
+        ),
+        "money_spent": [
+            {**one.as_canonical(), "display": display}
+            for one, display in zip(balance.money_spent, displays, strict=True)
+        ],
+        "money_spent_display": (
+            ", ".join(displays) if displays else render_money(None, is_floor=money_is_floor)
+        ),
+        "money_is_floor": money_is_floor,
+        "tokens_are_floor": balance.unmetered_debit_count > 0,
+        "unpriced_debit_count": balance.unpriced_debit_count,
+        "untotalled_debit_count": balance.untotalled_debit_count,
+        "unmetered_debit_count": balance.unmetered_debit_count,
+    }
 
 
 def _headroom_json(headroom: BudgetHeadroom) -> dict[str, Any]:
@@ -680,22 +721,25 @@ class BudgetService:
             for entry in newest
         )
 
-    def ledger_view(
-        self, *, reference_run: str | None, trajectory: TrajectoryView | None
-    ) -> LedgerView:
+    def ledger_view(self, *, trajectory: TrajectoryView | None) -> LedgerView:
         """Build the ledger position ``GET /ledger`` and ``promptcadence ledger show`` report.
 
+        **Names no run**, and that is new. Until `loadledger 0.2.0` a balance could only be read
+        for a named run, so this method took any known trajectory as a *reference* — sound,
+        because a ``per_day`` or ``per_tag`` window is ledger-wide and the answer is the same
+        whichever run is named, but a signature working around a missing read, and it degraded to
+        "the configured caps with nothing spent" on an empty ledger. ``Ledger.position()`` answers
+        the ledger-wide ceilings directly, and on an empty ledger reports the same figures as a
+        fact rather than as a fallback reached through ``UnknownRun``.
+
         Args:
-            reference_run: **Any** run the ledger already knows — normally the most recent
-                trajectory. LoadLedger reports a balance only for a named run, but a ``per_day``
-                or ``per_tag`` verdict's window is ledger-wide, so the answer for those two is the
-                same whichever run is named. ``None`` (an empty ledger) reports the configured
-                caps with nothing spent, which is both true and the only useful answer.
-            trajectory: The trajectory to report a per-run position for, or ``None``.
+            trajectory: The trajectory to report a per-run position for, or ``None``. This is the
+                only part of the view that is about one run, and it is the only part that names
+                one.
 
         Returns:
             The view: today's per-day headroom, each configured project's, optionally one
-            trajectory's, and the per-tier debit counts.
+            trajectory's, and what each configured tier has spent.
         """
         now = self._clock()
         day = BudgetCeiling(
@@ -706,7 +750,7 @@ class BudgetService:
         projects = tuple(
             (name, self._project_ceiling(name)) for name in self._settings.budget.projects
         )
-        reported = self._report(reference_run, (day, *(ceiling for _, ceiling in projects)))
+        reported = self._report((day, *(ceiling for _, ceiling in projects)))
         return LedgerView(
             as_of=now,
             day=reported[0],
@@ -714,7 +758,7 @@ class BudgetService:
                 (name, headroom) for (name, _), headroom in zip(projects, reported[1:], strict=True)
             ),
             trajectory=self.position(trajectory).headroom[0] if trajectory is not None else None,
-            tier_debit_counts=self._tier_debit_counts(),
+            tier_balances=self._tier_balances(),
         )
 
     def _project_ceiling(self, name: str) -> BudgetCeiling:
@@ -732,21 +776,27 @@ class BudgetService:
             ),
         )
 
-    def _report(
-        self, reference_run: str | None, ceilings: Sequence[BudgetCeiling]
-    ) -> tuple[BudgetHeadroom, ...]:
-        """Ask the ledger what these ceilings say, falling back to "nothing spent" if it cannot."""
-        if reference_run is None:
-            return tuple(_empty(ceiling) for ceiling in ceilings)
-        try:
-            verdicts = self.ledger(ceilings=ceilings).remaining(reference_run)
-        except UnknownRun:
-            return tuple(_empty(ceiling) for ceiling in ceilings)
-        return tuple(_headroom(verdict) for verdict in verdicts)
+    def _report(self, ceilings: Sequence[BudgetCeiling]) -> tuple[BudgetHeadroom, ...]:
+        """Ask the ledger what these **ledger-wide** ceilings say, naming no run.
 
-    def _tier_debit_counts(self) -> dict[str, int]:
-        """How many debits each configured tier's tag carries. See :class:`LedgerView`."""
-        return {name: len(self.entries(tag=tier_tag(name))) for name in self._settings.tiers}
+        Every ceiling passed here is ``per_day`` or ``per_tag``, whose windows cover every run.
+        ``position()`` refuses a ``per_run`` ceiling rather than answering it against an arbitrary
+        run, so passing one is a programming error and is left to raise.
+        """
+        return tuple(_headroom(verdict) for verdict in self.ledger(ceilings=ceilings).position())
+
+    def _tier_balances(self) -> dict[str, WindowBalance]:
+        """What each configured tier's tag has accumulated, ledger-wide. See :class:`LedgerView`.
+
+        One ledger, one ``balances()`` call per configured tier — each a primary-key lookup over
+        the two balance tables. The read it replaced was ``len(self.entries(tag=...))`` per tier,
+        which materialized the entire history once per tier to produce a count.
+        """
+        ledger = self.ledger()
+        return {
+            name: ledger.balances(scope=CeilingScope.PER_TAG, window_key=tier_tag(name))
+            for name in self._settings.tiers
+        }
 
     def debited_turn_ids(self, trajectory_id: str) -> frozenset[str]:
         """Return the turn ids this trajectory already has a debit for.

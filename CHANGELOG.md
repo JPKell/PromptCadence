@@ -6,6 +6,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Changed
+- **`promptcadence ledger show --scope tier` and `GET /api/v1/ledger`'s `tiers` array report
+  spend, not a debit count.** `loadledger 0.2.0` added `balances(scope, window_key)` — a read of
+  one window that names no run and reads through no ceiling — so a tier, which has no cap over it
+  by design (lifecycle §6), now has a balance the ledger can be *asked* for. Each tier carries its
+  tokens, its per-currency money, the three honesty counts and the rendered strings beside the
+  numbers, exactly as a ceiling's headroom does. **No arithmetic was added to
+  `services/budget.py`**: it asks, renders and returns.
+- Tier money is a **list**, one entry per currency, plus a single `money_spent_display` for a
+  surface that prints a line rather than a table. A window's currency set is open and figures are
+  never summed across it (ADR-0030 rule 3), so one total would be a conversion. A tier that has
+  priced nothing renders `—`, never `$0.00` (ADR-0016), and a floor renders "at least" through
+  `render_money` — the **spent** renderer. `render_remaining_money` is not used here and must not
+  be: it qualifies with "at most", because a cap less a floor is an upper bound, and there is no
+  cap here to be under.
+- The CLI's closing line for `--scope tier` was *"no tier ceiling is configured, so a tier has a
+  history and not a balance"*, which is no longer true. It now says these are balances and not
+  headroom — nothing here can be exceeded.
+- **`GET /api/v1/ledger` names no run.** `BudgetService.ledger_view` lost its `reference_run`
+  argument and `_report` now calls `Ledger.position()`, the ledger-wide counterpart of
+  `remaining()`. Previously both surfaces passed an arbitrary known trajectory to satisfy a
+  signature — sound, since a `per_day` or `per_tag` window is ledger-wide, but a workaround, and
+  on an empty ledger it fell back through `UnknownRun` to a fabricated "nothing spent". The
+  figures are unchanged; they are now facts rather than a fallback. `LedgerView.day` is therefore
+  no longer optional.
+- Dependency floor raised to **`loadledger[sql]>=0.2,<0.3`**. The floor moved with the surface:
+  `ledger_view` calls `balances()` and `position()`, neither of which exists in 0.1.0, and a floor
+  below the surface an application actually calls fails at runtime as an `AttributeError` instead
+  of at install time as a resolution error.
+
+### Removed
+- `TrajectoryService.most_recent_id()`. It existed only to supply the reference run the two ledger
+  surfaces no longer need, and its docstring described a workaround that no longer exists.
+
 ### Added
 - **Phase 5, gate A: LoadLedger's tables are mounted.** `loadledger[sql]>=0.1,<0.2` is a runtime
   dependency, and this is the **first package-table mount in the application** (ADR-0050) — the

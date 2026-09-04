@@ -282,9 +282,14 @@ Debits store `TokenUsage` + `pricing_hash`, never a money figure as the primary 
 (`per-trajectory`, `per-day` UTC, `per-tag` — the project) may be active simultaneously and the
 most restrictive binds, with every entry recording its balance after against each active ceiling
 ([LoadLedger §7](../../packages/loadledger/spec.md)). Every debit is tagged with its tier too,
-for the estimator and the ledger views; no tier ceiling is configured, so a tier has a *history*
-and not a balance — the ledger views report its debit count and LoadLedger, which reports a
-balance only through a ceiling, is not asked for one it was never given.
+for the estimator and the ledger views; **no tier ceiling is configured, so a tier has a balance
+and not headroom** — the ledger views report what it has *spent*, and nothing about a tier can be
+exceeded because nothing caps it. That balance is read, never computed here:
+`loadledger 0.2.0`'s `balances(scope, window_key)` answers a window with no ceiling over it, so
+the view asks the ledger rather than summing entries in this application (which ADR-0050's mount
+exists to prevent) or configuring an unreachable cap purely to read a number through (which would
+put a magic figure in the record). Until that release the same views reported a debit **count**,
+which is what the read replaced.
 
 **A money ceiling binds a step only when that step's usage is priced** (ADR-0047 §3, "money
 ceilings bind priced usage"). LoadLedger evaluates every ceiling and reports every verdict; which

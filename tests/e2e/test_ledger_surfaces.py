@@ -179,8 +179,86 @@ def test_ledger_show_text_output_names_the_scope_and_never_prints_a_bare_floor(
     tiers = runner.invoke(cli_app, ["ledger", "show", "--scope", "tier"])
     assert tiers.exit_code == 0, tiers.output
     assert "local_fast" in tiers.stdout
-    assert "1 debit(s) recorded" in tiers.stdout
-    assert "no tier ceiling is configured" in tiers.stdout
+    # Spend, not a debit count: `loadledger 0.2.0` answers a window with no ceiling over it.
+    assert "spent" in tiers.stdout
+    assert "debit(s) recorded" not in tiers.stdout
+    # The tier ran locally and priced nothing. Nothing is not free (ADR-0016, spec §20 #1).
+    assert NOT_PRICED in tiers.stdout
+    assert "0.00" not in tiers.stdout
+    # No cap over a tier, so nothing on the line claims room left or a crossing.
+    assert "left" not in tiers.stdout
+    assert "EXCEEDED" not in tiers.stdout
+    assert "nothing here can be exceeded" in tiers.stdout
+
+
+def test_a_tier_that_priced_nothing_renders_an_em_dash_and_a_token_floor(
+    client: TestClient,
+) -> None:
+    """The per-tier half of spec §20 criterion 1, on the API rather than the terminal."""
+    _run(client)
+    tiers = client.get("/api/v1/ledger").json()["tiers"]
+    local = next(one for one in tiers if one["tier"] == "local_fast")
+
+    # It spent tokens and priced nothing: money absent entirely, not a zero entry.
+    assert local["money_spent"] == []
+    assert local["money_spent_display"] == NOT_PRICED
+    assert local["unpriced_debit_count"] == 1
+    assert local["tokens_spent"] > 0
+
+    # The fake reports no cache classes, so the token figure is a floor and says so.
+    assert local["unmetered_debit_count"] == 1
+    assert local["tokens_are_floor"] is True
+    assert local["tokens_spent_display"].startswith("at least ")
+
+    # Nothing a ceiling would have put here, because there is no tier ceiling.
+    assert "money_remaining" not in local
+    assert "tokens_remaining" not in local
+    assert "exceeded" not in local
+    assert "binds" not in local
+
+    # A tier nothing ran on has a window that was never touched — zero, and still no money.
+    idle = next(one for one in tiers if one["tier"] != "local_fast" and one["tokens_spent"] == 0)
+    assert idle["money_spent_display"] == NOT_PRICED
+    assert idle["unpriced_debit_count"] == 0
+
+
+def test_the_cli_and_the_api_print_the_same_tier_figure(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `projects` test's pattern, for the tier half — one renderer, so they cannot disagree."""
+    _run(client)
+    body = client.get("/api/v1/ledger").json()
+    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
+    result = CliRunner().invoke(cli_app, ["ledger", "show", "--scope", "tier", "--json"])
+    assert result.exit_code == 0, result.output
+    printed = json.loads(result.stdout)
+
+    served = {one["tier"]: one for one in body["tiers"]}
+    for tier in printed["tiers"]:
+        assert tier["tokens_spent"] == served[tier["tier"]]["tokens_spent"]
+        assert tier["tokens_spent_display"] == served[tier["tier"]]["tokens_spent_display"]
+        assert tier["money_spent_display"] == served[tier["tier"]]["money_spent_display"]
+        assert tier["money_spent"] == served[tier["tier"]]["money_spent"]
+
+
+def test_the_ledger_position_names_no_run_and_answers_an_empty_ledger_honestly(
+    client: TestClient,
+) -> None:
+    """Nothing has been submitted, so there is no run to name — and the caps still report.
+
+    Before `loadledger 0.2.0` this document was reachable only by naming an arbitrary known
+    trajectory as a reference run, and on an empty ledger it fell back through ``UnknownRun`` to
+    a fabricated "nothing spent". The figures are the same; they are now a fact.
+    """
+    body = client.get("/api/v1/ledger").json()
+
+    assert body["day"] is not None, "the per-day cap reports with no run in the ledger at all"
+    assert body["day"]["tokens_remaining"] is None or body["day"]["tokens_remaining"] >= 0
+    assert body["trajectory"] is None
+    assert body["tiers"], "every configured tier is listed even before anything has run"
+    assert all(one["tokens_spent"] == 0 for one in body["tiers"])
+    assert all(one["money_spent"] == [] for one in body["tiers"])
+    assert "0.00" not in json.dumps(body["tiers"]), "no fabricated zero for an empty ledger"
 
 
 def test_ledger_show_refuses_an_unknown_scope_and_a_missing_trajectory(

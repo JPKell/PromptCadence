@@ -90,10 +90,7 @@ def _document(settings: Settings, trajectory_id: str | None) -> dict[str, Any]:
         client.close()
     with _local(settings) as (budget, trajectories):
         view = trajectories.get(trajectory_id) if trajectory_id else None
-        reference = view.trajectory_id if view is not None else trajectories.most_recent_id()
-        document: dict[str, Any] = budget.ledger_view(
-            reference_run=reference, trajectory=view
-        ).as_json()
+        document: dict[str, Any] = budget.ledger_view(trajectory=view).as_json()
         return document
 
 
@@ -103,6 +100,20 @@ def _line(label: str, headroom: dict[str, Any]) -> str:
         f"{label:<24} money {headroom['money_remaining_display']:>22} left   "
         f"tokens {headroom['tokens_remaining_display']:>14} left"
         f"{'   EXCEEDED' if headroom['binds'] else ''}"
+    )
+
+
+def _spend_line(label: str, balance: dict[str, Any]) -> str:
+    """One rendered **spend** line: what a window holds, with no cap and no "left".
+
+    Both figures arrive already rendered — "at least …" for a floor, an em dash for a currency
+    nothing was priced in — because deciding how a floor is written down belongs in one place and
+    that place is `services.budget`, not here (spec §20 criterion 1). Nothing on this line says
+    "left" or "EXCEEDED": there is no ceiling over a tier to have room in or to cross.
+    """
+    return (
+        f"{label:<24} money {balance['money_spent_display']:>22} spent   "
+        f"tokens {balance['tokens_spent_display']:>14} spent"
     )
 
 
@@ -120,9 +131,9 @@ def show(
     """Show the ledger position for one scope. Mode: either.
 
     ``day`` is the shared per-day ceiling, ``project`` each configured project's lifetime cap,
-    ``trajectory`` one trajectory's own, and ``tier`` the recorded debits per tier — a **count**,
-    not a balance, because no tier ceiling is configured (lifecycle §6) and this application does
-    not compute a balance the ledger was not asked for.
+    ``trajectory`` one trajectory's own, and ``tier`` what each tier has **spent** — a balance and
+    not headroom, because no tier ceiling is configured (lifecycle §6) and a window with no cap
+    over it has nothing that can be exceeded.
     """
     if scope not in _SCOPES:
         typer.echo(
@@ -138,7 +149,7 @@ def show(
         typer.echo(json_module.dumps(document, indent=2, sort_keys=True))
         return
     typer.echo(f"UTC day {document['utc_day']}  (as of {document['as_of']})")
-    if scope == "day" and document["day"] is not None:
+    if scope == "day":
         typer.echo(_line("day", document["day"]))
     elif scope == "project":
         if not document["projects"]:
@@ -149,5 +160,8 @@ def show(
         typer.echo(_line(f"trajectory {trajectory_id}", document["trajectory"]))
     elif scope == "tier":
         for tier in document["tiers"]:
-            typer.echo(f"{tier['tier']:<24} {tier['debit_count']} debit(s) recorded")
-        typer.echo("no tier ceiling is configured, so a tier has a history and not a balance")
+            typer.echo(_spend_line(tier["tier"], tier))
+        typer.echo(
+            "no tier ceiling is configured, so these are balances and not headroom — "
+            "nothing here can be exceeded"
+        )
