@@ -325,10 +325,28 @@ deliberate rejection, like `LoadCoachClient`.
                                                 # every day, until raised
                 # token_ceiling = 100_000_000   # optional; a project binding neither is refused
 [tools]         enabled = ["read_file", "list_dir", "write_file", "run_command", "http_fetch"]
+                                                # http_fetch is listed and NOT registered before
+                                                # P6: no tool performs network egress until egress
+                                                # governance is in place. `promptcadence tools
+                                                # list` shows it withheld with the cause, and a
+                                                # model asking for it is refused `unknown_tool`
+                                                # and recorded.
                 workspace_root = ""             # default: <data>/workspaces; per-trajectory subdir
-                read_roots = []                 # extra read-only roots (allowlist)
+                artifact_root = ""              # default: <data>/artifacts; oversize tool output,
+                                                # keyed by the digest of the whole output
+                read_roots = []                 # extra read-only roots (allowlist). Absolute, and
+                                                # disjoint from workspace_root — an overlap is a
+                                                # startup refusal, because the path half and the
+                                                # subprocess half would disagree about it
                 fetch_allowed_hosts = []        # http_fetch hosts beyond loopback (ADR-0026 §3)
                 redact_args = []                # tool names whose args are stored as hash only
+                container_image = "python:3.12-slim"    # run_command's container rung. Probed and
+                                                # run with --pull=never, so it must already be
+                                                # present; `doctor` shows the rung and why
+                max_result_chars = 8192         # what the model sees of a result; the whole output
+                                                # is kept as an artifact under its digest, never a
+                                                # truncated body pretending to be the whole one
+                timeout_seconds = 30.0          # per call; no way to express "no timeout"
 [compaction]    threshold = 0.8                 # compact when estimate > 0.8 × tier context budget
                 policy_chain = ["observation_masking", "summarizing", "drop_oldest"]
                 protected_recent_turns = 4
@@ -359,14 +377,23 @@ deliberate rejection, like `LoadCoachClient`.
 
 Startup validation refuses: a remote tier without `max_data_classification`; a remote tier without
 a pricing source; an unknown classification value; a tier naming no task profile; non-loopback
-binding without authentication; `approval.mode = "manual"` with no `approve`-scoped token defined.
+binding without authentication; `approval.mode = "manual"` with no `approve`-scoped token defined;
+a relative `tools.workspace_root`, `tools.artifact_root` or read root; and a read root that equals,
+contains or sits inside the workspace root — that last one because containment's path half and its
+subprocess half would then disagree about the same directory, and the disagreement would surface
+on one tool call of one trajectory rather than at startup.
 Tier names are operator-chosen; the four above are the shipped defaults, not a fixed taxonomy
 (roadmap §2, D-3).
 
 The tier task profiles (`tools.plan`, `tools.agent.local_fast`, `tools.agent.local_large`,
 `tools.agent.remote_cheap`, `tools.agent.remote_frontier`) are **LoadCoach configuration, not
-code** — namespaced specializations of the shipped `tools.agent` profile, documented as TOML in
-PromptCadence's operator guide. `promptcadence doctor` and `promptcadence tiers check` verify each configured tier's
+code** — namespaced specializations of the shipped `tools.agent` profile, and they **ship in
+LoadCoach's `src/loadcoach/config/task_profiles.toml`**
+([ADR-0047 §1](../../adr/0047-a-tier-is-configuration-and-a-model-never-sizes-its-own-budget.md),
+[LoadCoach routing §2](../loadcoach/routing.md)), not in a document here that an operator would
+have to transcribe. PromptCadence vendors that file as a contract snapshot and pins its digest, so
+a tier naming a profile LoadCoach no longer ships fails CI rather than an operator's first turn.
+`promptcadence doctor` and `promptcadence tiers check` verify each configured tier's
 profile exists in the running LoadCoach, the way I7 verifies IdeaPress's task map.
 
 ## 13. Error behaviour

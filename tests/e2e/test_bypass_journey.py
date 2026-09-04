@@ -24,7 +24,7 @@ from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
     ScriptedGeneration,
     build_fake_app,
-    text_profile,
+    shipped_profiles,
 )
 from typer.testing import CliRunner
 
@@ -40,8 +40,7 @@ _TERMINAL = {"completed", "halted", "failed", "cancelled"}
 @pytest.fixture
 def fake() -> FakeLoadCoach:
     fake = FakeLoadCoach()
-    fake.register_profile(text_profile("tools.agent.local_fast"))
-    fake.register_profile(text_profile("tools.agent.local_large"))
+    fake.register_profile(*shipped_profiles("tools.agent.local_fast", "tools.agent.local_large"))
     fake.set_default(ScriptedGeneration(text="the notes describe three meetings"))
     return fake
 

@@ -423,6 +423,47 @@ def schema_profile(
     }
 
 
+def shipped_profiles(*profile_ids: str) -> tuple[dict[str, Any], ...]:
+    """Return the named profiles **as LoadCoach ships them**, from the vendored TOML.
+
+    ``text_profile`` and ``schema_profile`` are hand-shaped stand-ins, and they remain — a test
+    that needs a profile with a particular validation policy should say so rather than hunt for a
+    shipped one that happens to have it. This is the other case: a test asserting how the loop
+    behaves against *the tiers this application actually ships* should register the profile
+    LoadCoach actually ships, so a change to either side fails a test here rather than at an
+    operator's first turn.
+
+    The fake stays an empty registry regardless. It registers nothing by default — stricter than
+    LoadCoach, by decision (D2) — because a fake that quietly serves a profile the real thing has
+    never heard of is a fake that hides exactly the defect E4 exists to close.
+
+    Args:
+        *profile_ids: The profiles to fetch. Empty means every shipped profile.
+
+    Returns:
+        One wire-shaped document per profile, in the order asked for, each carrying the ``enabled``
+        and ``updated_at`` fields LoadCoach's ``/task-profiles`` adds and the file does not.
+
+    Raises:
+        KeyError: A profile id the vendored file does not hold. A caller bug, and one worth
+            raising for: a test registering a profile that does not ship would assert against a
+            world that does not exist.
+    """
+    from tests.contract.test_loadcoach_task_profiles import shipped_profiles as _from_toml
+
+    profiles = _from_toml()
+    wanted = profile_ids if profile_ids else tuple(sorted(profiles))
+    return tuple(
+        {
+            "profile_id": profile_id,
+            **profiles[profile_id],
+            "enabled": True,
+            "updated_at": "2026-09-04T00:00:00+00:00",
+        }
+        for profile_id in wanted
+    )
+
+
 class FakeLoadCoach:
     """The scriptable state behind the ASGI app: profiles, the model, the script and the jobs.
 
@@ -452,9 +493,14 @@ class FakeLoadCoach:
 
     # ---- scripting ---------------------------------------------------------------------
 
-    def register_profile(self, profile: Mapping[str, Any]) -> None:
-        """Make a task profile exist. A tier naming an unregistered one is refused."""
-        self.profiles[str(profile["profile_id"])] = dict(profile)
+    def register_profile(self, *profiles: Mapping[str, Any]) -> None:
+        """Make one or more task profiles exist. A tier naming an unregistered one is refused.
+
+        Variadic so ``fake.register_profile(*shipped_profiles("a", "b"))`` reads as one statement;
+        the single-profile call it replaced still works unchanged.
+        """
+        for profile in profiles:
+            self.profiles[str(profile["profile_id"])] = dict(profile)
 
     def script(self, *items: ScriptedGeneration | ScriptedError) -> None:
         """Queue answers, consumed in order by successive ``POST /generate`` calls.

@@ -7,6 +7,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ## [Unreleased]
 
 ### Added
+- **Phase 4: the loop executes tool calls under full ToolYard discipline.** `toolyard>=0.1,<0.2`
+  is a runtime dependency now that `0.1.0` is on PyPI, and the Phase-3 placeholder — *"tool calls
+  are not executed before Phase 4, and a requested tool that cannot run is not a completed turn"* —
+  is replaced by the round trip the plan specifies: `tool_calls` → ToolYard → results appended as
+  **TOOL** turns → continue until a declared finish, bounded by `execution.max_turns_per_step`.
+  The placeholder's surviving claim is kept: a turn that requested tools is still not a completed
+  turn.
+  - `services/tools.py` — the assembly. **One** `TieredSandbox` per process, handed to
+    `run_command_tool` before it is registered, so the tier the executor checks and the rung the
+    command runs under are one answer to one question; one registry, shared, because what narrows
+    per trajectory is the *allowlist* and not the registry; one absolute workspace per trajectory
+    under `[tools] workspace_root`; and an artifact store keyed by the digest of the whole output.
+    Startup refuses a relative root, a read root overlapping the workspace root, and a
+    `process_count` below ToolYard's documented floor.
+  - **`http_fetch` is withheld, not disabled.** No tool performs network egress before Phase 6, and
+    rather than editing spec §12's shipped `[tools] enabled`, the tool is simply not registered —
+    with a cause (`egress_governance_deferred_to_p6`) that `GET /tools`, `promptcadence tools list`
+    and `doctor` each show. A model that asks for it is refused with `unknown_tool`, which is true,
+    and the refusal is recorded. Two independent facts keep it off the network: it is not in the
+    registry, and every invocation's egress ceiling is `none`.
+  - **A refused call is a result, not a halt.** `Disposition.REFUSED_NOT_REAPPROVABLE` joins
+    `CONTINUE_RECORDED` in the set that continues a trajectory. Lifecycle §5 says a tool outside
+    the *trajectory* allowlist has **the call** refused outright and recorded, never re-approvable,
+    and says nothing about the trajectory ending; before tools could run, a halt was the only
+    available reading of that cell. Scoped re-approval still halts — the approver arrives at P7.
+  - `infrastructure/loadcoach.py` gains `assemble_tool_calls`: LoadCoach forwards tool calls as the
+    provider streamed them (`call_index`, `id`, `name`, `arguments_fragment`), so one call can be
+    three entries. They are grouped and parsed **once** before anything counts a name or executes
+    anything. It refuses nothing — a parser that raised on model output would let the model choose
+    when a turn ends.
+  - `tool_call_records` and migration `0004`, one row per call **including refusals and failures**;
+    `turns.tool_call_id`, closing a gap the domain has carried since Phase 2; `tool.call.started`
+    and `tool.call.completed` on the event stream, carrying digests and never arguments or output;
+    and oversize output spilled to the artifact directory **by hash**, with the record naming the
+    digest. Nothing is ever filed when the content's digest does not match the record's — a prefix
+    under the whole output's hash is the truncated body pretending to be complete that the record
+    exists to prevent.
+  - `GET /tools`, `GET /tools/{name}`, and `promptcadence tools list|show` (mode: local — the
+    registry is a function of configuration *and of this host*, so the useful answer comes from
+    probing the machine the command runs on). A third health component, `tools`, carries ToolYard's
+    `TierReport.reason`, so an operator can see which rung the ladder landed on and why without
+    reading logs. It is never `unavailable`: a host with no isolation rung still runs every
+    filesystem tool.
+  - `[tools]` gains `artifact_root`, `container_image`, `max_result_chars` and `timeout_seconds`.
+  - `tests/contract/loadcoach_task_profiles.toml` vendors LoadCoach's shipped profiles at
+    `5c5aa1f` with its digest recorded, and a contract test asserts the pairing every tier depends
+    on: the profile exists, both agent profiles require `tool_use`, each profile's
+    `min_context_tokens` equals its tier's `context_budget_tokens` and its `allow_remote_providers`
+    equals the tier's `remote`, and `tools.plan` asks for JSON with no schema. A drift now fails in
+    CI rather than at an operator's `tiers check`. The fake LoadCoach stays an **empty registry**
+    and gains `shipped_profiles()`, so a test registers the profile LoadCoach actually ships.
+  - Tests: spec §18's five security rows at this layer, each on its own — unlisted tool, path
+    escape, symlink escape, a refusal fed back as a structured TOOL turn with the trajectory
+    continuing, and size caps — a scripted multi-tool journey, and the hostile scripted model of
+    acceptance criterion 1, which requests unlisted tools, escapes paths, sends arguments that are
+    not JSON and asks for a command on a host with no isolation rung, and must reach a terminal
+    state with **every** call recorded. That no exception crossed the loop is asserted by a trap
+    around `run`, not observed. The default suite still passes with no LoadCoach, no Ollama, no GPU
+    and no network.
+
+  No version bump; this rides `0.9.0b0` at M11.
 - Phase 3: a bypassed trajectory executes end to end — durably, observably, and under
   governance — against a fake LoadCoach that every later phase tests against.
   - `infrastructure/loadcoach.py`: the httpx client for `/version`, `/system/status`, `/models`,

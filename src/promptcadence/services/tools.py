@@ -40,12 +40,12 @@ hashes in ``tool_call_records`` outlive it.
 
 from __future__ import annotations
 
-import hashlib
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from baseaicore import sha256_of
 from mirrorwall import ComponentHealth, ComponentStatus
 from toolyard import (
     DEFAULT_MAX_SUMMARY_BYTES,
@@ -227,7 +227,10 @@ class ArtifactStore:
         """Return where the body with this digest lives, whether or not it has been written.
 
         Args:
-            digest: The ``sha256:`` -prefixed or bare hex digest of the whole output.
+            digest: The hex digest of the whole output, as
+                :func:`baseaicore.sha256_of` and ToolYard's ``result_sha256`` produce it. An
+                ``algorithm:`` prefix is tolerated and stripped, so a caller that got the value
+                from somewhere that labels its digests still lands on one file.
 
         Returns:
             The path.
@@ -586,8 +589,7 @@ class ToolPlant:
         """
         if result.status is not ToolStatus.OK:
             return None
-        digest = f"sha256:{hashlib.sha256(result.content.encode('utf-8')).hexdigest()}"
-        if digest != result_sha256:
+        if sha256_of(result.content) != result_sha256:
             return None
         return self._artifacts.put(result.content, digest=result_sha256)
 

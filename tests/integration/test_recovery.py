@@ -36,7 +36,7 @@ from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
     ScriptedGeneration,
     build_fake_app,
-    text_profile,
+    shipped_profiles,
 )
 
 from promptcadence.config import load_settings
@@ -108,8 +108,7 @@ def _free_port() -> int:
 def served_fake() -> Iterator[tuple[FakeLoadCoach, str]]:
     """The fake LoadCoach on a real loopback socket, outliving any child process."""
     fake = FakeLoadCoach()
-    fake.register_profile(text_profile("tools.agent.local_fast"))
-    fake.register_profile(text_profile("tools.agent.local_large"))
+    fake.register_profile(*shipped_profiles("tools.agent.local_fast", "tools.agent.local_large"))
     fake.set_default(ScriptedGeneration(text="recovered"))
     port = _free_port()
     config = uvicorn.Config(build_fake_app(fake), host="127.0.0.1", port=port, log_level="warning")

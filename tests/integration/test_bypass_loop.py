@@ -20,7 +20,7 @@ from tests.fakes.loadcoach_app import (
     ScriptedGeneration,
     build_fake_app,
     schema_profile,
-    text_profile,
+    shipped_profiles,
 )
 from toolyard import TieredSandbox
 from weightsdb import MigrationRunner
@@ -86,8 +86,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
     monkeypatch.setenv("PROMPTCADENCE_EXECUTION__LEASE_SECONDS", "2")
     settings = load_settings().settings
     fake = FakeLoadCoach()
-    fake.register_profile(text_profile("tools.agent.local_fast"))
-    fake.register_profile(text_profile("tools.agent.local_large"))
+    fake.register_profile(*shipped_profiles("tools.agent.local_fast", "tools.agent.local_large"))
     with temporary_sqlite() as engine:
         MigrationRunner(engine, script_location=MIGRATIONS_LOCATION).upgrade(backup=False)
         yield Harness(settings, Database(engine), fake)
@@ -101,7 +100,7 @@ def schema_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: object) -> Iterato
     settings = load_settings().settings
     fake = FakeLoadCoach()
     fake.register_profile(schema_profile("structured.answer"))
-    fake.register_profile(text_profile("tools.agent.local_large"))
+    fake.register_profile(*shipped_profiles("tools.agent.local_large"))
     with temporary_sqlite() as engine:
         MigrationRunner(engine, script_location=MIGRATIONS_LOCATION).upgrade(backup=False)
         yield Harness(settings, Database(engine), fake)

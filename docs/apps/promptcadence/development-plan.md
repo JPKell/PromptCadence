@@ -202,7 +202,13 @@ gap, against an older one.
 content retention — swept with transcript text, hashes kept.
 **Gold standards:** no unvalidated model argument reaches a side effect.
 **Deferred:** network egress for tools remains off until P6 (`http_fetch` requires egress
-governance in place).
+governance in place). **Decided at P4:** `http_fetch` stays in `[tools] enabled`'s shipped default
+and is **withheld from the registry** with a named cause, rather than removed from the default.
+Spec §12's documented configuration keeps working for an operator who copied it, P6 flips one guard
+instead of editing a shipped list, and the tool's absence is *visible* — `GET /tools`,
+`promptcadence tools list` and `doctor` each name it with the cause. A model that asks for it is
+refused with `unknown_tool`, which is true: it is not registered. Two independent facts keep it off
+the network — it is not in the registry, and every invocation's egress ceiling is `none`.
 
 ---
 
