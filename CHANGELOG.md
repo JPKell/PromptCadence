@@ -54,6 +54,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
     partial_pricing`, persisted on the row; `NULL` means "the configured default", which is not
     the same as either value written down.
 
+- **Phase 5, gate C: a partial price is a floor, and a money ceiling chooses how it binds**
+  (ADR-0069). Under `floor` — the default — the priced components accumulate and the trajectory
+  continues, so the brake can fire late by the unreported portion and never early. Under `strict`
+  a window holding an estimate that did not total **exceeds** its money ceiling, and the refusal
+  lands at pre-flight — before the call, not as a verdict recorded after it.
+  - `render_money` / `render_tokens` in `services/budget.py` are the one renderer every surface
+    goes through, so the API, the CLI and every cause string cannot disagree about what a floor
+    looks like: `at least 0.004 USD`, never a bare figure, and `—` for an unpriced amount — never
+    `$0.00`, which would say the work was free (ADR-0016, spec §20 criterion 1).
+  - A local step trips neither rule: a debit that carried no estimate at all is *unpriced* and not
+    *untotalled*, which is what keeps a mixed trajectory running under `strict`.
+
 ### Fixed
 - **`trajectories.budget_money_nanos` and `budget_token_ceiling` were `Integer` and are now
   `BigInteger`** (migration `0005`). `Money` is whole nanos, so the shipped $5.00 default ceiling

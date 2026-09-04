@@ -34,7 +34,7 @@ from promptcadence.domain.errors import ErrorCode, ProjectUnknownError
 from promptcadence.domain.trajectory import TrajectoryState
 from promptcadence.infrastructure.db import models
 from promptcadence.infrastructure.loadcoach import LoadCoachClient
-from promptcadence.services.budget import project_tag, tier_tag
+from promptcadence.services.budget import NOT_PRICED, project_tag, render_money, tier_tag
 from promptcadence.services.database import Database, ensure_ready
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.loop import LoopController
@@ -640,3 +640,131 @@ def test_a_rate_stated_as_a_json_number_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError) as raised:
         load_pricing_records(path)
     assert "decimal *string*" in str(raised.value)
+
+
+# ---------------------------------------------------------------------------------------------
+# Gate C — a partial price is a floor, and a money ceiling chooses how it binds (ADR-0069)
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def partial_pricing_file(tmp_path: Path) -> Path:
+    """A price list that states no cache-read rate — the ordinary adapter case.
+
+    Omitted, not zero. A call that read from cache therefore cannot be fully priced: the priced
+    components accumulate as a **floor** and the estimate does not total, which is the exact
+    condition ``partial_pricing`` decides the meaning of.
+    """
+    path = tmp_path / "partial.pricing.json"
+    path.write_text(_PRICING_DOCUMENT.replace("__CACHE_READ__", "null"), encoding="utf-8")
+    return path
+
+
+def _partial(database: Database, fake: FakeLoadCoach, path: Path, **budget: Any) -> Harness:
+    """A harness whose (fictionally priced) local tier cannot fully price a cache-reading turn."""
+    fake.set_default(ScriptedGeneration(input_tokens=800, output_tokens=200, cache_read_tokens=500))
+    return Harness(
+        _settings(**budget),
+        database,
+        fake,
+        Clock(),
+        pricing=PricingCatalog(by_tier={"local_fast": load_pricing_records(path)}),
+    )
+
+
+def test_under_floor_the_trajectory_continues_and_the_balance_reads_at_least(
+    database: Database, fake: FakeLoadCoach, partial_pricing_file: Path
+) -> None:
+    """The default. The brake may fire late by the unreported portion, and never early."""
+    harness = _partial(database, fake, partial_pricing_file, partial_pricing="floor")
+    trajectory_id, state = harness.run()
+    assert state is TrajectoryState.COMPLETED, "a floor does not stop the work"
+    entry = harness.entries(trajectory_id)[0]
+    verdict = next(one for one in entry.verdicts if one.ceiling.money is not None)
+    assert verdict.exceeded is False
+    assert verdict.untotalled_debit_count == 1, "the cache-read class could not be priced"
+    assert verdict.unpriced_debit_count == 1
+    assert verdict.money_spent == Money(currency="USD", nanos=4_000_000)
+    position = harness.budget.position(harness.service.get(trajectory_id))
+    trajectory = position.headroom[0]
+    assert trajectory.money_is_floor is True, "render it 'at least', never as a bare figure"
+    assert render_money(trajectory.money_remaining, is_floor=trajectory.money_is_floor).startswith(
+        "at least"
+    )
+
+
+def test_under_strict_the_next_step_is_refused_at_preflight_not_detected_afterwards(
+    database: Database, fake: FakeLoadCoach, partial_pricing_file: Path
+) -> None:
+    """A hard budget is never crossed: an amount that cannot be shown to be under the cap is over.
+
+    The refusal is at pre-flight, *before* the second call — not a verdict recorded after it.
+    """
+    harness = _partial(
+        database, fake, partial_pricing_file, partial_pricing="strict", on_exhausted="halt"
+    )
+    _two_turns(harness.fake, input_tokens=800, output_tokens=200, cache_read_tokens=500)
+    trajectory_id, state = harness.run()
+    assert state is TrajectoryState.HALTED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.BUDGET_EXCEEDED.value
+    assert "partial_pricing is strict" in (view.halted_reason or "")
+    assert len(harness.entries(trajectory_id)) == 1, "the refused step was never called"
+    assert len(harness.fake.jobs) == 1, "and LoadCoach was never asked a second time"
+
+
+def test_a_per_request_partial_pricing_override_beats_the_configured_default(
+    database: Database, fake: FakeLoadCoach, partial_pricing_file: Path
+) -> None:
+    """Strictness is a property of the piece of work, so the request may pin it either way."""
+    harness = _partial(database, fake, partial_pricing_file, partial_pricing="floor")
+    _two_turns(harness.fake, input_tokens=800, output_tokens=200, cache_read_tokens=500)
+    trajectory_id, state = harness.run(partial_pricing="strict")
+    assert state is TrajectoryState.AWAITING_APPROVAL, "the request's rule bound, not the config's"
+    assert harness.service.get(trajectory_id).partial_pricing == "strict"
+
+    ceilings = harness.budget.ceilings_for(harness.service.get(trajectory_id))
+    assert all(
+        ceiling.partial_pricing.value == "strict"
+        for ceiling in ceilings
+        if ceiling.money is not None
+    ), "the rule rides on every money ceiling, so would_exceed applies it at pre-flight"
+
+
+def test_a_local_step_trips_neither_floor_nor_strict(
+    database: Database, fake: FakeLoadCoach
+) -> None:
+    """A debit that carried no estimate at all is unpriced and **not** untotalled.
+
+    That distinction is what keeps a mixed trajectory running under ``strict``: the rule is about
+    an estimate that could not be totalled, never about work that was never priced (ADR-0069).
+    """
+    harness = Harness(_settings(partial_pricing="strict"), database, fake, Clock())
+    _two_turns(harness.fake, input_tokens=800, output_tokens=200)
+    trajectory_id, state = harness.run()
+    assert state is TrajectoryState.COMPLETED
+    verdict = next(
+        one for one in harness.entries(trajectory_id)[0].verdicts if one.ceiling.money is not None
+    )
+    assert verdict.unpriced_debit_count == 1
+    assert verdict.untotalled_debit_count == 0, "no estimate is not a failed estimate"
+    assert verdict.exceeded is False
+
+
+def test_unpriced_local_usage_renders_an_em_dash_and_never_a_zero(harness: Harness) -> None:
+    """Spec §20 acceptance criterion 1, at the renderer every surface goes through.
+
+    ``$0.00`` would say the work was free. It was not free; its cost is simply unknowable, which
+    is a different thing and is what the em dash says (ADR-0016).
+    """
+    trajectory_id, state = harness.run()
+    assert state is TrajectoryState.COMPLETED
+    position = harness.budget.position(harness.service.get(trajectory_id))
+    trajectory = position.headroom[0]
+    money = next(
+        one for one in harness.entries(trajectory_id)[0].verdicts if one.ceiling.money is not None
+    )
+    assert money.money_spent is None, "nothing was priced, and None is not zero"
+    assert render_money(money.money_spent, is_floor=money.unpriced_debit_count > 0) == NOT_PRICED
+    assert "0.00" not in render_money(None, is_floor=False)
+    assert trajectory.money_is_floor is True, "the money figure is a lower bound, not a total"

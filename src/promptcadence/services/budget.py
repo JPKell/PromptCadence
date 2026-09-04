@@ -72,14 +72,27 @@ if TYPE_CHECKING:
     from promptcadence.services.views import TrajectoryView
 
 __all__ = [
+    "NOT_PRICED",
     "TIER_TAG_PREFIX",
     "BudgetPosition",
     "BudgetService",
     "CurrencyMismatchError",
     "PricedUsage",
     "project_tag",
+    "render_money",
+    "render_tokens",
     "tier_tag",
 ]
+
+NOT_PRICED: Final = "\u2014"
+"""What an unpriced amount renders as, everywhere, in every surface: an em dash.
+
+Never ``$0.00``. A local model's cost is ``UNSUPPORTED`` and a scope in which nothing has been
+priced has spent no *known* money — neither is zero, and a zero is the one rendering ADR-0016
+forbids because it reads as "this was free" (spec §20 criterion 1).
+"""
+
+_AT_LEAST: Final = "at least "
 
 TIER_TAG_PREFIX: Final = "tier:"
 _UNTOTALLED_IS_WORST: Final = 2**62
@@ -623,3 +636,37 @@ def _scope_label_of(ceiling: BudgetCeiling) -> str:
     if ceiling.scope is CeilingScope.PER_DAY:
         return "day"
     return ceiling.tag or "tag"
+
+
+def render_money(amount: Money | None, *, is_floor: bool) -> str:
+    """Render one money figure the one way this application is allowed to.
+
+    The single renderer behind ``GET /ledger``, ``promptcadence ledger show`` and every cause
+    string, so the three cannot disagree about what a floor looks like.
+
+    Args:
+        amount: The figure, or ``None`` when nothing has been priced in this scope or the ceiling
+            binds no money.
+        is_floor: Whether the figure is a floor — true whenever any debit in the window added less
+            than its full cost (:attr:`~promptcadence.domain.policy.BudgetHeadroom.money_is_floor`).
+
+    Returns:
+        :data:`NOT_PRICED` for ``None``; ``"at least 0.004 USD"`` for a floor; the bare figure
+        otherwise. A floor is never rendered as a bare figure, because "under budget" over an
+        incomplete sum is a claim nobody can make (ADR-0069).
+    """
+    if amount is None:
+        return NOT_PRICED
+    rendered = f"{amount.to_decimal()} {amount.currency}"
+    return f"{_AT_LEAST}{rendered}" if is_floor else rendered
+
+
+def render_tokens(count: int | None, *, is_floor: bool) -> str:
+    """Render one token figure, with the same floor rule as :func:`render_money`.
+
+    A token balance is a floor too whenever a provider left a class unreported: those classes are
+    excluded rather than counted as zero, so the count is a lower bound.
+    """
+    if count is None:
+        return NOT_PRICED
+    return f"{_AT_LEAST}{count}" if is_floor else str(count)
