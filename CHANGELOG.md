@@ -28,6 +28,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   stack.
 
 ### Changed
+- **A failed step repeats before it halts the trajectory** (G3, ADR-0076). A LoadCoach service
+  failure that could plausibly answer differently — `ALL_CANDIDATES_FAILED`, `PROVIDER_TIMEOUT`,
+  `QUEUE_FULL`, `RATE_LIMITED`, the client's own read timeout and their kind — is repeated on the
+  same tier under the **same** `ExecutionIntent` revision, through the same pre-flight order, the
+  same debit and the same comparison. Nothing is minted and nothing widens. A repeat comes
+  **before** a tier escalation, which asks for a wider envelope and is unchanged; it stops the
+  tier ladder rather than falling through it. Both paths, one code path. When the budget is spent
+  the trajectory halts at T12 with the last attempt's error code, its cause naming every attempt
+  with its tier.
+
+  Not repeated: a governance outcome, which is structurally out of reach — egress, pricing,
+  availability and budget run before the call site and every deviation is compared after it — and
+  a deterministic refusal (`VALIDATION_ERROR`, `CONTEXT_LIMIT_EXCEEDED`, `CAPABILITY_UNSUPPORTED`,
+  `FORBIDDEN`, and any code this build does not know). `NO_ELIGIBLE_MODEL` and
+  `TASK_PROFILE_NOT_FOUND` keep their own mechanism. An unreachable LoadCoach still fails at T13:
+  no backoff and no `waiting` state were added.
 - **A tool-calling assistant turn replays natively; the `[tool_calls]` text rendering is gone**
   (G2). `_render_tool_calls` existed because LoadCoach's message body had no `tool_calls` and a
   provider refuses an assistant turn with neither content nor calls, so a turn that answered with

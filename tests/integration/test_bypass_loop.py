@@ -310,13 +310,19 @@ def test_no_eligible_model_escalates_to_a_scoped_reapproval_or_halts_when_the_or
 def test_loadcoach_errors_halt_with_the_mapped_code_and_the_original_in_the_cause(
     harness: Harness,
 ) -> None:
+    """Both codes here are deterministic, so both halt on the first attempt (ADR-0076 §1).
+
+    ``PROVIDER_TIMEOUT`` used to be the second case and is now repeated instead; the retry tests
+    below own it. A context that does not fit still does not fit, and a provider that cannot do
+    what the request needs still cannot, so neither is in the retryable set.
+    """
     harness.fake.script(ScriptedError("CONTEXT_LIMIT_EXCEEDED"))
     _, state = _claim_and_run(harness)
     assert harness.service.list(state=TrajectoryState.HALTED)[0][0].error_code == (
         ErrorCode.COMPACTION_FAILED.value
     )
 
-    harness.fake.script(ScriptedError("PROVIDER_TIMEOUT"))
+    harness.fake.script(ScriptedError("CAPABILITY_UNSUPPORTED"))
     _, state = _claim_and_run(harness)
     assert harness.service.list(state=TrajectoryState.HALTED)[0][0].error_code == (
         ErrorCode.LOADCOACH_ERROR.value

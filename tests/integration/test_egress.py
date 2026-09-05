@@ -220,6 +220,26 @@ def test_a_confidential_trajectory_never_reaches_a_remote_tier(remote_harness: H
     assert "classification_exceeds_ceiling" in (view.halted_reason or "")
 
 
+def test_an_egress_denial_is_never_repeated(remote_harness: Harness) -> None:
+    """ADR-0076's line, from the governance side: a denial is a decision, not an accident.
+
+    It is structural rather than a rule the retry has to remember. Egress is evaluated *before*
+    ``turn.started`` and therefore before the LoadCoach call site where the repeat lives, so the
+    denial returns its own terminal state and nothing that could repeat it is ever reached — which
+    the request count says as plainly as the absent event does.
+    """
+    trajectory_id, state = remote_harness.run(classification=DataClassification.CONFIDENTIAL)
+
+    assert state is TrajectoryState.HALTED
+    assert remote_harness.client.generate_calls == []
+    retried = [
+        event
+        for event in remote_harness.service.events(trajectory_id)
+        if event.event_type == "step.retried"
+    ]
+    assert retried == [], "a governance refusal was repeated"
+
+
 def test_the_refusal_is_a_queryable_egress_decision(remote_harness: Harness) -> None:
     """ "The refusal is a queryable EgressDecision" — the audit half of §20 #4.
 

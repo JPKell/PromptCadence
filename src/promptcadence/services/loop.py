@@ -85,7 +85,12 @@ from promptcadence.domain.deviation import (
     compare,
     disposition,
 )
-from promptcadence.domain.dispatch import StepCompleted, StepStarted, dispatchable
+from promptcadence.domain.dispatch import (
+    StepCompleted,
+    StepRetried,
+    StepStarted,
+    dispatchable,
+)
 from promptcadence.domain.errors import (
     CompactionFailedError,
     ErrorCode,
@@ -95,6 +100,7 @@ from promptcadence.domain.errors import (
     TierNotConfiguredError,
     TierUnavailableError,
 )
+from promptcadence.domain.events import EventType
 from promptcadence.domain.intent import (
     BYPASS_STEP_ID,
     ExecutionIntent,
@@ -243,6 +249,33 @@ _SERVICE_FAILURE_REASONS: Final[Mapping[str, TierServiceFailure]] = {
 """The ``TierUnavailableError`` reasons that mean *this tier cannot serve now* — the two
 lifecycle §5 names for ``tier_escalation`` — and so fall to the intent's next tier rather than
 halting. Any other reason halts with its cause as before."""
+
+_RETRYABLE_LOADCOACH_CODES: Final[frozenset[str]] = frozenset(
+    {
+        "ALL_CANDIDATES_FAILED",
+        "PROVIDER_UNAVAILABLE",
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_PROTOCOL_ERROR",
+        "INSUFFICIENT_RESOURCES",
+        "QUEUE_FULL",
+        "MAX_WAIT_EXCEEDED",
+        "RATE_LIMITED",
+        "INTERNAL_ERROR",
+    }
+)
+"""LoadCoach codes a step may repeat under the same intent (ADR-0076 §1).
+
+The membership test is *could the identical request plausibly answer differently* — load,
+contention, a flaky candidate. A code that is a refusal (``VALIDATION_ERROR``, ``FORBIDDEN``), a
+deterministic capability fact (``MODEL_NOT_FOUND``, ``CAPABILITY_UNSUPPORTED``) or a context that
+does not fit (``CONTEXT_LIMIT_EXCEEDED``) is absent, and **so is any code this build does not
+know**: an unknown cannot be shown to be transient, and the safe default for an unknown is the one
+that spends no money. ``NO_ELIGIBLE_MODEL`` and ``TASK_PROFILE_NOT_FOUND`` are absent for a
+different reason — they already have a mechanism in ``_SERVICE_FAILURE_REASONS`` above.
+
+Nothing governance-decided is in reach of this set at all: the retry lives at the LoadCoach call
+site, egress, pricing, availability and budget all run before it, and every deviation is compared
+after it."""
 
 _LEASE_HOLDING: Final[frozenset[TrajectoryState]] = frozenset(
     {TrajectoryState.PLANNING, TrajectoryState.EXECUTING}
@@ -409,6 +442,22 @@ class RunSignals:
         """Every turn currently in flight."""
         with self.lock:
             return tuple(self.in_flight_turn_ids)
+
+
+@dataclass(frozen=True, slots=True)
+class _AttemptFailure:
+    """A LoadCoach service failure the step may repeat under the same intent (ADR-0076).
+
+    Returned rather than halted so the decision to repeat is taken by the step loop, which knows
+    the budget, instead of by the call site, which does not. A turn that produced one was announced
+    (``turn.started``) and never answered, so there is no turn row and no ``TurnFacts``: nothing
+    about the executed reality contradicted the intent, because there was no executed reality.
+    """
+
+    turn_id: str
+    tier: str
+    cause: str
+    error_code: ErrorCode
 
 
 @dataclass(frozen=True, slots=True)
@@ -1210,6 +1259,10 @@ class LoopController:
         """
         trajectory_id = ctx.view.trajectory_id
         router = TierRouter(ctx.tier_policy)
+        budget = self._settings.execution.step_retries
+        # Seeded from the record, not from zero: a step re-entered after a crash inherits the
+        # attempts it already made, so a crash cannot hand a step a fresh retry budget.
+        attempts = list(self._recorded_attempts(trajectory_id, run.step_id))
         while True:
             if flags.lease_lost.is_set():
                 raise LeaseLost(trajectory_id)
@@ -1228,7 +1281,9 @@ class LoopController:
                 if state is not None:
                     return state
                 continue
-            turns_used = sum(1 for turn in turns if turn.role is TurnRole.ASSISTANT)
+            # Attempts and turns draw on one envelope (ADR-0076 §5), so a step cannot spend
+            # max_turns turns and a fresh retry budget on top of them.
+            turns_used = sum(1 for turn in turns if turn.role is TurnRole.ASSISTANT) + len(attempts)
             if turns_used >= run.intent.max_turns:
                 return self._end_with(
                     trajectory_id,
@@ -1240,11 +1295,146 @@ class LoopController:
                     error_code=ErrorCode.STEP_LIMIT_EXCEEDED,
                 )
             try:
-                state = self._turn(ctx, run, surface, router, turns, flags, all_steps=all_steps)
+                outcome = self._turn(ctx, run, surface, router, turns, flags, all_steps=all_steps)
             except _StepDone:
                 return None
-            if state is not None:
-                return state
+            if isinstance(outcome, _AttemptFailure):
+                if len(attempts) >= budget:
+                    return self._halt_attempts_spent(
+                        run, attempts=[*attempts, outcome], budget=budget
+                    )
+                self._record_retry(ctx, run, outcome, attempt=len(attempts) + 2)
+                attempts.append(outcome)
+                continue
+            if outcome is not None:
+                return outcome
+
+    def _recorded_attempts(self, trajectory_id: str, step_id: str) -> list[_AttemptFailure]:
+        """The failed attempts already on this step's record, oldest first.
+
+        Read from the ``step.retried`` events rather than from ``plan_steps.attempt``, because the
+        events are the history and are the half both paths have — the bypass loop's synthetic step
+        has no ``plan_steps`` row at all (ADR-0076 §4). Each event describes the attempt that
+        *failed*, which is why the list's length is the number of repeats already started.
+
+        Args:
+            trajectory_id: The trajectory whose events are read.
+            step_id: The step, so a sibling step's attempts are not counted against this one — the
+                budget is per step (ADR-0076 §2).
+
+        Returns:
+            One :class:`_AttemptFailure` per recorded repeat, in the order they were written.
+        """
+        return [
+            _AttemptFailure(
+                turn_id=str(event.data.get("failed_turn_id", "")),
+                tier=str(event.data.get("failed_tier", "")),
+                cause=str(event.data.get("cause", "")),
+                error_code=ErrorCode(str(event.data.get("error_code", ErrorCode.LOADCOACH_ERROR))),
+            )
+            for event in self._sink.events(trajectory_id)
+            if event.event_type == EventType.STEP_RETRIED.value
+            and str(event.data.get("step_id", "")) == step_id
+        ]
+
+    def _record_retry(
+        self,
+        ctx: GovernanceContext,
+        run: _StepRun,
+        failure: _AttemptFailure,
+        *,
+        attempt: int,
+    ) -> None:
+        """Start a repeat: ``step.retried`` and the counter, in one write (ADR-0044).
+
+        The write happens *before* the attempt, not after it, so a crash between the two leaves a
+        record that says an attempt was started rather than one that says nothing happened.
+        Nothing is minted and no field of the intent moves: a repeat runs under the same revision
+        (ADR-0056), and the loop simply calls :meth:`_turn` again.
+
+        Args:
+            ctx: The trajectory's governance context.
+            run: The step being repeated, whose thread and intent the repeat stays on.
+            failure: The attempt that failed, whose turn, tier and cause the event carries.
+            attempt: The number of the attempt this write starts — ``2`` is the first repeat.
+
+        Returns:
+            None. The counter update matches no row on the bypass path, whose synthetic step has
+            no ``plan_steps`` row; the event is the record there, and it is written either way.
+        """
+        trajectory_id = ctx.view.trajectory_id
+        now = self._clock()
+        with self._sink.write() as (session, events):
+            self._owned_cas(session, trajectory_id, values={"updated_at": now})
+            if run.step is not None:
+                session.execute(
+                    update(models.PlanStep)
+                    .where(
+                        models.PlanStep.step_id == run.step_id,
+                        models.PlanStep.plan_id.in_(_valid_plan_ids(trajectory_id)),
+                    )
+                    .values(attempt=attempt)
+                )
+            events.append(
+                trajectory_id,
+                StepRetried(
+                    trajectory_id=trajectory_id,
+                    step_id=run.step_id,
+                    thread_id=run.thread_id,
+                    intent_id=run.intent.intent_id,
+                    intent_revision=run.intent.revision,
+                    attempt=attempt,
+                    failed_turn_id=failure.turn_id,
+                    failed_tier=failure.tier,
+                    cause=failure.cause,
+                    error_code=failure.error_code.value,
+                ),
+                now=now,
+            )
+        logger.info(
+            "step.retried",
+            extra={
+                "trajectory_id": trajectory_id,
+                "step_id": run.step_id,
+                "attempt": attempt,
+                "tier": failure.tier,
+            },
+        )
+
+    def _halt_attempts_spent(
+        self, run: _StepRun, *, attempts: Sequence[_AttemptFailure], budget: int
+    ) -> TrajectoryState:
+        """T12 when the retry budget is spent: the last cause **and every attempt** (ADR-0076 §5).
+
+        A halt that named only the final failure would make the record unable to answer the first
+        question anyone asks of it — whether the step met the same wall three times or three
+        different ones.
+
+        Args:
+            run: The step whose attempts are spent.
+            attempts: Every attempt, oldest first, the last of which is the one with no budget
+                left behind it.
+            budget: The configured ``[execution] step_retries``, named in the cause so the halt
+                explains itself without the reader holding the configuration.
+
+        Returns:
+            :attr:`TrajectoryState.HALTED`, with the **last** attempt's error code on the row.
+        """
+        last = attempts[-1]
+        listed = "; ".join(
+            f"attempt {index} ({attempt.tier}): {attempt.cause}"
+            for index, attempt in enumerate(attempts, start=1)
+        )
+        return self._end_with(
+            run.intent.trajectory_id,
+            halt,
+            cause=(
+                f"step {run.step_id}: {len(attempts)} attempts failed under intent "
+                f"{run.intent.intent_id} revision {run.intent.revision} and the retry budget "
+                f"(step_retries = {budget}) is spent — {listed}"
+            ),
+            error_code=last.error_code,
+        )
 
     # ---- steps ------------------------------------------------------------------------------
 
@@ -1447,7 +1637,7 @@ class LoopController:
         flags: RunSignals,
         *,
         all_steps: set[str],
-    ) -> TrajectoryState | None:
+    ) -> TrajectoryState | _AttemptFailure | None:
         """One turn: the four pre-flights, ``turn.started``, the call, the debit, the turn row.
 
         **The pre-flights run in this order and the order is a decision** (ADR-0073). Every one of
@@ -1463,6 +1653,12 @@ class LoopController:
         The intent's tiers are tried in order. A tier that cannot serve — unavailable, or LoadCoach
         answering ``NO_ELIGIBLE_MODEL`` — falls to the next permitted one; when none can, the
         turn is a ``tier_escalation`` deviation and the deviation policy decides (spec §13).
+
+        Returns:
+            ``None`` when the turn was recorded and the step continues; an
+            :class:`_AttemptFailure` when the call failed for a reason the step may repeat
+            (ADR-0076), which stops the tier ladder rather than falling through it; a terminal
+            state otherwise.
 
         Raises:
             _StepDone: The step reached its declared finish and the trajectory continues.
@@ -1513,6 +1709,12 @@ class LoopController:
             if parked is not None:
                 return parked
             served = self._call(ctx, run, surface, tier, turns, flags, turn_id=turn_id)
+            if isinstance(served, _AttemptFailure):
+                # ADR-0076 §3: a repeat comes before an escalation, so a retryable failure stops
+                # the ladder rather than falling to the next tier. Falling through would put the
+                # step on a tier it reached because something flaked — an escalation's move made
+                # without an escalation's record.
+                return served
             if isinstance(served, TierServiceFailure):
                 failure, failed_tier = served, tier.name
                 turn_id = self._ids()  # the next tier's announcement is a fresh turn
@@ -1548,13 +1750,15 @@ class LoopController:
         flags: RunSignals,
         *,
         turn_id: str,
-    ) -> tuple[GenerationResponse, float] | TierServiceFailure | TrajectoryState:
+    ) -> tuple[GenerationResponse, float] | TierServiceFailure | _AttemptFailure | TrajectoryState:
         """``turn.started`` in its own write, then ``POST /generate`` under the turn's key.
 
         Returns:
-            The response and this application's overhead, a
+            The response and this application's overhead; a
             :class:`~promptcadence.domain.deviation.TierServiceFailure` when the tier could not
-            serve and the intent's next tier should be tried, or a terminal state.
+            serve and the intent's next tier should be tried; an :class:`_AttemptFailure` when the
+            call failed for a reason ADR-0076 lets the step repeat, which the step loop decides on
+            because it holds the budget; or a terminal state for everything else.
         """
         del surface  # the subject is verified when the turn is recorded, not here
         trajectory_id = ctx.view.trajectory_id
@@ -1601,11 +1805,18 @@ class LoopController:
                 if reason in _SERVICE_FAILURE_REASONS:
                     return _SERVICE_FAILURE_REASONS[reason]
                 note = self._abandon_in_flight(turn_id) if reason == "client_timeout" else ""
+                code = ErrorCode(exc.code)
+                if reason == "client_timeout" or (
+                    str(exc.details.get("loadcoach_code") or "") in _RETRYABLE_LOADCOACH_CODES
+                ):
+                    return _AttemptFailure(
+                        turn_id=turn_id,
+                        tier=tier.name,
+                        cause=f"{exc.message}{note}",
+                        error_code=code,
+                    )
                 return self._end_with(
-                    trajectory_id,
-                    halt,
-                    cause=f"{exc.message}{note}",
-                    error_code=ErrorCode(exc.code),
+                    trajectory_id, halt, cause=f"{exc.message}{note}", error_code=code
                 )
             finally:
                 flags.settle(turn_id)
