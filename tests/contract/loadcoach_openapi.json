@@ -173,6 +173,20 @@
           "task": {
             "title": "Task",
             "type": "string"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolDefinitionBody"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tools"
           }
         },
         "required": [
@@ -317,6 +331,20 @@
           "task": {
             "title": "Task",
             "type": "string"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolDefinitionBody"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tools"
           }
         },
         "required": [
@@ -348,6 +376,20 @@
               }
             ],
             "title": "Tool Call Id"
+          },
+          "tool_calls": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolCallBody"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Calls"
           }
         },
         "required": [
@@ -596,6 +638,66 @@
           }
         },
         "title": "TaskProfileConstraints",
+        "type": "object"
+      },
+      "ToolCallBody": {
+        "additionalProperties": false,
+        "description": "One tool call an assistant turn requested, replayed on the wire (api.md \u00a74).\n\n``arguments`` is the parsed argument object, or the raw text when the model's arguments were\nnot a JSON object. The raw form is kept rather than smoothed into an empty mapping: a call the\nmodel malformed stays diagnosable, and replaying it as \"no arguments\" would tell the model it\nasked for something it did not.",
+        "properties": {
+          "arguments": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Arguments"
+          },
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ToolCallBody",
+        "type": "object"
+      },
+      "ToolDefinitionBody": {
+        "additionalProperties": false,
+        "description": "One tool offered to the model (api.md \u00a74).\n\n``parameters`` is a JSON Schema object passed to the provider **unmodified**: LoadCoach does\nnot validate it, rewrite it or reject a keyword it does not recognise (ADR-0041), and it never\nexecutes a call \u2014 the requested calls come back at ``output.tool_calls`` and running them is\nthe caller's decision.",
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "parameters": {
+            "additionalProperties": true,
+            "title": "Parameters",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ToolDefinitionBody",
         "type": "object"
       },
       "ValidationError": {

@@ -1,7 +1,8 @@
 """I10: the fake LoadCoach and the client, against LoadCoach's committed OpenAPI snapshot.
 
 ``loadcoach_openapi.json`` is a byte copy of LoadCoach ``docs/openapi.json`` (LoadCoach
-``01170a7``; the file last moved at ``0963646``), recorded with its digest below. This is what
+``f5f3b81``; the file last moved at ``8815dae``, the G2 tool wire), recorded with its digest
+below. This is what
 keeps the fake honest: every request body the client can send validates against the snapshot's
 schemas, every path the client and the fake use exists in the snapshot with that method, and the
 fake's own request models are the snapshot's, shape for shape. LoadCoach ``846348b``
@@ -33,13 +34,17 @@ from promptcadence.infrastructure.loadcoach import (
     GenerateRequest,
     LoadCoachClient,
     Message,
+    RequestedToolCall,
+    ToolDefinition,
 )
 
 pytestmark = pytest.mark.contract
 
 SNAPSHOT = Path(__file__).resolve().parent / "loadcoach_openapi.json"
-SNAPSHOT_SHA256 = "3412b1f6e36ba5a1fb5f2128b68bfbbc522eaf3ab4f3fc8e1680a738e96ed0c6"
-SNAPSHOT_SOURCE = "LoadCoach docs/openapi.json at 01170a7 (last changed at 0963646)"
+SNAPSHOT_SHA256 = "def4271ece90f73bcb31bef0bb014c763433e2adda925ee4cfb165d14e138692"
+SNAPSHOT_SOURCE = (
+    "LoadCoach docs/openapi.json at f5f3b81 (the G2 tool wire; last changed at 8815dae)"
+)
 
 
 @pytest.fixture(scope="module")
@@ -96,7 +101,13 @@ def test_the_fakes_generate_body_is_the_snapshots_shape_for_shape(snapshot: dict
     assert set(actual["properties"]) == set(expected["properties"])
     assert set(actual.get("required", [])) == set(expected.get("required", []))
     assert actual.get("additionalProperties") is False
-    for name in ("MessageBody", "OverridesBody", "RuntimeProfileOverrideBody"):
+    for name in (
+        "MessageBody",
+        "OverridesBody",
+        "RuntimeProfileOverrideBody",
+        "ToolCallBody",
+        "ToolDefinitionBody",
+    ):
         mirror = getattr(loadcoach_app, name).model_json_schema()
         assert set(mirror["properties"]) == set(
             snapshot["components"]["schemas"][name]["properties"]
@@ -131,6 +142,32 @@ def test_every_body_the_client_can_send_is_accepted_by_the_snapshots_generate_bo
         GenerateRequest(
             task="t", messages=(Message("user", "u"), Message("tool", "r", "c1"))
         ).as_body(),
+        GenerateRequest(
+            task="t",
+            messages=(
+                Message("user", "u"),
+                Message(
+                    "assistant",
+                    "",
+                    tool_calls=(
+                        RequestedToolCall(
+                            call_id="c1",
+                            name="list_dir",
+                            arguments={"path": "./notes"},
+                            arguments_parsed=True,
+                        ),
+                    ),
+                ),
+                Message("tool", "a.md", "c1"),
+            ),
+            tools=(
+                ToolDefinition(
+                    name="list_dir",
+                    description="List a directory in the workspace.",
+                    parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+                ),
+            ),
+        ).as_body(),
     ]
     for body in bodies:
         assert set(body) <= allowed, body
@@ -163,6 +200,74 @@ def test_the_fake_refuses_what_the_snapshot_refuses() -> None:
         },
     )
     assert both.status_code == 400
+
+
+def test_the_fake_refuses_every_transcript_the_real_server_refuses() -> None:
+    """api.md §4's four rules, each one a `VALIDATION_ERROR` naming its field.
+
+    Verified against the real LoadCoach as well as against the fake: the same four bodies were
+    posted to a `loadcoach serve` on 127.0.0.1:8766 (LoadCoach f5f3b81, the working tree of this
+    row) and each returned the same code and the same `details.fields[0].path`. See the G2 handoff
+    for the transcript.
+    """
+    fake = FakeLoadCoach()
+    fake.register_profile(text_profile("tools.agent.local_fast"))
+    http = TestClient(build_fake_app(fake), base_url="http://loadcoach.test")
+    http.headers["X-Client-Name"] = "promptcadence"
+    call = {"id": "c1", "name": "list_dir", "arguments": {}}
+    cases = {
+        "messages[0].tool_calls": [{"role": "user", "content": "u", "tool_calls": [call]}],
+        "messages[0].tool_call_id": [{"role": "tool", "content": "r"}],
+        "messages[0].content": [{"role": "assistant", "content": ""}],
+        "messages[1].tool_call_id": [
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "content": "r", "tool_call_id": "c9"},
+        ],
+    }
+    for path, messages in cases.items():
+        response = http.post(
+            f"{API_PREFIX}/generate",
+            json={
+                "task": "tools.agent.local_fast",
+                "messages": messages,
+                "idempotency_key": f"k-{path}",
+            },
+        )
+        assert response.status_code == 400, path
+        body = response.json()["error"]
+        assert body["code"] == "VALIDATION_ERROR", path
+        assert body["details"]["fields"][0]["path"] == path
+
+
+def test_the_fake_accepts_the_transcript_the_real_server_accepts() -> None:
+    """The declared call a hostile-model journey needs the fake to be able to script."""
+    fake = FakeLoadCoach()
+    fake.register_profile(text_profile("tools.agent.local_fast"))
+    http = TestClient(build_fake_app(fake), base_url="http://loadcoach.test")
+    http.headers["X-Client-Name"] = "promptcadence"
+    response = http.post(
+        f"{API_PREFIX}/generate",
+        json={
+            "task": "tools.agent.local_fast",
+            "messages": [
+                {"role": "user", "content": "List ./notes."},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "c1", "name": "list_dir", "arguments": {"path": "./notes"}}
+                    ],
+                },
+                {"role": "tool", "content": "a.md", "tool_call_id": "c1"},
+            ],
+            "tools": [{"name": "list_dir", "description": "", "parameters": {}}],
+            "idempotency_key": "k-ok",
+        },
+    )
+    assert response.status_code == 200, response.text
+    sent = fake.requests[-1]["body"]
+    assert sent["tools"][0]["name"] == "list_dir"
+    assert sent["messages"][1]["tool_calls"][0]["id"] == "c1"
 
 
 def test_the_prompt_loadcoach_forwards_equals_the_prompt_promptcadence_sent() -> None:

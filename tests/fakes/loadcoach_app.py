@@ -158,6 +158,26 @@ class Wire(StrEnum):
 # --------------------------------------------------------------------------------------------
 
 
+class ToolCallBody(BaseModel):
+    """One tool call an assistant turn requested, replayed on the wire (api.md §4)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: dict[str, Any] | str = Field(default_factory=dict)
+
+
+class ToolDefinitionBody(BaseModel):
+    """One tool offered to the model (api.md §4). ``parameters`` travels verbatim."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    description: str = Field(default="")
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
 class MessageBody(BaseModel):
     """One turn of a caller-supplied transcript (api.md §4)."""
 
@@ -166,6 +186,7 @@ class MessageBody(BaseModel):
     role: str = Field(pattern="^(system|user|assistant|tool)$")
     content: str
     tool_call_id: str | None = Field(default=None)
+    tool_calls: list[ToolCallBody] | None = Field(default=None)
 
 
 class RuntimeProfileOverrideBody(BaseModel):
@@ -205,6 +226,7 @@ class GenerateBody(BaseModel):
     response_format: str | None = Field(default=None, pattern="^(text|json|json_schema)$")
     sampling: dict[str, Any] = Field(default_factory=dict)
     overrides: OverridesBody | None = Field(default=None)
+    tools: list[ToolDefinitionBody] | None = Field(default=None)
     idempotency_key: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
@@ -216,6 +238,51 @@ class GenerateBody(BaseModel):
             message = "'system' belongs with 'prompt'; put a system turn in 'messages' instead"
             raise ValueError(message)
         return self
+
+
+def transcript_refusal(messages: list[MessageBody] | None) -> dict[str, Any] | None:
+    """LoadCoach's four transcript rules, copied (api.md §4), or ``None`` when the turns pass.
+
+    Three of them are ModelRack's, which LoadCoach surfaces rather than letting reach a provider:
+    tool calls on a non-assistant turn, a ``tool`` turn with no ``tool_call_id``, and a turn with
+    neither content nor calls. The fourth is LoadCoach's own: a ``tool_call_id`` naming no call in
+    an earlier assistant turn. Copied here rather than approximated, because a fake whose refusals
+    are laxer than the real ones lets a journey pass against a body the real server would reject —
+    which is the whole reason ``tests/contract/test_loadcoach_contract.py`` exists.
+
+    Args:
+        messages: The body's turns, or ``None`` for the prompt form.
+
+    Returns:
+        The ``details.fields`` entry to refuse with, or ``None``.
+    """
+    if messages is None:
+        return None
+    offered: set[str] = set()
+    for index, turn in enumerate(messages):
+        calls = turn.tool_calls or []
+        if calls and turn.role != "assistant":
+            return {
+                "path": f"messages[{index}].tool_calls",
+                "problem": "only an assistant message may carry tool_calls",
+            }
+        if turn.role == "tool" and not turn.tool_call_id:
+            return {
+                "path": f"messages[{index}].tool_call_id",
+                "problem": "a tool message must carry the tool_call_id it answers",
+            }
+        if not turn.content and not calls:
+            return {
+                "path": f"messages[{index}].content",
+                "problem": "a message must carry content or tool_calls; got neither",
+            }
+        if turn.role == "tool" and turn.tool_call_id not in offered:
+            return {
+                "path": f"messages[{index}].tool_call_id",
+                "problem": f"no earlier assistant turn requested the call {turn.tool_call_id!r}",
+            }
+        offered.update(call.id for call in calls)
+    return None
 
 
 class TaskProfileConstraints(BaseModel):
@@ -766,6 +833,13 @@ class FakeLoadCoach:
     def generate(self, body: GenerateBody, *, source: str) -> tuple[int, dict[str, Any]]:
         """Serve one ``POST /generate``: the (status, body) the route returns."""
         self.requests.append({"source": source, "body": body.model_dump(exclude_unset=True)})
+        refusal = transcript_refusal(body.messages)
+        if refusal is not None:
+            return 400, _error(
+                "VALIDATION_ERROR",
+                "The transcript is not internally consistent.",
+                details={"fields": [refusal]},
+            )
         if body.idempotency_key is None:
             return 400, _error(
                 "VALIDATION_ERROR",
