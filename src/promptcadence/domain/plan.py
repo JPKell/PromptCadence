@@ -395,6 +395,19 @@ def _refuse(issues: Sequence[PlanIssue]) -> PlanInvalidError:
 
 def _parse_document(raw_document: str, issues: list[PlanIssue]) -> dict[str, Any] | None:
     """Parse the document, recording an issue and returning ``None`` if it is not an object."""
+    if not raw_document.strip():
+        issues.append(
+            PlanIssue(
+                reason=PlanIssueReason.NOT_JSON,
+                field_name="$",
+                step_id=None,
+                message=(
+                    "the plan document is empty; return the JSON object and nothing else "
+                    "(a model that spends its output budget thinking returns nothing)"
+                ),
+            )
+        )
+        return None
     try:
         parsed = json.loads(raw_document)
     except json.JSONDecodeError as exc:

@@ -935,8 +935,13 @@ class LoopController:
                 code=ErrorCode.LOADCOACH_UNAVAILABLE.value,
             )
         except (TierUnavailableError, CompactionFailedError, LoadCoachError) as exc:
+            # The call failed, but the job it started may still be running (a LoadCoach whose
+            # corrective retry refused its own request leaves the job executing); cancel it so
+            # no orphaned planning job holds the GPU, and say what was done.
             return self._fail_planning(
-                trajectory_id, cause=exc.message, code=ErrorCode(exc.code).value
+                trajectory_id,
+                cause=f"{exc.message}{self._abandon_plan_jobs(trajectory_id)}",
+                code=ErrorCode(exc.code).value,
             )
         plan_id = plan_ids[max(plan_ids)]
         return self._approve(ctx, plan, plan_id)

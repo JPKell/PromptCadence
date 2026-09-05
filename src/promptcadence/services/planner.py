@@ -261,7 +261,11 @@ class Planner:
                     "issues": "\n".join(f"- {issue.message}" for issue in record.issues),
                 },
             )
-            messages.append(Message(role="assistant", content=record.raw_document))
+            if record.raw_document.strip():
+                # An empty answer is not appended: a transcript turn with no content is refused
+                # at the provider boundary, and the issue the validator named already says the
+                # document was empty. The model is corrected on what it did, not shown a blank.
+                messages.append(Message(role="assistant", content=record.raw_document))
             messages.append(Message(role="user", content=corrective.user))
             prompt = corrective
         last = history[-1]

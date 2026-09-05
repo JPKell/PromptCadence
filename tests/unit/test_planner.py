@@ -195,3 +195,19 @@ def test_each_drafting_session_uses_fresh_keys_so_a_redraft_never_replays(
     planner.draft(inputs, trajectory_id="01T", on_attempt=lambda _: None)
     keys = {job.idempotency_key for job in fake.jobs.values()}
     assert len(keys) == 2 and all(key and key.startswith("plan:01T:") for key in keys)
+
+
+def test_an_empty_first_answer_is_corrected_without_an_empty_assistant_turn(
+    fake: FakeLoadCoach, client: LoadCoachClient, inputs: PlanningInputs
+) -> None:
+    """A reasoning model that spends its output budget thinking returns nothing (observed on
+    the real stack); the corrective must not replay that nothing as an assistant turn, which a
+    provider refuses, and the issue must say the document was empty."""
+    fake.script(ScriptedGeneration(text=""), ScriptedGeneration(text=_document(_step())))
+    attempts: list[DraftAttempt] = []
+    plan = _planner(client).draft(inputs, trajectory_id="01T", on_attempt=attempts.append)
+    assert plan.step_ids == ("s1",)
+    assert "empty" in attempts[0].issues[0].message
+    messages = fake.requests[-1]["body"]["messages"]
+    assert [message["role"] for message in messages] == ["system", "user", "user"]
+    assert "empty" in messages[-1]["content"]
