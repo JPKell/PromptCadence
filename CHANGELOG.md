@@ -6,6 +6,82 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Added — Phase 7, gate B: approval in three modes, and minting as its output
+- **`auto`** mints every approved step by policy in the write that approves the plan (T4).
+  **`manual`** holds every plan on one `plan` request (T5) — **and holds a bypassed trajectory
+  too** (§0.2(5) of the kickoff, ADR-0048/ADR-0049 rule 3): the default intent's gate is
+  evaluated at its minting, and when the mode requires a person the claim continues from T3
+  straight into T10 on a `bypass_gate` request before any turn runs. The grant **supersedes**
+  the default intent — revision 2, `minted_by = approver:<token id>`, `approval_request_id`
+  set, revision 1 retained as the gated envelope nobody executed under — so *"the human grant,
+  when one gated it"* (lifecycle §4.3) is in the record. A test asserts, over every scenario,
+  that no turn ran under an intent whose gate fired and whose grant is not in the record.
+- **`hybrid`** mints the ungated steps and parks **at the point a gated step becomes ready**
+  (T10, `gated_step`), after the ungated ready work has run; when nothing ungated can start it
+  parks from planning (T5). Gates are evaluated against the most permissive tier in the intent's
+  set, so a `local_*` primary with a `remote_*` fallback gates as remote — tested on both
+  minting paths a fallback can arrive by.
+- **`approval_requests`**: exactly one pending per trajectory (a second is refused before it is
+  written), the `request_timeout_hours` clock persisted as `expires_at` and read by the worker
+  on every pass — expiry is T9 with the timeout recorded, never a grant. Grants and denials are
+  **idempotent per request**; a resolved request cannot be resolved differently
+  (`APPROVAL_INVALID_STATE`). A denial halts with `APPROVAL_REQUIRED`, the denier's reason on
+  the row and `approval.denied` + `trajectory.halted` in one write.
+- **Scoped re-approval is real** (spec §20 #8): a drift whose disposition is `scoped_reapproval`
+  parks on a `reapproval` request scoped to **that step**, carrying exactly what the drift asked
+  (`ReapprovalAsk`: the tools, the next tier, the turn or budget extension, the observed
+  classification); the grant mints revision *n+1* superseding *n*, both retained, `supersedes`
+  set, and the step's pending tool calls then run under the widened envelope. A tool outside the
+  *trajectory* allowlist stays refused and never re-approvable — F2's test still passes.
+- **`NO_ELIGIBLE_MODEL` and an unavailable tier fall to the intent's next tier**, else raise a
+  `tier_escalation` deviation whose scoped re-approval carries the next tier in the escalation
+  order, or halt `TIER_UNAVAILABLE` naming an exhausted order (spec §13's cell). More than three
+  deviations on one step halts `DEVIATION_HALTED` (lifecycle §5).
+- **A ceiling raise is a grant with a budget**: `on_exhausted = "approval"` parks on a
+  `ceiling_raise` request naming the refusing scope; the grant carries the new per-trajectory
+  ceiling, moves the row's ceiling and mints a superseding revision. The per-day and per-project
+  ceilings are configuration and a grant cannot move them; the request says which scope refused.
+- **Tokens and the `approve` scope** (spec §14, ADR-0026, ADR-0049 rule 2): `services/tokens.py`
+  (create, list, revoke; SHA-256 stored, the secret shown once; four scopes as a **set**, `admin`
+  containing the rest, `approve` deliberately not `write`) and `web/auth.py` (`resolve_principal`,
+  `require_scope`). Loopback with no tokens is open and names itself — a grant from it is
+  recorded as `approver:loopback`; once a token exists a bearer is required (`401`) and checked
+  (`403` without the scope). `bootstrap`'s manual-mode refusal now accepts an `admin` token.
+- `VerdictReason.SCOPED_REAPPROVAL`; `gate_reason` is public so the bypass gate's request names
+  its reason in the same vocabulary a planned step's does.
+
+### Added — Phase 7, gate C: ready-set dispatch over the plan DAG
+- **`domain/dispatch.py`** — the pure rule (lifecycle §8.4): a step is ready when every
+  dependency has committed; `max_concurrent_steps = 1` dispatches one at a time; above 1,
+  concurrency is granted only across **disjoint surfaces** — at most one local step in flight
+  ever (ADR-0038), up to `max_concurrent_remote_steps` remote ones. Walked as a matrix.
+- The loop dispatches from the ready set, records the DAG on `plan_steps.depends_on_json` and on
+  every `step.started` event even when execution is serial, frames each step with the results of
+  the steps it depends on, and runs chosen steps together through a thread pool when the rule
+  allows — every write still fenced on the one lease.
+- **Multi-step reconciliation**: a takeover mid-step resumes at that step's own thread (no
+  duplicate thread, no duplicate `step.started`), cancels the orphaned job and continues; the
+  kill −9 machinery is D2/F1's, extended rather than rebuilt.
+
+### Added — Phase 7, gate D: the governance-invariance diff (spec §11 contract 1, I11)
+- **`tests/contract/test_governance_invariance.py`** runs one scripted task twice against the
+  fake — planned and `bypass_planning` — into two fresh databases, reduces every table's rows to
+  shapes (identifiers, timestamps and digests masked, everything else by value) and diffs them.
+  The permitted-difference set is **named in the test, one item at a time, each with the
+  document that permits it**: the plan tables; the `plan.*` events and T2-vs-T3's `state` on
+  `trajectory.claimed`; the one `step.execute` framing turn and the counts it shifts by exactly
+  one (asserted as a relation, not masked); `minted_by`, `step_id` and the **slice** fields of
+  the intent (the bypass default's slice *is* the trajectory's ceiling and turn cap, ADR-0056
+  §2; a planned step's is its estimate × 2); `threads.step_id`; and the request's own
+  `bypass_planning` flag. Every governed field, the ledger, every egress decision, every
+  deviation, every tool-call record and the terminal transition are identical, and a second
+  scenario raises the same deviation on both paths. The failure message names the table, the
+  row and the field that moved.
+- **The structural half**: an AST walk asserts `LoadCoachClient.generate` is reached from
+  exactly two sites — the loop's `_call`, which takes a `_StepRun` (an intent and its thread),
+  and the planner's `draft`, which produces no turn — so there is no third place a model could
+  answer outside an envelope.
+
 ### Added — Phase 7, gate A: the planner
 - **`services/planner.py`** — `Planner` calls LoadCoach under the shipped **`tools.plan`**
   profile with `response_format = "json"`, validates the answer with PromptCadence's **own**

@@ -29,6 +29,7 @@ from promptcadence.infrastructure.db.models import ApiToken
 from promptcadence.observability.logging import configure_logging
 from promptcadence.services.database import Database, ensure_ready
 from promptcadence.services.runtime import build_runtime
+from promptcadence.services.tokens import grants
 from promptcadence.web.app import create_app
 
 __all__ = ["Application", "bootstrap", "create_app_from_environment"]
@@ -49,8 +50,9 @@ def _has_active_token(database: Database, *, scope: str | None = None) -> bool:
         database: An open handle.
         scope: When given, only a token whose comma-separated ``scopes`` column contains this
             exact scope counts. PromptCadence stores tokens in the ``api_tokens`` table (created
-            by ``promptcadence token create``, from Phase 7) rather than in ``config.toml`` — a
-            token an operator can issue and revoke without editing a file.
+            by ``promptcadence token create``) rather than in ``config.toml`` — a token an
+            operator can issue and revoke without editing a file. ``admin`` contains every
+            scope (:func:`promptcadence.services.tokens.grants`).
     """
     with database.read() as session:
         rows = session.execute(
@@ -58,7 +60,7 @@ def _has_active_token(database: Database, *, scope: str | None = None) -> bool:
         ).scalars()
         if scope is None:
             return any(True for _ in rows)
-        return any(scope in row.split(",") for row in rows)
+        return any(grants(row.split(","), scope) for row in rows)
 
 
 def bootstrap() -> Application:
