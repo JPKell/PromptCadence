@@ -28,6 +28,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from promptcadence.__about__ import __version__
 from promptcadence.config import LOOPBACK_HOSTS, Settings
+from promptcadence.web.routes import approvals as approval_routes
 from promptcadence.web.routes import egress as egress_routes
 from promptcadence.web.routes import ledger as ledger_routes
 from promptcadence.web.routes import system as system_routes
@@ -46,6 +47,10 @@ _STATUS_BY_CODE: Final[dict[str, int]] = {
     "SCHEMA_VERSION_UNSUPPORTED": status.HTTP_400_BAD_REQUEST,
     "TRAJECTORY_NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "TRAJECTORY_NOT_CANCELLABLE": status.HTTP_409_CONFLICT,
+    "APPROVAL_INVALID_STATE": status.HTTP_409_CONFLICT,
+    "UNAUTHORIZED": status.HTTP_401_UNAUTHORIZED,
+    "FORBIDDEN": status.HTTP_403_FORBIDDEN,
+    "TOKEN_NOT_FOUND": status.HTTP_404_NOT_FOUND,
     "PROJECT_UNKNOWN": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "TOOL_NOT_FOUND": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "TIER_NOT_CONFIGURED": status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -228,5 +233,6 @@ def create_app(settings: Settings, *, runtime_builder: Any | None = None) -> Fas
     app.include_router(ledger_routes.router, prefix="/api/v1")
     app.include_router(egress_routes.router, prefix="/api/v1")
     app.include_router(trajectory_routes.router, prefix="/api/v1")
+    app.include_router(approval_routes.router, prefix="/api/v1")
 
     return app

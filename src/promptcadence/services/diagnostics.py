@@ -16,15 +16,17 @@ from mirrorwall import ComponentHealth, ComponentStatus, health_payload
 
 from promptcadence.__about__ import __version__
 from promptcadence.config import ConfigurationError, load_settings
+from promptcadence.infrastructure.loadcoach import LoadCoachClient
 from promptcadence.services.database import Database, database_health_component
 from promptcadence.services.loadcoach_status import loadcoach_health_component
+from promptcadence.services.tiers import tiers_health_component
 from promptcadence.services.tools import ToolPlant, tools_health_component
 
 __all__ = ["health_report"]
 
 
 def _components() -> list[ComponentHealth]:
-    """Build the three components, tolerating a broken configuration.
+    """Build the four components, tolerating a broken configuration.
 
     ``tools`` joins ``database`` and ``loadcoach`` at Phase 4, because the question an operator
     brings to ``doctor`` after a refused command — which isolation rung does this host have, and
@@ -37,6 +39,7 @@ def _components() -> list[ComponentHealth]:
         return [
             ComponentHealth(name="database", status=ComponentStatus.DEGRADED, detail=detail),
             ComponentHealth(name="loadcoach", status=ComponentStatus.DEGRADED, detail=detail),
+            ComponentHealth(name="tiers", status=ComponentStatus.DEGRADED, detail=detail),
             ComponentHealth(name="tools", status=ComponentStatus.DEGRADED, detail=detail),
         ]
 
@@ -55,6 +58,18 @@ def _components() -> list[ComponentHealth]:
         api_key_env=settings.loadcoach.api_key_env,
         api_key_file=settings.loadcoach.api_key_file,
     )
+    # Phase 7: every configured tier's task profile, and ``tools.plan``, must resolve in the
+    # running LoadCoach (spec §12). Same client the loop uses, closed after the one read.
+    client = LoadCoachClient.from_settings(
+        base_url=settings.loadcoach.base_url,
+        timeout_seconds=min(settings.loadcoach.timeout_seconds, 5.0),
+        api_key_env=settings.loadcoach.api_key_env,
+        api_key_file=settings.loadcoach.api_key_file,
+    )
+    try:
+        tiers_component = tiers_health_component(settings, client)
+    finally:
+        client.close()
     try:
         tools_component = tools_health_component(ToolPlant(settings))
     except ConfigurationError as exc:
@@ -62,7 +77,7 @@ def _components() -> list[ComponentHealth]:
         tools_component = ComponentHealth(
             name="tools", status=ComponentStatus.DEGRADED, detail=f"configuration: {exc.message}"
         )
-    return [database_component, loadcoach_component, tools_component]
+    return [database_component, loadcoach_component, tiers_component, tools_component]
 
 
 def health_report() -> dict[str, Any]:

@@ -1,7 +1,8 @@
 """promptcadence.cli.main — the Typer root app.
 
-Registers the top-level ``serve``/``health``/``version``/``doctor``/``run`` commands and the
-``config``, ``db`` and ``trajectory`` subgroups. Only ``typer`` and the lightweight command
+Registers the top-level ``serve``/``health``/``version``/``doctor``/``run``/``approve``/``deny``
+commands and the ``config``, ``db``, ``trajectory``, ``approvals``, ``tiers``, ``token``, ``tools``,
+``ledger`` and ``egress`` subgroups. Only ``typer`` and the lightweight command
 modules load at import time; every heavier dependency stays behind a lazy import inside the
 command bodies (CLI Standards §12), so building ``--help`` never imports FastAPI, SQLAlchemy or
 httpx.
@@ -13,11 +14,14 @@ from typing import Annotated
 
 import typer
 
+from promptcadence.cli.commands import approvals as approval_commands
 from promptcadence.cli.commands import config as config_commands
 from promptcadence.cli.commands import db as db_commands
 from promptcadence.cli.commands import egress as egress_commands
 from promptcadence.cli.commands import ledger as ledger_commands
 from promptcadence.cli.commands import system as system_commands
+from promptcadence.cli.commands import tiers as tier_commands
+from promptcadence.cli.commands import token as token_commands
 from promptcadence.cli.commands import tools as tools_commands
 from promptcadence.cli.commands import trajectories as trajectory_commands
 
@@ -77,3 +81,12 @@ app.add_typer(
     name="egress",
     help="Recorded egress decisions: approved, denied and violated.",
 )
+app.add_typer(approval_commands.app, name="approvals", help="Pending approval requests.")
+app.command(name="approve", help="Grant a trajectory's pending approval request.")(
+    approval_commands.approve
+)
+app.command(name="deny", help="Deny a trajectory's pending approval request.")(
+    approval_commands.deny
+)
+app.add_typer(tier_commands.app, name="tiers", help="Configured tiers; check them in LoadCoach.")
+app.add_typer(token_commands.app, name="token", help="API tokens and their scopes.")

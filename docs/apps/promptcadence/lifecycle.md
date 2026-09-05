@@ -130,6 +130,11 @@ Rules, each enforced by validation rather than convention:
   descriptions are advisory (they inform estimates), while tools, tier and classification are
   **declarations** that approval turns into the step's `ExecutionIntent` (§4.3) — the envelope
   the execution is then held to.
+* Every drafting attempt is a `plans` row, valid or not, with the issues the validator named and
+  the planning call's own subject, token classes and prompt record. The planning call's spend is
+  recorded on that row and is **not** a ledger debit: it is not a turn and runs under no intent,
+  and [spec §11](spec.md) contract 1 says debits occur under an intent on every turn in both
+  modes. It is bounded by `tools.plan`'s output cap and the corrective budget.
 
 ### 4.2 Approval
 
@@ -150,10 +155,17 @@ the trajectory's tier snapshot (§3), which fixes what the tiers were.
 every plan in `awaiting_approval` for an `approve`-scoped operator. `hybrid` auto-approves except
 steps matching the configured gates (egress at/above `gate_egress_at`, estimated step cost above
 `gate_step_cost`) — those pause the trajectory at the point the gated step becomes ready, so
-ungated early steps may run first. In bypass mode the same gates fire too — at the minting of the
-default intent (§4.3) and at every re-mint a drift triggers, since a gate is evaluated at minting:
-bypass removes planning, never approval of gated egress. A pending request expires after
-`approval.request_timeout_hours` and halts the trajectory with the timeout recorded.
+ungated early steps may run first: the loop runs every ungated ready step before it parks on a
+gated one. In bypass mode the same gates fire too — at the minting of the default intent (§4.3)
+and at every re-mint a drift triggers, since a gate is evaluated at minting: bypass removes
+planning, never approval of gated egress. On the bypass path the claim is T3 then immediately
+T10, and **the grant supersedes the default intent** — revision 2, `minted_by` the approver's
+token identity, `approval_request_id` set, revision 1 retained as the gated envelope nobody
+executed under — so the human grant is in the record exactly as §4.3 requires; a grant that
+merely released the park would leave the executed intent saying `bypass_default`. A pending
+request expires after `approval.request_timeout_hours` and halts the trajectory with the timeout
+recorded; a trajectory parks on exactly one pending request, and a grant that mints nothing has
+authorised nothing.
 
 ### 4.3 The ExecutionIntent — the approved envelope every turn checks against
 
@@ -196,6 +208,15 @@ Rules, each load-bearing:
   shows which envelope each turn ran under and why a new revision appeared.
 * Minting emits `intent.minted`, in the same write as the transition that caused it
   ([ADR-0044](../../adr/0044-a-state-change-and-its-event-are-one-write.md)).
+* **Re-minted, never rehydrated.** No code path constructs an intent from a row: a resumed
+  trajectory re-mints every recorded revision from the recorded inputs (the declaration, the
+  plan step and its verdict, the tier snapshot, each later revision by superseding the one
+  before it with the fields its row carried) and refuses to run unless each reproduces its row
+  byte for byte. A configuration or policy change since the minting therefore fails the
+  trajectory naming the mismatch rather than running turns under an envelope nobody minted.
+* **The calls a turn requested are persisted on the turn row**, so a step parked for a scoped
+  re-approval, or resumed after a crash, between the turn and its tool calls runs the calls the
+  model asked for — under the envelope the step holds *then* — rather than losing them.
 
 ## 5. Deviation handling
 
@@ -408,7 +429,7 @@ that this table does not list; terminal states have no outgoing rows.
 |---|---|---|---|---|---|
 | T1 | — | `queued` | `POST /trajectories` | Request validates (classification, tools ⊆ registry, caps) | `trajectory.created` |
 | T2 | `queued` | `planning` | Worker claim | Planning enabled for this trajectory; lease acquired | `trajectory.claimed` |
-| T3 | `queued` | `executing` | Worker claim, bypass | Bypass permitted; lease acquired; default intent minted | `trajectory.claimed` + `intent.minted` |
+| T3 | `queued` | `executing` | Worker claim, bypass | Bypass permitted; lease acquired; default intent minted. When the default intent's gate fires under the configured mode, T10 follows in the same write | `trajectory.claimed` + `intent.minted` |
 | T4 | `planning` | `executing` | Auto approval | Every step approved/redlined; intents minted | `plan.approved` + `intent.minted` × n |
 | T5 | `planning` | `awaiting_approval` | Manual mode, or a hybrid-gated step with no ungated work ready | `approval_request` created | `approval.requested` |
 | T6 | `planning` | `rejected` | Trajectory-level verdict rejected | — | `plan.rejected` |

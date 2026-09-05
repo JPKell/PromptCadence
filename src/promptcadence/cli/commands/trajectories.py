@@ -125,6 +125,23 @@ def _print_event(event: dict[str, Any]) -> None:
         detail = f" — {data['cause']}"
     elif "decision" in data:
         detail = f" — {data['decision']}"
+    elif "step_id" in data and event.get("event_type") in {
+        "step.started",
+        "step.completed",
+        "intent.minted",
+    }:
+        detail = f" — step {data['step_id']}"
+        if event.get("event_type") == "intent.minted":
+            detail += f" ({data.get('minted_by')}, revision {data.get('revision')})"
+    elif "approval_request_id" in data:
+        detail = f" — request {data['approval_request_id']}"
+        if data.get("reason"):
+            detail += f" ({data['reason']})"
+    elif event.get("event_type") == "plan.drafted":
+        detail = (
+            f" — attempt {data.get('attempt')}, "
+            f"{'valid' if data.get('valid') else 'invalid'}, {data.get('step_count')} step(s)"
+        )
     typer.echo(f"[{event.get('sequence')}] {event.get('event_type')}{detail}")
 
 
@@ -150,12 +167,10 @@ def _follow_stream(client: httpx.Client, trajectory_id: str) -> str | None:
                         "data": inner.get("data", {}),
                     }
                 )
-                if event_type.startswith("trajectory.") and event_type.split(".")[1] in {
-                    "completed",
-                    "halted",
-                    "failed",
-                    "cancelled",
-                }:
+                if event_type == "plan.rejected" or (
+                    event_type.startswith("trajectory.")
+                    and event_type.split(".")[1] in {"completed", "halted", "failed", "cancelled"}
+                ):
                     terminal = event_type
                     break
             elif line == "":

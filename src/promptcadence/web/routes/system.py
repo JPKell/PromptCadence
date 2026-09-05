@@ -13,6 +13,7 @@ question ``http_fetch`` raises before Phase 6.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -82,31 +83,41 @@ def version() -> JSONResponse:
 
 @router.get("/system/status")
 def system_status(request: Request) -> JSONResponse:
-    """Report active trajectories, the last recovery pass and configured concurrency (spec §17).
+    """Report the operator's dashboard (spec §17).
 
-    Approvals and the ledger arrive in later phases; ``pending_approvals`` is the shape spec §17
-    commits to, empty until Phase 7 can fill it.
+    Active trajectories (``planning`` and ``executing``), every pending approval request with its
+    age, today's ledger position against the per-day ceiling and each configured project's
+    ceiling with the per-tier balances beside it — rendered by the budget service, never
+    re-derived here (a tier has a balance, not headroom; ``—`` is not ``$0.00``; money is per
+    currency) — the last recovery pass and the configured concurrency.
     """
     settings = request.app.state.settings
     runtime = getattr(request.app.state, "runtime", None)
     active: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    ledger: dict[str, Any] | None = None
     last_recovery: dict[str, Any] | None = None
     if runtime is not None and hasattr(runtime, "trajectories"):
-        page, _ = runtime.trajectories.list(state=TrajectoryState.EXECUTING, limit=50)
-        active = [
-            {
-                "trajectory_id": view.trajectory_id,
-                "state": view.state.value,
-                "lease_owner": view.lease_owner,
-                "created_at": view.as_json()["created_at"],
-            }
-            for view in page
-        ]
+        now = datetime.now(UTC)
+        for state in (TrajectoryState.PLANNING, TrajectoryState.EXECUTING):
+            page, _ = runtime.trajectories.list(state=state, limit=50)
+            active.extend(
+                {
+                    "trajectory_id": view.trajectory_id,
+                    "state": view.state.value,
+                    "lease_owner": view.lease_owner,
+                    "created_at": view.as_json()["created_at"],
+                }
+                for view in page
+            )
+        pending = [item.as_json(now=now) for item in runtime.approvals.pending()]
+        ledger = runtime.budget.ledger_view(trajectory=None).as_json()
         summary = runtime.worker.last_recovery
         last_recovery = summary.as_json() if summary is not None else None
     payload: dict[str, Any] = {
         "active_trajectories": active,
-        "pending_approvals": [],
+        "pending_approvals": pending,
+        "ledger": ledger,
         "max_concurrent_trajectories": settings.execution.max_concurrent_trajectories,
         "loadcoach_base_url": settings.loadcoach.base_url,
         "last_recovery": last_recovery,

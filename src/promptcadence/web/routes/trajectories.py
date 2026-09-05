@@ -1,6 +1,7 @@
 """promptcadence.web.routes.trajectories — ``/trajectories`` (spec §7.1), Phase 3's surface.
 
-``POST``, ``GET`` (list and one), ``/turns``, ``/cancel`` and the SSE ``/stream``. Every
+``POST``, ``GET`` (list and one), ``/turns``, ``/plan``, ``/intents``, ``/cancel`` and the SSE
+``/stream``. Every
 handler calls one service method and renders (coding standards §5); the bypass decision, the
 tier snapshot, the state machine and the cancel semantics are all
 :class:`~promptcadence.services.trajectories.TrajectoryService`'s.
@@ -178,6 +179,26 @@ def get_turns(request: Request, trajectory_id: str) -> Response:
     """Every turn in order, each with its ``(intent_id, revision)`` and LoadCoach job."""
     turns = _runtime(request).trajectories.turns(trajectory_id)
     documents: list[dict[str, Any]] = [turn.as_json() for turn in turns]
+    return paginated_response(
+        documents, limit=max(len(documents), 1), has_more=False, request_id=_request_id(request)
+    )
+
+
+@router.get("/trajectories/{trajectory_id}/plan", summary="The plan record")
+def get_plan(request: Request, trajectory_id: str) -> Response:
+    """Every drafting attempt, the validated steps with their state, and the verdict.
+
+    ``null`` for a bypassed trajectory or one not yet drafted; ``404`` for an unknown one. The
+    composed explanation document is Phase 8's — this is the plan rows, rendered.
+    """
+    document = _runtime(request).records.plan(trajectory_id)
+    return json_response(document, request_id=_request_id(request))
+
+
+@router.get("/trajectories/{trajectory_id}/intents", summary="Every intent revision")
+def get_intents(request: Request, trajectory_id: str) -> Response:
+    """Every ``ExecutionIntent`` revision the trajectory minted, superseded ones included."""
+    documents: list[dict[str, Any]] = _runtime(request).records.intents(trajectory_id)
     return paginated_response(
         documents, limit=max(len(documents), 1), has_more=False, request_id=_request_id(request)
     )

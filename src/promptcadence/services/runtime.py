@@ -23,12 +23,16 @@ from typing import TYPE_CHECKING
 from mirrorwall import ComponentHealth
 
 from promptcadence.infrastructure.loadcoach import LoadCoachClient
+from promptcadence.services.approvals import ApprovalService
 from promptcadence.services.budget import BudgetService
 from promptcadence.services.database import Database, database_health_component, ensure_ready
 from promptcadence.services.egress import EgressService
+from promptcadence.services.estimates import StepEstimator
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.loadcoach_status import loadcoach_health_component
 from promptcadence.services.pricing import PricingCatalog
+from promptcadence.services.records import RecordReader
+from promptcadence.services.tiers import tiers_health_component
 from promptcadence.services.tools import ToolPlant, tools_health_component
 from promptcadence.services.trajectories import TrajectoryService
 from promptcadence.services.worker import TrajectoryWorker
@@ -49,10 +53,12 @@ class Runtime:
     __slots__ = (
         "_database",
         "_started",
+        "approvals",
         "budget",
         "egress",
         "loadcoach",
         "pricing",
+        "records",
         "settings",
         "sink",
         "tools",
@@ -103,6 +109,18 @@ class Runtime:
                 api_key_file=loadcoach.api_key_file,
             )
         )
+        # The approval service the web layer grants and denies through (T8/T9). The worker's
+        # controllers build their own over the same handles; the service is stateless, so the two
+        # cannot disagree about a request.
+        self.approvals = ApprovalService(
+            database,
+            self.sink,
+            settings,
+            estimator=StepEstimator(self.budget, settings, clock=utc_now),
+            budget=self.budget,
+            clock=utc_now,
+        )
+        self.records = RecordReader(database)
         # One plant per process: the isolation probe launches a real canary, and every worker
         # thread asking the same question of the same host should ask it once.
         self.tools = ToolPlant(settings)
@@ -124,8 +142,16 @@ class Runtime:
 
     @property
     def health_checkers(self) -> Sequence[Callable[[], ComponentHealth]]:
-        """The three components this build reports: ``database``, ``loadcoach`` and ``tools``."""
-        return (self._database_health, self._loadcoach_health, self._tools_health)
+        """The four components this build reports: database, loadcoach, tiers and tools."""
+        return (
+            self._database_health,
+            self._loadcoach_health,
+            self._tiers_health,
+            self._tools_health,
+        )
+
+    def _tiers_health(self) -> ComponentHealth:
+        return tiers_health_component(self.settings, self.loadcoach)
 
     def start(self) -> None:
         """Run startup recovery and start the worker threads. Idempotent."""

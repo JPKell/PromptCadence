@@ -124,7 +124,8 @@ GET  /health                      GET  /version                    GET  /system/
 POST /trajectories                GET  /trajectories               GET  /trajectories/{id}
 GET  /trajectories/{id}/stream    POST /trajectories/{id}/cancel   GET  /trajectories/{id}/explanation
 POST /trajectories/{id}/approve   POST /trajectories/{id}/deny     GET  /trajectories/{id}/turns
-GET  /approvals                   GET  /tiers                      GET  /tools
+GET  /trajectories/{id}/plan      GET  /trajectories/{id}/intents  GET  /approvals
+GET  /tiers                       GET  /tools
 GET  /ledger                      GET  /ledger/entries             GET  /egress-decisions
 GET  /settings                    PUT  /settings
 ```
@@ -141,8 +142,21 @@ GET  /settings                    PUT  /settings
 * `GET /trajectories/{id}/explanation` — the full reconstructable record (§11 contract 2),
   mirroring LoadCoach's `/jobs/{id}/explanation` in spirit and linking to each underlying
   LoadCoach explanation by job id.
-* `POST /trajectories/{id}/approve|deny` — resolves a pending approval request (plan-level or
-  scoped per-step re-approval). Requires the `approve` scope. Idempotent per approval request.
+* `POST /trajectories/{id}/approve|deny` — resolves a pending approval request (a held plan, a
+  hybrid-gated step, the bypass path's gated default intent, a scoped per-step re-approval, or a
+  ceiling raise — `approval_requests.kind`). Requires the `approve` scope. Idempotent per
+  approval request: a second grant of a granted request answers `200` with
+  `already_resolved: true` and changes nothing; a resolved request cannot be resolved
+  differently (`409 APPROVAL_INVALID_STATE`). `approve` takes an optional `budget`
+  (`tokens` and/or `money`) — required for a `ceiling_raise` request and refused for any
+  other — and answers with the intents the grant minted; `deny` takes an optional `reason`,
+  recorded on the request and in the halt's cause. `GET /approvals` lists pending requests with
+  their ages, oldest first; `?trajectory_id=` narrows, `?status=all` includes resolved ones.
+* `GET /trajectories/{id}/plan` — every drafting attempt (valid or not, with the planning call's
+  subject, token classes and prompt record), the validated steps with their execution state, and
+  the recorded verdict; `null` for a bypassed trajectory. `GET /trajectories/{id}/intents` —
+  every `ExecutionIntent` revision, superseded ones included. Both are the rows rendered; the
+  composed explanation document is Phase 8's.
 * `GET /trajectories/{id}/stream` — SSE per
   [API Standards §8](../../standards/api-and-contract-standards.md): every event a persisted row,
   replay from `Last-Event-ID` ([ADR-0044](../../adr/0044-a-state-change-and-its-event-are-one-write.md)).
@@ -156,7 +170,9 @@ promptcadence db upgrade|status|backup|restore
 promptcadence run "<task>" [--classification …] [--budget …] [--tokens …] [--tier …]
             [--bypass-planning] [--tool …] [--follow] [--json]
 promptcadence trajectory list|show|cancel|wait|explain
-promptcadence approvals list           promptcadence approve <id> | deny <id> [--reason …]
+promptcadence approvals list [--trajectory <id>] [--all] [--json]
+promptcadence approve <id> [--tokens N] [--money-nanos N] [--token …]   # ceiling_raise: the new budget
+promptcadence deny <id> [--reason …] [--token …]   # --token, else $PROMPTCADENCE_API_TOKEN
 promptcadence tiers list|show|check    # check: verifies each tier's task profile exists in LoadCoach
 promptcadence tools list|show
 promptcadence ledger show [--scope day|project|tier|trajectory] [--trajectory <id>] [--json]
@@ -476,11 +492,16 @@ caller as `INTERNAL_ERROR`:
 | The client's own read timeout | Cancel the job the request may have started, then halt | `LOADCOACH_ERROR` with `reason = client_timeout` |
 
 The mapping is complete from Phase 3 (`infrastructure/loadcoach.py`, `LOADCOACH_CODE_MAP`, walked
-by a test against LoadCoach's own spec §13 list); the *behaviour* column is the target. Until the
-step policy arrives with the plan (Phase 7), the "retry" and "wait" cells halt with the cause. And
-there is no `waiting` state in [Lifecycle §8.1](lifecycle.md): until one is specified, an
-unreachable LoadCoach mid-turn is T13 (`failed`) with the cause, after cancelling any job the
-request may have started — never a silent retry of the same request.
+by a test against LoadCoach's own spec §13 list); the *behaviour* column is the target. The
+`NO_ELIGIBLE_MODEL` and `TASK_PROFILE_NOT_FOUND` cells are real from Phase 7: the intent's
+fallback tiers are tried in order, and when none can serve the turn is a `tier_escalation`
+deviation whose scoped re-approval carries the next tier in the escalation order, or a halt
+naming an exhausted order. **No per-step retry policy is configured in this version** — §12
+has no key for one — so the "retry" and "wait" cells halt with the cause; adding one is an
+additive `[execution]` key, not an ADR. And there is no `waiting` state in
+[Lifecycle §8.1](lifecycle.md): until one is specified, an unreachable LoadCoach mid-turn is T13
+(`failed`) with the cause, after cancelling any job the request may have started — never a silent
+retry of the same request.
 
 Behavioural rules:
 
@@ -520,7 +541,13 @@ calls, and sending data to paid remote providers — so its security posture is 
   allowlist before routing and before authentication.
 * Scopes: `read` (status, trajectories, explanations), `write` (submit, cancel), `approve`
   (resolve approval requests — deliberately separate from `write`, so the identity that submits
-  work cannot approve its own egress), `admin` (settings, tokens).
+  work cannot approve its own egress), `admin` (settings, tokens). Scopes are a **set**, not a
+  ladder: a token carries any subset, and only `admin` contains the others. **Loopback with no
+  tokens is open** (the LoadCoach precedent, spec §20 AC1): the principal is `loopback`, holds
+  every scope, and its grants are recorded as `approver:loopback` — the record still says who.
+  Once any token exists, or the bind is not loopback, every scoped endpoint needs a bearer
+  token (`401`), and a token without the scope is `403`. The CLI's `approve`/`deny` present
+  `$PROMPTCADENCE_API_TOKEN` or `--token`.
 * Transcript and tool-output text follows LoadCoach's retention model: kept
   `content_retention_hours` after a trajectory finishes, then swept; hashes, usage, decisions and
   events stay, so the trajectory remains explicable. A scrubbed turn says "content removed by

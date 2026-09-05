@@ -26,7 +26,7 @@ def test_health_json_flag_produces_valid_json() -> None:
     assert "status" in payload
     assert "components" in payload
     names = {component["name"] for component in payload["components"]}
-    assert names == {"database", "loadcoach", "tools"}
+    assert names == {"database", "loadcoach", "tiers", "tools"}
 
 
 def test_health_reports_loadcoach_degraded_when_unreachable(

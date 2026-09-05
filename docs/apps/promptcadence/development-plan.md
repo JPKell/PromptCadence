@@ -345,6 +345,21 @@ benchmark, not something to paper over.
 **Gold standards:** the model never decides control flow; approval before execution.
 **Deferred:** compaction, UI, hardening.
 
+**Built (G1, 2026-09-04; `G1_HANDOFF.md`).** Every work item above, in six gates: the planner
+and its prompt pack; approval in three modes on both paths, the bypass gate wired (a `manual`
+or gated `hybrid` bypass parks before any turn, and the grant supersedes the default intent);
+scoped re-approval, tier escalation and the ceiling raise as real T10 requests; ready-set DAG
+dispatch under the disjoint-surface rule; the contract-1 diff with its named allowance list;
+`approvals list|approve|deny`, `tiers list|show|check`, `token create|list|revoke`,
+`GET /approvals`, `/plan`, `/intents`, the `tiers` health component and a real
+`GET /system/status`. Two things the plan's wording implied are **not** in this version and are
+recorded rather than approximated: a per-step *retry/wait* policy (spec §13 — no §12 key exists
+for one; the cells halt with the cause), and LoadCoach reporting whether it has a remote provider
+(lifecycle §3 — a parameter with the safe default `False` until LC-E1 supplies the fact, so the
+hybrid egress gate on the planned path is exercised against the fake and cannot fire in a real
+deployment before LC-E1). The planner's own spend is recorded on the `plans` row, not the ledger
+(lifecycle §4.1).
+
 ---
 
 ## Phase 8 — Compaction, explanation, operator UI
