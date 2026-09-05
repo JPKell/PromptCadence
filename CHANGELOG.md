@@ -6,6 +6,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Added
+- **The model is told which tools it has** (G2). Every executing turn now carries the step's
+  declared tool definitions on LoadCoach's `/generate` — name, registered description and argument
+  schema, taken verbatim from the tool catalog so the wire and `GET /tools` cannot drift. The set
+  offered is the **intent's allowlist and nothing wider** (lifecycle §4.3); a tool the intent did
+  not declare is not offered, a tool configuration withheld is not offered, and a name the model
+  invents anyway is still an `undeclared_tool` deviation, refused and recorded exactly as before.
+  Until LoadCoach's wire could carry definitions (its G2 row), a model was told nothing and
+  invented names out of its own vocabulary — every call refused, which is what G1 hit on the real
+  stack.
+
+### Changed
+- **A tool-calling assistant turn replays natively; the `[tool_calls]` text rendering is gone**
+  (G2). `_render_tool_calls` existed because LoadCoach's message body had no `tool_calls` and a
+  provider refuses an assistant turn with neither content nor calls, so a turn that answered with
+  calls alone was replayed as text naming them. It now replays as what it was. `turns.tool_calls_json`
+  still persists what an assistant turn requested — that is the park-and-resume record and it is
+  unchanged.
+
+  A replayed `TOOL` turn now carries the **model's** call id on the wire, not this application's
+  invocation ULID: LoadCoach refuses a tool result that answers no earlier call, and a provider
+  matches results to calls by the id the model chose. The rows keep the ULID; only the wire is
+  rewritten, positionally, in the order the calls were executed. A call the provider could not
+  name is not replayable, so that call and the `TOOL` turn answering it are left off the wire while
+  the rows keep both.
+
+### Fixed
+- **Tool-call fragments are grouped by `call_index`, not by `id`** (G2, found on the real stack).
+  ModelRack's Ollama adapter emits one call as two deltas: the first carries the `id` and the
+  `name` with no arguments, the second carries the argument text with **no id**. Keyed on the id,
+  `assemble_tool_calls` made two calls out of one — a named call with empty arguments, refused
+  `args_invalid`, and a nameless call with the arguments, refused `unknown_tool`. That pair is in
+  G1's §10.4 transcript, where it was read as the model inventing names; part of it was this
+  function. `call_index` is ModelRack's own answer to *which call is this a fragment of*, so it is
+  what the assembler groups on, with `id` and then position as fallbacks.
+
 ## [0.9.0b0] — 2026-09-04
 
 **The M11 beta.** Cut by operator decision after G1's live demonstration on a real LoadCoach over

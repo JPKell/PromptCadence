@@ -6,6 +6,7 @@ suite (spec §18): no LoadCoach, no GPU, no network.
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -583,9 +584,14 @@ def test_the_recorded_classification_flows_into_the_facts(harness: Harness) -> N
     assert harness.service.get(trajectory_id).classification is DataClassification.PUBLIC
 
 
-def test_an_assistant_turn_that_only_requested_tools_is_replayed_as_text(harness: Harness) -> None:
-    """LoadCoach's message body carries no ``tool_calls`` and a provider refuses an assistant turn
-    with neither content nor calls (found on the real stack at G1): the replay names the calls."""
+def test_an_assistant_turn_that_only_requested_tools_replays_natively(harness: Harness) -> None:
+    """G2: the turn goes back on the wire as what it was, not as text naming what it did.
+
+    Until LoadCoach's `/generate` carried `tool_calls` on a message this turn could not be replayed
+    at all — a provider refuses an assistant turn with neither content nor calls — so it was
+    rendered as `[tool_calls]`-prefixed text (G1's workaround, now deleted). The row still keeps
+    the empty content the model actually produced.
+    """
     (harness.tools.workspace_root / "x").mkdir(parents=True, exist_ok=True)
     harness.fake.script(
         ScriptedGeneration(
@@ -605,7 +611,23 @@ def test_an_assistant_turn_that_only_requested_tools_is_replayed_as_text(harness
     assert state is TrajectoryState.COMPLETED
     replayed = harness.fake.requests[-1]["body"]["messages"]
     assert [m["role"] for m in replayed] == ["user", "assistant", "tool"]
-    assert replayed[1]["content"].startswith("[tool_calls]")
-    assert 'list_dir {"path": "."}' in replayed[1]["content"]
+    assert replayed[1]["content"] == ""
+    assert replayed[1]["tool_calls"] == [
+        {"id": "c1", "name": "list_dir", "arguments": {"path": "."}}
+    ]
+    assert "[tool_calls]" not in json.dumps(replayed)
+    # The TOOL turn answers the model's own call id, which is what a provider matches on.
+    assert replayed[2]["tool_call_id"] == "c1"
     assistant = harness.service.turns(trajectory_id)[1]
     assert assistant.turn.content == "", "the row keeps what the model actually said"
+
+
+def test_the_offered_tools_are_the_intents_allowlist_and_no_wider(harness: Harness) -> None:
+    """Lifecycle §4.3: the model is told about the tools the intent declared, and only those."""
+    harness.fake.script(ScriptedGeneration(text="Nothing to do."))
+    _claim_and_run(harness)
+    offered = harness.fake.requests[-1]["body"].get("tools") or []
+    names = {tool["name"] for tool in offered}
+    assert names, "a step with an allowlist offers its tools"
+    assert names <= set(harness.settings.tools.enabled)
+    assert all(tool["parameters"] for tool in offered), "each definition carries its schema"

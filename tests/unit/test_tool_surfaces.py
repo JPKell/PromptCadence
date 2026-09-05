@@ -45,6 +45,26 @@ def test_fragments_of_one_call_are_joined_into_one_call() -> None:
     assert calls[0].arguments_parsed is True
 
 
+def test_a_call_whose_id_arrives_before_its_arguments_is_one_call() -> None:
+    """The shape ModelRack's Ollama adapter actually emits (G2, on the real stack).
+
+    Fragment one carries the id and the name and no arguments; fragment two carries the argument
+    text and **no id**. Grouped by id, that is two calls — one named with nothing to run and one
+    nameless with the arguments — and both are refused. Grouped by `call_index`, which is what the
+    field means, it is the one call the model asked for.
+    """
+    calls = assemble_tool_calls(
+        [
+            fragment(call_index=0, id="ollama-227744599217020-0", name="list_dir"),
+            fragment(call_index=0, id=None, name=None, arguments_fragment='{"path": "./notes"}'),
+        ]
+    )
+    assert len(calls) == 1
+    assert calls[0].name == "list_dir"
+    assert calls[0].arguments == {"path": "./notes"}
+    assert calls[0].call_id == "ollama-227744599217020-0"
+
+
 def test_two_calls_to_the_same_tool_do_not_collapse() -> None:
     calls = assemble_tool_calls(
         [

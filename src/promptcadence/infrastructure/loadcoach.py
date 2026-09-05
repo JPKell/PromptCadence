@@ -75,6 +75,7 @@ __all__ = [
     "RoutingInfo",
     "TaskProfileInfo",
     "TimingInfo",
+    "ToolDefinition",
     "ValidationInfo",
     "VersionInfo",
     "assemble_tool_calls",
@@ -163,18 +164,54 @@ against LoadCoach's own spec §13 list rather than branches nobody reviews."""
 
 
 @dataclass(frozen=True, slots=True)
+class ToolDefinition:
+    """One tool offered to the model, as ``GenerateBody.tools`` takes it (LoadCoach api.md §4).
+
+    The definition is the caller's, not the model's: ``description`` and ``parameters`` come
+    verbatim from the registered :class:`~promptcadence.services.tools.ToolCatalogEntry`, so what
+    the model is told a tool does and what the catalog says cannot drift. LoadCoach passes
+    ``parameters`` to the provider unmodified and executes nothing.
+    """
+
+    name: str
+    description: str
+    parameters: Mapping[str, Any]
+
+    def as_body(self) -> dict[str, Any]:
+        """Return the ``ToolDefinitionBody`` mapping."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": dict(self.parameters),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Message:
-    """One turn of a caller-supplied transcript, as ``GenerateBody.messages`` takes it."""
+    """One turn of a caller-supplied transcript, as ``GenerateBody.messages`` takes it.
+
+    ``tool_calls`` replays what an assistant turn asked for. LoadCoach refuses a non-assistant
+    turn that carries any, refuses a ``tool`` turn with no ``tool_call_id``, refuses a turn with
+    neither content nor calls, and refuses a ``tool_call_id`` that names no call in an earlier
+    assistant turn — so the ids here are the **model's** call ids, never this application's own
+    invocation ULIDs, which stay on the rows.
+    """
 
     role: str
     content: str
     tool_call_id: str | None = None
+    tool_calls: tuple[RequestedToolCall, ...] = ()
 
     def as_body(self) -> dict[str, Any]:
         """Return the ``MessageBody`` mapping."""
         body: dict[str, Any] = {"role": self.role, "content": self.content}
         if self.tool_call_id is not None:
             body["tool_call_id"] = self.tool_call_id
+        if self.tool_calls:
+            body["tool_calls"] = [
+                {"id": call.call_id, "name": call.name, "arguments": call.arguments}
+                for call in self.tool_calls
+            ]
         return body
 
 
@@ -195,6 +232,9 @@ class GenerateRequest:
             which is what lets recovery find the job a dead worker started.
         response_format: ``text``, ``json`` or ``json_schema``, or ``None`` for the profile's own.
         sampling: Sampling overrides; empty for the profile's own.
+        tools: The tools this turn's step may call — the intent's declared allowlist, never
+            wider (lifecycle §4.3). A tool the intent did not declare is not offered, and anything
+            the model invents anyway is still an ``undeclared_tool`` deviation.
 
     Raises:
         ValueError: If both or neither of ``prompt``/``messages`` is given, or ``system`` is
@@ -209,6 +249,7 @@ class GenerateRequest:
     idempotency_key: str | None = None
     response_format: str | None = None
     sampling: Mapping[str, Any] = field(default_factory=dict)
+    tools: tuple[ToolDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         """Refuse a body ``GenerateBody`` would refuse."""
@@ -237,6 +278,8 @@ class GenerateRequest:
             body["response_format"] = self.response_format
         if self.sampling:
             body["sampling"] = dict(self.sampling)
+        if self.tools:
+            body["tools"] = [tool.as_body() for tool in self.tools]
         return body
 
 
@@ -1141,10 +1184,20 @@ class RequestedToolCall:
 def assemble_tool_calls(entries: Sequence[Mapping[str, Any]]) -> tuple[RequestedToolCall, ...]:
     """Group LoadCoach's tool-call fragments into one entry per call, in first-seen order.
 
-    Fragments are grouped by ``id`` when the provider supplied one and by ``call_index``
-    otherwise, because a provider that emits no id still emits a stable index and two calls to the
-    same tool must not collapse into one. Names are taken from the first fragment that carries a
-    non-empty one; argument fragments are concatenated in arrival order and parsed once at the end.
+    Fragments are grouped by ``call_index``, which is ModelRack's own answer to *which call is
+    this a fragment of* — it counts calls from ``0`` within the turn, so two calls to the same
+    tool never collapse into one. ``id`` is a fallback for an entry that carries no index, and the
+    position in the list is the last resort.
+
+    **Grouping by ``id`` first was wrong, and the real stack showed it** (G2). ModelRack's Ollama
+    adapter emits a call as two deltas: the first carries ``id`` and ``name`` with no arguments,
+    the second carries the argument text with **no id**. Keyed on the id, those became two calls —
+    one named with empty arguments (refused ``args_invalid``) and one nameless with the arguments
+    (refused ``unknown_tool``). That is the pair in G1 §10.4's transcript, which was read there as
+    the model inventing names; part of it was this function.
+
+    Names are taken from the first fragment that carries a non-empty one; argument fragments are
+    concatenated in arrival order and parsed once at the end.
 
     Args:
         entries: ``output.tool_calls`` exactly as LoadCoach rendered it. Entries that are not
@@ -1166,10 +1219,10 @@ def assemble_tool_calls(entries: Sequence[Mapping[str, Any]]) -> tuple[Requested
         raw_id = entry.get("id")
         index = entry.get("call_index")
         key = (
-            f"id:{raw_id}"
-            if isinstance(raw_id, str) and raw_id
-            else f"index:{index}"
+            f"index:{index}"
             if index is not None
+            else f"id:{raw_id}"
+            if isinstance(raw_id, str) and raw_id
             else f"position:{position}"
         )
         if key not in fragments:

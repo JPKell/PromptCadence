@@ -150,6 +150,7 @@ from promptcadence.infrastructure.loadcoach import (
     LoadCoachClient,
     Message,
     RequestedToolCall,
+    ToolDefinition,
     assemble_tool_calls,
     parse_generation,
 )
@@ -198,7 +199,7 @@ from promptcadence.services.tools import ToolPlant, TrajectoryTools, outcome_of
 from promptcadence.services.views import TrajectoryView, view_of
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Collection, Mapping, Sequence
 
     from setspec.prompts import RenderedPrompt
     from sqlalchemy import CursorResult
@@ -1580,6 +1581,7 @@ class LoopController:
             task=tier.task_profile,
             messages=self._transcript(run.thread_id, turns),
             idempotency_key=turn_id,
+            tools=self._tool_definitions(run.intent.approved_tools),
         )
         with correlation(turn_id=turn_id, tier=tier.name):
             try:
@@ -1612,37 +1614,100 @@ class LoopController:
         )
         return response, max(overhead_ms, 0.0)
 
+    def _tool_definitions(self, approved: Collection[str]) -> tuple[ToolDefinition, ...]:
+        """The definitions offered to the model for this turn — the intent's allowlist, no wider.
+
+        Args:
+            approved: The intent's ``approved_tools``, which is the plan's declaration for this
+                step after approval (lifecycle §4.3).
+
+        Returns:
+            One definition per approved tool that is actually registered, in name order —
+            ``approved_tools`` is a set, so the wire's order is made deterministic here rather
+            than left to iteration — carrying the registered description and argument schema
+            verbatim so the wire and ``GET /tools`` cannot drift.
+
+        Offers nothing the intent did not declare. A tool the operator's configuration withheld is
+        not offered either — it has no schema to send and no handler to run — and a name the model
+        invents anyway is still an ``undeclared_tool`` deviation, refused and recorded exactly as
+        before.
+        """
+        definitions: list[ToolDefinition] = []
+        for name in sorted(approved):
+            entry = self._tools.entry(name)
+            if entry is None or not entry.registered or entry.parameters is None:
+                continue
+            definitions.append(
+                ToolDefinition(
+                    name=entry.name, description=entry.description, parameters=entry.parameters
+                )
+            )
+        return tuple(definitions)
+
     def _transcript(
         self, thread_id: str, turns: Sequence[Turn[TurnProvenance]]
     ) -> tuple[Message, ...]:
-        """The thread as LoadCoach's wire can carry it.
+        """The thread as LoadCoach's wire carries it, tool calls included.
 
-        LoadCoach's message body has ``role``, ``content`` and ``tool_call_id`` and nothing else —
-        no ``tool_calls`` — so an assistant turn that answered with tool calls and no text cannot
-        be replayed as it was, and a provider refuses an assistant turn with neither content nor
-        calls (found on the real stack at G1). Such a turn is replayed as text naming the calls it
-        made, read from the calls persisted on its row; the row itself keeps the empty content it
-        recorded. Every other turn is carried verbatim.
+        Since LoadCoach's `/generate` gained ``tool_calls`` on a message (G2), an assistant turn
+        that answered with calls and no text replays as what it was rather than as text naming
+        what it did. The calls come from ``turns.tool_calls_json`` — the fragments LoadCoach
+        forwarded, assembled by :func:`assemble_tool_calls`, which is the same grouping the loop
+        used to decide what to execute, so the model is shown exactly the calls that ran.
+
+        The ``tool_call_id`` on a replayed ``TOOL`` turn is the **model's** call id, not this
+        application's invocation ULID: LoadCoach refuses a tool result that answers no earlier
+        call, and a provider that matches results to calls needs the id the model chose. The row
+        keeps its own ULID; only the wire is rewritten. Tool turns follow their assistant turn in
+        call order, which is the order :meth:`_run_tool_calls` executed them in, so the mapping is
+        positional and needs no extra column.
+
+        A call the provider could not name is not replayable — an unnamed call cannot be matched
+        to its result by any provider — so that call and the ``TOOL`` turn answering it are
+        omitted from the wire. The rows keep both, and the refusal that was recorded for it stays
+        exactly what it was. An assistant turn left with neither content nor calls is omitted with
+        them, because it is a turn no provider will accept.
         """
-        empties = [
-            turn.turn_id
-            for turn in turns
-            if turn.role is TurnRole.ASSISTANT and not (turn.content or "").strip()
-        ]
-        calls_by_turn: dict[str, list[Any]] = {}
-        if empties:
+        assistants = [turn.turn_id for turn in turns if turn.role is TurnRole.ASSISTANT]
+        calls_by_turn: dict[str, tuple[RequestedToolCall, ...]] = {}
+        if assistants:
             with self._database.read() as session:
                 for turn_id, raw in session.execute(
                     select(models.Turn.id, models.Turn.tool_calls_json).where(
-                        models.Turn.id.in_(empties)
+                        models.Turn.id.in_(assistants)
                     )
                 ).all():
-                    calls_by_turn[turn_id] = list(raw or [])
+                    if raw:
+                        calls_by_turn[turn_id] = assemble_tool_calls(list(raw))
         messages: list[Message] = []
+        pending: list[str | None] = []
         for turn in turns:
             content = turn.content or ""
-            if turn.turn_id in calls_by_turn and not content.strip():
-                content = _render_tool_calls(calls_by_turn[turn.turn_id])
+            if turn.role is TurnRole.ASSISTANT:
+                assembled = calls_by_turn.get(turn.turn_id, ())
+                # One entry per recorded call, in execution order: the id to replay it under, or
+                # None for a call no provider can carry. The TOOL turns consume them in order.
+                pending = [call.call_id if call.name.strip() else None for call in assembled]
+                replayable = tuple(call for call in assembled if call.name.strip())
+                if not content.strip() and not replayable:
+                    continue
+                messages.append(
+                    Message(
+                        role=turn.role.value,
+                        content=content,
+                        tool_call_id=turn.tool_call_id,
+                        tool_calls=replayable,
+                    )
+                )
+                continue
+            if turn.role is TurnRole.TOOL:
+                call_id = pending.pop(0) if pending else None
+                if call_id is None:
+                    continue
+                messages.append(
+                    Message(role=turn.role.value, content=content, tool_call_id=call_id)
+                )
+                continue
             messages.append(
                 Message(role=turn.role.value, content=content, tool_call_id=turn.tool_call_id)
             )
@@ -3094,17 +3159,6 @@ def _valid_plan_ids(trajectory_id: str) -> Any:
     return select(models.Plan.id).where(
         models.Plan.trajectory_id == trajectory_id, models.Plan.valid.is_(True)
     )
-
-
-def _render_tool_calls(calls: Sequence[Mapping[str, Any]]) -> str:
-    """Render an assistant turn's tool calls as the text the wire can carry."""
-    lines = ["[tool_calls]"]
-    for call in calls:
-        name = str(call.get("name") or "").strip() or "(unnamed)"
-        arguments = call.get("arguments_fragment") or call.get("arguments") or ""
-        text = arguments if isinstance(arguments, str) else canonical_json(arguments)
-        lines.append(f"{name} {text}".rstrip())
-    return "\n".join(lines) if len(lines) > 1 else "[tool_calls] (none)"
 
 
 def _render_dependencies(step: PlanStep, results: Mapping[str, str]) -> str:

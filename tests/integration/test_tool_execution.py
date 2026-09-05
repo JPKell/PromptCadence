@@ -261,7 +261,11 @@ def test_a_refusal_is_fed_back_as_a_structured_tool_turn_and_the_trajectory_cont
     second = list(harness.fake.jobs.values())[-1]
     roles = [message["role"] for message in second.request_body["messages"]]
     assert roles == ["user", "assistant", "tool"]
-    assert second.request_body["messages"][-1]["tool_call_id"] == record.invocation_id
+    # The row keeps this application's invocation ULID; the **wire** carries the model's own
+    # call id, because LoadCoach refuses a tool result that answers no earlier call and a
+    # provider matches results to calls by the id the model chose (LoadCoach api.md §4).
+    assert second.request_body["messages"][-1]["tool_call_id"] == "c0"
+    assert tool_turn.tool_call_id == record.invocation_id != "c0"
     assert harness.events(trajectory_id).count("tool.call.started") == 1
     assert harness.events(trajectory_id).count("tool.call.completed") == 1
 
