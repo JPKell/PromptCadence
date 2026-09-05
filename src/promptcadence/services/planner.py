@@ -34,9 +34,13 @@ from typing import TYPE_CHECKING, Final
 
 from baseaicore import ValidationError, sha256_of
 
-from promptcadence.domain.errors import PlanDraftFailedError, PlanInvalidError
+from promptcadence.domain.errors import LoadCoachError, PlanDraftFailedError, PlanInvalidError
 from promptcadence.domain.plan import Plan, PlanIssue, PlanIssueReason
-from promptcadence.infrastructure.loadcoach import GenerateRequest, Message
+from promptcadence.infrastructure.loadcoach import (
+    NON_TERMINAL_JOB_STATES,
+    GenerateRequest,
+    Message,
+)
 from promptcadence.services.prompts import (
     PLANNER_CORRECTIVE_PROMPT_ID,
     PLANNER_DRAFT_PROMPT_ID,
@@ -62,6 +66,16 @@ __all__ = [
 ]
 
 PLANNER_TASK_PROFILE: Final = "tools.plan"
+
+DRAFT_FAILURE_CODES: Final[frozenset[str]] = frozenset(
+    {"VALIDATION_ERROR", "VALIDATION_FAILED", "STRUCTURED_OUTPUT_INVALID"}
+)
+"""The LoadCoach codes a drafting call can fail with that mean *the draft was unusable*, not that
+LoadCoach was unreachable or broken: spec §13 says PromptCadence records such a failure and
+applies its bounded corrective (planner only). Observed on the reference machine: a reasoning
+model that returns an empty document makes LoadCoach's own corrective retry refuse its own
+request with ``VALIDATION_ERROR`` and leave the job executing. Such an attempt is recorded as an
+empty draft, its job cancelled, and the budget decides whether to try again."""
 """The LoadCoach profile the planner calls — shipped by LoadCoach since E4, local-only by its
 own constraints, JSON by its own validation, and never a tier (ADR-0047 §1)."""
 
@@ -183,6 +197,15 @@ class Planner:
         """One draft plus the corrective retries."""
         return 1 + self._corrective_retries
 
+    def _abandon(self, key: str) -> None:
+        """Cancel the job a failed drafting call left running, if one holds its key."""
+        try:
+            job = self._loadcoach.find_job(key, states=NON_TERMINAL_JOB_STATES)
+            if job is not None:
+                self._loadcoach.cancel_job(job.job_id)
+        except LoadCoachError:
+            return
+
     def draft(
         self,
         inputs: PlanningInputs,
@@ -210,8 +233,10 @@ class Planner:
                 carries each attempt's issue reasons and the last attempt's issues in full.
             PlanningCancelled: ``should_stop`` answered ``True``.
             LoadCoachUnavailableError: LoadCoach could not be reached.
-            LoadCoachError: LoadCoach failed the call, or a planning job ended other than
-                completed — a cancelled job is not a draft.
+            LoadCoachError: LoadCoach failed the call with a code outside
+                :data:`DRAFT_FAILURE_CODES`, or a planning job ended other than completed — a
+                cancelled job is not a draft. A validation failure is **not** raised: it is an
+                empty attempt within the corrective budget (spec §13).
         """
         session_nonce = self._ids()
         first = self._render(
@@ -234,21 +259,29 @@ class Planner:
             if should_stop():
                 raise PlanningCancelled(trajectory_id)
             key = f"{plan_job_key_prefix(trajectory_id)}{session_nonce}:{attempt}"
-            response = self._loadcoach.generate(
-                GenerateRequest(
-                    task=PLANNER_TASK_PROFILE,
-                    messages=tuple(messages),
-                    idempotency_key=key,
-                    response_format="json",
+            try:
+                response = self._loadcoach.generate(
+                    GenerateRequest(
+                        task=PLANNER_TASK_PROFILE,
+                        messages=tuple(messages),
+                        idempotency_key=key,
+                        response_format="json",
+                    )
                 )
-            )
-            record = _attempt_of(
-                response,
-                attempt=attempt,
-                key=key,
-                prompt=prompt,
-                inputs=inputs,
-            )
+            except LoadCoachError as exc:
+                code = str(exc.details.get("loadcoach_code", ""))
+                if code not in DRAFT_FAILURE_CODES:
+                    raise
+                record = _failed_attempt(exc, code=code, attempt=attempt, key=key, prompt=prompt)
+                self._abandon(key)
+            else:
+                record = _attempt_of(
+                    response,
+                    attempt=attempt,
+                    key=key,
+                    prompt=prompt,
+                    inputs=inputs,
+                )
             history.append(record)
             on_attempt(record)
             if record.plan is not None:
@@ -326,6 +359,36 @@ def _attempt_of(
         model_canonical_id=response.model.canonical_id,
         usage=response.usage,
         loadcoach_ms=response.timing.total_ms,
+        prompt_id=prompt.prompt_id,
+        prompt_version=prompt.version,
+        prompt_sha256=prompt.sha256,
+    )
+
+
+def _failed_attempt(
+    exc: LoadCoachError, *, code: str, attempt: int, key: str, prompt: RenderedPrompt
+) -> DraftAttempt:
+    """Record a drafting call LoadCoach failed as an empty, invalid attempt."""
+    return DraftAttempt(
+        attempt=attempt,
+        idempotency_key=key,
+        raw_document="",
+        plan=None,
+        issues=(
+            PlanIssue(
+                reason=PlanIssueReason.NOT_JSON,
+                field_name="$",
+                step_id=None,
+                message=(
+                    f"the drafting call produced no usable document: LoadCoach reported {code} "
+                    f"({exc.message})"
+                ),
+            ),
+        ),
+        job_id=None,
+        model_canonical_id=None,
+        usage=None,
+        loadcoach_ms=None,
         prompt_id=prompt.prompt_id,
         prompt_version=prompt.version,
         prompt_sha256=prompt.sha256,

@@ -214,3 +214,30 @@ def test_an_empty_first_answer_is_corrected_without_an_empty_assistant_turn(
     messages = fake.requests[-1]["body"]["messages"]
     assert [message["role"] for message in messages] == ["system", "user", "user"]
     assert "empty" in messages[-1]["content"]
+
+
+def test_a_loadcoach_validation_failure_is_an_empty_attempt_within_the_budget(
+    fake: FakeLoadCoach, client: LoadCoachClient, inputs: PlanningInputs
+) -> None:
+    """Spec §13: a validation failure on a planning call is recorded and the bounded corrective
+    applies. Observed on the reference machine: LoadCoach's own corrective retry refuses its own
+    request after an empty first answer and surfaces ``VALIDATION_ERROR``."""
+    fake.script(ScriptedError("VALIDATION_ERROR"), ScriptedGeneration(text=_document(_step())))
+    attempts: list[DraftAttempt] = []
+    plan = _planner(client).draft(inputs, trajectory_id="01T", on_attempt=attempts.append)
+    assert plan.step_ids == ("s1",)
+    first, second = attempts
+    assert not first.valid and first.raw_document == "" and first.job_id is None
+    assert "VALIDATION_ERROR" in first.issues[0].message
+    assert second.valid
+    messages = fake.requests[-1]["body"]["messages"]
+    assert [message["role"] for message in messages] == ["system", "user", "user"]
+
+    fake.script(ScriptedError("VALIDATION_ERROR"), ScriptedError("VALIDATION_ERROR"))
+    with pytest.raises(PlanDraftFailedError) as caught:
+        _planner(client, retries=1).draft(inputs, trajectory_id="01U", on_attempt=lambda _: None)
+    assert caught.value.details["attempt_count"] == 2
+
+    fake.script(ScriptedError("PROVIDER_TIMEOUT"))
+    with pytest.raises(LoadCoachError):
+        _planner(client).draft(inputs, trajectory_id="01V", on_attempt=lambda _: None)

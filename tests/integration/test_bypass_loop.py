@@ -581,3 +581,31 @@ def test_a_changed_approval_policy_refuses_to_run_under_an_envelope_nobody_minte
 def test_the_recorded_classification_flows_into_the_facts(harness: Harness) -> None:
     trajectory_id, _ = _claim_and_run(harness, classification=DataClassification.PUBLIC)
     assert harness.service.get(trajectory_id).classification is DataClassification.PUBLIC
+
+
+def test_an_assistant_turn_that_only_requested_tools_is_replayed_as_text(harness: Harness) -> None:
+    """LoadCoach's message body carries no ``tool_calls`` and a provider refuses an assistant turn
+    with neither content nor calls (found on the real stack at G1): the replay names the calls."""
+    (harness.tools.workspace_root / "x").mkdir(parents=True, exist_ok=True)
+    harness.fake.script(
+        ScriptedGeneration(
+            text="",
+            tool_calls=(
+                {
+                    "call_index": 0,
+                    "id": "c1",
+                    "name": "list_dir",
+                    "arguments_fragment": '{"path": "."}',
+                },
+            ),
+        ),
+        ScriptedGeneration(text="The workspace is empty."),
+    )
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.COMPLETED
+    replayed = harness.fake.requests[-1]["body"]["messages"]
+    assert [m["role"] for m in replayed] == ["user", "assistant", "tool"]
+    assert replayed[1]["content"].startswith("[tool_calls]")
+    assert 'list_dir {"path": "."}' in replayed[1]["content"]
+    assistant = harness.service.turns(trajectory_id)[1]
+    assert assistant.turn.content == "", "the row keeps what the model actually said"

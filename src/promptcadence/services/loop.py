@@ -1578,14 +1578,7 @@ class LoopController:
         flags.announce(turn_id)
         request = GenerateRequest(
             task=tier.task_profile,
-            messages=tuple(
-                Message(
-                    role=turn.role.value,
-                    content=turn.content or "",
-                    tool_call_id=turn.tool_call_id,
-                )
-                for turn in turns
-            ),
+            messages=self._transcript(run.thread_id, turns),
             idempotency_key=turn_id,
         )
         with correlation(turn_id=turn_id, tier=tier.name):
@@ -1618,6 +1611,42 @@ class LoopController:
             response.timing.total_ms or 0
         )
         return response, max(overhead_ms, 0.0)
+
+    def _transcript(
+        self, thread_id: str, turns: Sequence[Turn[TurnProvenance]]
+    ) -> tuple[Message, ...]:
+        """The thread as LoadCoach's wire can carry it.
+
+        LoadCoach's message body has ``role``, ``content`` and ``tool_call_id`` and nothing else —
+        no ``tool_calls`` — so an assistant turn that answered with tool calls and no text cannot
+        be replayed as it was, and a provider refuses an assistant turn with neither content nor
+        calls (found on the real stack at G1). Such a turn is replayed as text naming the calls it
+        made, read from the calls persisted on its row; the row itself keeps the empty content it
+        recorded. Every other turn is carried verbatim.
+        """
+        empties = [
+            turn.turn_id
+            for turn in turns
+            if turn.role is TurnRole.ASSISTANT and not (turn.content or "").strip()
+        ]
+        calls_by_turn: dict[str, list[Any]] = {}
+        if empties:
+            with self._database.read() as session:
+                for turn_id, raw in session.execute(
+                    select(models.Turn.id, models.Turn.tool_calls_json).where(
+                        models.Turn.id.in_(empties)
+                    )
+                ).all():
+                    calls_by_turn[turn_id] = list(raw or [])
+        messages: list[Message] = []
+        for turn in turns:
+            content = turn.content or ""
+            if turn.turn_id in calls_by_turn and not content.strip():
+                content = _render_tool_calls(calls_by_turn[turn.turn_id])
+            messages.append(
+                Message(role=turn.role.value, content=content, tool_call_id=turn.tool_call_id)
+            )
+        return tuple(messages)
 
     def _escalate(
         self,
@@ -3065,6 +3094,17 @@ def _valid_plan_ids(trajectory_id: str) -> Any:
     return select(models.Plan.id).where(
         models.Plan.trajectory_id == trajectory_id, models.Plan.valid.is_(True)
     )
+
+
+def _render_tool_calls(calls: Sequence[Mapping[str, Any]]) -> str:
+    """Render an assistant turn's tool calls as the text the wire can carry."""
+    lines = ["[tool_calls]"]
+    for call in calls:
+        name = str(call.get("name") or "").strip() or "(unnamed)"
+        arguments = call.get("arguments_fragment") or call.get("arguments") or ""
+        text = arguments if isinstance(arguments, str) else canonical_json(arguments)
+        lines.append(f"{name} {text}".rstrip())
+    return "\n".join(lines) if len(lines) > 1 else "[tool_calls] (none)"
 
 
 def _render_dependencies(step: PlanStep, results: Mapping[str, str]) -> str:
