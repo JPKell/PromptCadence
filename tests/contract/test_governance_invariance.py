@@ -55,7 +55,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 from tests.fakes.harness import LoopHarness, open_harness, plan_document, step
-from tests.fakes.loadcoach_app import ScriptedGeneration
+from tests.fakes.loadcoach_app import ScriptedError, ScriptedGeneration
 
 from promptcadence.config import load_settings
 from promptcadence.domain.trajectory import TrajectoryState
@@ -130,7 +130,7 @@ def _record(harness: LoopHarness) -> dict[str, list[dict[str, Any]]]:
     return record
 
 
-def _run(harness: LoopHarness, *, planned: bool, answers: list[ScriptedGeneration]) -> str:
+def _run(harness: LoopHarness, *, planned: bool, answers: list[Any]) -> str:
     if planned:
         harness.script_plan(plan_document(step("s1", tools=["read_file"])))
     harness.script(*answers)
@@ -167,12 +167,27 @@ _REFUSED_TOOL_THEN_STOP = [
 ]
 
 
+_RETRY_THEN_STOP = [
+    ScriptedError("ALL_CANDIDATES_FAILED"),
+    ScriptedGeneration(text="The notes describe three meetings."),
+]
+"""Row G3's scenario: the same retryable service failure repeated on both paths (ADR-0076).
+
+The counter that records it — ``plan_steps.attempt`` — exists only on the planned path, which is
+why the ``step.retried`` events carry the history. If they did not, this scenario would need a new
+allowance, and `G1_HANDOFF.md` §5 closed that list."""
+
+
 @pytest.mark.parametrize(
     "answers",
-    [pytest.param(_STOP, id="one_turn"), pytest.param(_REFUSED_TOOL_THEN_STOP, id="deviation")],
+    [
+        pytest.param(_STOP, id="one_turn"),
+        pytest.param(_REFUSED_TOOL_THEN_STOP, id="deviation"),
+        pytest.param(_RETRY_THEN_STOP, id="retry"),
+    ],
 )
 def test_planned_and_bypassed_records_are_identical_in_shape_minus_the_named_rows(
-    pair: tuple[LoopHarness, LoopHarness], answers: list[ScriptedGeneration]
+    pair: tuple[LoopHarness, LoopHarness], answers: list[Any]
 ) -> None:
     planned, bypassed = pair
     _run(planned, planned=True, answers=list(answers))
