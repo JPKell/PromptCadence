@@ -1,0 +1,24 @@
+{
+  "pack_id": "promptcadence.prompts",
+  "pack_version": "1.0.0",
+  "schema_version": "1.0",
+  "generated_at": "2026-09-04T00:00:00Z",
+  "prompts": [
+    {
+      "prompt_id": "planner.corrective",
+      "version": "1.0.0",
+      "sha256": "sha256:8c220bc7f07afc410df1d22d0f1b56968a33c38db1a8ab16a1b2495b6f02e9d4"
+    },
+    {
+      "prompt_id": "planner.draft",
+      "version": "1.0.0",
+      "sha256": "sha256:6dd79447dc49555a0c7b20e504b5d77f7d1de80f82d120dad045dafc75138863"
+    },
+    {
+      "prompt_id": "step.execute",
+      "version": "1.0.0",
+      "sha256": "sha256:f5d0a7d2918d7d5fc81551275e3dc217bc208d09d3ac31dbf4d749139d1ffd50"
+    }
+  ],
+  "pack_sha256": "sha256:1f9c1fff6f9e47a6b94ab464fb0112daa2eb9eb97e78023a8c06c76ec0e0f5d7"
+}

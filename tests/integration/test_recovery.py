@@ -286,6 +286,7 @@ def test_kill_minus_nine_with_a_turn_in_flight_cancels_the_orphan_and_resumes(
         "trajectory.created",
         "trajectory.claimed",
         "intent.minted",
+        "step.started",
         "turn.started",
         "trajectory.recovered",
         "turn.started",
@@ -294,9 +295,10 @@ def test_kill_minus_nine_with_a_turn_in_flight_cancels_the_orphan_and_resumes(
         # writing it first makes the ordinary path the same shape as the recovered one.
         "budget.debited",
         "turn.completed",
+        "step.completed",
         "trajectory.completed",
     ]
-    recovered = recoverer.events(trajectory_id)[4]["data"]
+    recovered = recoverer.events(trajectory_id)[5]["data"]
     assert recovered["outcome"] == f"cancelled_in_flight_job:{orphan.job_id}"
 
 
@@ -335,8 +337,13 @@ def test_kill_minus_nine_after_the_response_reconciles_the_completed_job_without
     assert len(fake.jobs_with_key(turns[1].turn.turn_id)) == 1
     assert not fake.in_flight(), "no orphaned job"
     types = [e["event_type"] for e in recoverer.events(trajectory_id)]
-    assert types[-3:] == ["turn.completed", "trajectory.recovered", "trajectory.completed"]
-    reconciled = recoverer.events(trajectory_id)[-2]["data"]
+    assert types[-4:] == [
+        "turn.completed",
+        "trajectory.recovered",
+        "step.completed",
+        "trajectory.completed",
+    ]
+    reconciled = recoverer.events(trajectory_id)[-3]["data"]
     assert reconciled["outcome"] == f"reconciled_completed_job:{job_id}"
 
     # P5: the spend is on the ledger exactly once, keyed by the turn it came from. The child died

@@ -1,0 +1,43 @@
+{
+  "prompt_id": "step.execute",
+  "version": "1.0.0",
+  "schema_version": "1.0",
+  "purpose": "Open a planned step's thread: name the step the model is executing, the results of the steps it depends on, and the tools its intent permits.",
+  "task": "tools.agent",
+  "capability": "agentic",
+  "system": null,
+  "template": "You are executing step {{ step_id }} of an approved plan for the task above.\n\nSTEP\n{{ description }}\n{{ dependency_results }}\nUse only these tools: {{ tools }}. When the step is complete, answer with the step's result and stop.",
+  "variables": {
+    "step_id": {
+      "type": "string",
+      "required": true,
+      "description": "The plan step's identifier."
+    },
+    "description": {
+      "type": "string",
+      "required": true,
+      "description": "The step's description from the validated plan — the planner's own words, which is how a plan directs work."
+    },
+    "dependency_results": {
+      "type": "string",
+      "required": true,
+      "description": "Rendered by Python: a RESULTS OF EARLIER STEPS block listing each dependency's final answer, or an empty string when the step depends on nothing."
+    },
+    "tools": {
+      "type": "string",
+      "required": true,
+      "description": "The intent's approved tools, comma-separated, or 'none'."
+    }
+  },
+  "response": {
+    "format": "text",
+    "json_schema_ref": null,
+    "expectations": [
+      "The step's result as free text, ended by a declared finish_reason of stop (spec §11 contract 6)."
+    ]
+  },
+  "metadata": {
+    "change_reason": "First version. The step framing is a user turn carrying this record's provenance on its row (spec §9), so contract 1's diff can name it as the one turn a plan adds.",
+    "owner": "promptcadence"
+  }
+}

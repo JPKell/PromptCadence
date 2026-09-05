@@ -348,17 +348,23 @@ class TrajectoryService:
         """
         self.get(trajectory_id)
         with self._database.read() as session:
-            thread_id = session.execute(
-                select(models.Thread.id).where(models.Thread.trajectory_id == trajectory_id)
-            ).scalar_one_or_none()
-            if thread_id is None:
+            threads = list(
+                session.execute(
+                    select(models.Thread.id, models.Thread.step_id)
+                    .where(models.Thread.trajectory_id == trajectory_id)
+                    .order_by(models.Thread.created_at, models.Thread.id)
+                ).all()
+            )
+            if not threads:
                 return []
             extras = {
                 row.id: row
                 for row in session.execute(
-                    select(models.Turn).where(models.Turn.thread_id == thread_id)
+                    select(models.Turn).where(models.Turn.trajectory_id == trajectory_id)
                 ).scalars()
             }
+        # One thread per step (Phase 7): a planned trajectory's transcript is its steps' threads
+        # in the order they opened, each in its own sequence order; the bypass loop has one.
         return [
             TurnView(
                 turn=turn,
@@ -366,7 +372,12 @@ class TrajectoryService:
                 loadcoach_ms=extras[turn.turn_id].loadcoach_ms,
                 overhead_ms=extras[turn.turn_id].overhead_ms,
                 created_at=extras[turn.turn_id].created_at,
+                step_id=step_id,
+                prompt_id=extras[turn.turn_id].prompt_id,
+                prompt_version=extras[turn.turn_id].prompt_version,
+                prompt_sha256=extras[turn.turn_id].prompt_sha256,
             )
+            for thread_id, step_id in threads
             for turn in self._threads.turns(thread_id)
         ]
 

@@ -6,6 +6,66 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Added — Phase 7, gate A: the planner
+- **`services/planner.py`** — `Planner` calls LoadCoach under the shipped **`tools.plan`**
+  profile with `response_format = "json"`, validates the answer with PromptCadence's **own**
+  `validate_plan_document` (ADR-0041: the schema is shown to the model in the prompt and never
+  handed to LoadCoach for validation), and retries correctively within the new
+  **`[planning] corrective_retries`** budget (default 2), feeding **every** issue back at once
+  (`plan.py`'s module docstring explains why one problem per attempt spends the budget on
+  bookkeeping). Exhaustion is **T7** with `PLAN_DRAFT_FAILED`, the cause naming every attempt's
+  issue reasons. A fenced or otherwise non-JSON answer is an issue the corrective names, never a
+  document this application repairs.
+- **`src/promptcadence/prompts/`** — the application's prompt pack on `setspec.prompts`
+  (ADR-0012, ADR-0028): `planner.draft`, `planner.corrective` (the structured-output corrective,
+  spec §9) and `step.execute` (the framing turn a planned step's thread opens with), a manifest
+  pinning their hashes, and `services/prompts.py` as the one-function shim. A test walks the
+  source for inline prompt strings; another rebuilds the manifest and asserts nothing drifted.
+- **Every drafting attempt is a `plans` row** — valid or not — carrying the verbatim document,
+  the validated form (or every issue), the planning call's job, subject, four token classes and
+  timing, and the prompt record it was rendered from. `plan.drafted` is emitted once per
+  attempt. The planning call's spend is recorded on the row and **not** debited to the ledger:
+  it is not a turn and runs under no intent, and contract 1 says debits occur under an intent on
+  every turn in both modes.
+- **`services/intents.py`** — intents as rows, and rows back into intents **by re-minting**:
+  `rebuild_intents` re-mints every recorded revision from the recorded inputs (the declaration,
+  the plan step and its verdict, the tier snapshot; every later revision by superseding the one
+  before it with the fields its row carried) and refuses to run a trajectory whose envelope it
+  cannot reproduce byte for byte. `step_budgets` is lifecycle §5's one multiplication (estimate
+  × 2), in one place so the mint and the re-mint agree.
+- **`services/approvals.py`** — the verdict as rows: `decide_plan` records `plan_approvals`
+  with the **derived** `approval_policy_version`, then does what the mode says in the loop's own
+  write — T4 (mint every ungated step), T5 (hold), T6 (reject, every step's verdict and the
+  binding ceiling in the cause). Grants, denials and expiries are gate B's.
+- **The planned path in `services/loop.py`** — T2 claims for planning; `run()` drafts, records,
+  approves and then executes per step: one thread per step (`threads.step_id`), the caller's
+  task verbatim as turn 1 and the `step.execute` framing as turn 2 with its prompt provenance on
+  the row (spec §9), `step.started`/`step.completed` on **both** paths (the bypass loop is one
+  synthetic step), and T11 in the write that commits the last step. The bypass path's thread now
+  opens at the step's first dispatch, not at the claim — the same shape as a planned step.
+- **The `planning` recovery edge is real** (lifecycle §8.3): a `planning` lease found at
+  recovery re-claims, cancels every in-flight planning job under the trajectory's key prefix,
+  emits `trajectory.recovered` and redrafts under a fresh session nonce. The stub D2 left —
+  *"planning is not available before Phase 7"* — is gone from code, tests, CLI output and docs,
+  and a test greps for it. Recovery now takes the lease **before** cancelling an in-flight job,
+  on both edges: a stalled worker whose call returned the cancelled document could otherwise
+  end the trajectory itself in the instant before the takeover fenced it.
+- **Migration `0007`** — `threads.step_id`; `turns.prompt_id/prompt_version/prompt_sha256` and
+  `turns.tool_calls_json` (the calls an assistant turn requested, so a step resumed after a park
+  or a crash runs them instead of losing them); the drafting-attempt columns on `plans`;
+  `plan_steps.status/started_at/completed_at`; `approval_requests.kind/detail_json/
+  resolution_reason`; and `deviations.turn_id` loses its foreign key — a `tier_escalation`
+  names a turn that was announced and never answered.
+- `PlanDrafted`, `StepStarted` and `StepCompleted` event bodies; `domain/dispatch.py` with the
+  pure ready-set rule (gate C exercises it).
+
+### Changed
+- `GET /trajectories/{id}/turns` and `TrajectoryService.turns()` return every step's thread in
+  the order the threads opened; each turn document carries `step_id` and the three `prompt_*`
+  fields.
+- Spec §12 gains `[planning] corrective_retries`; lifecycle §8.3's last sentence — the
+  Phase 7 placeholder — is replaced by how a planning job is known and cancelled at recovery.
+
 ### Changed
 - **`promptcadence ledger show --scope tier` and `GET /api/v1/ledger`'s `tiers` array report
   spend, not a debit count.** `loadledger 0.2.0` added `balances(scope, window_key)` — a read of

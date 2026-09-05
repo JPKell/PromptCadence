@@ -454,8 +454,13 @@ never re-POSTs `/generate` with the old key to find out, because after
 replay from a fresh execution. Startup takes over every lease not held by this process — the
 single-process design makes any other owner a process that is gone — and the running reaper takes
 over only expired ones. An unreachable LoadCoach defers the reconciliation to the next pass rather
-than halting on a transient outage. Until the planner exists (Phase 7), a `planning` lease found
-at recovery is T7 with the cause rather than a redraft.
+than halting on a transient outage. **How a planning job is known** (Phase 7): every planning
+call carries an idempotency key of the form `plan:<trajectory_id>:<drafting session>:<attempt>`,
+so a `planning` lease found at recovery lists this application's non-terminal jobs, cancels every
+one under the trajectory's prefix, and redrafts under a fresh session nonce — a redraft never
+re-POSTs the crashed session's key, because a replayed key would return the cancelled job's
+document rather than a draft. Every attempt, valid or not, is already a `plans` row with its
+`plan.drafted` event, so nothing drafted before the crash is lost to the record.
 
 ### 8.4 DAG dispatch
 

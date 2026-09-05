@@ -305,6 +305,9 @@ deliberate rejection, like `LoadCoachClient`.
                 allow_request_override = true   # permit per-request bypass_planning
                 reapproval_scope = "on_tier_or_classification_change"   # or "any_deviation"
                 max_plan_steps = 20
+                corrective_retries = 2          # retries after an invalid draft, every issue fed
+                                                # back at once (lifecycle §4.1); then
+                                                # PLAN_DRAFT_FAILED. 0 = one attempt, no retry
 [approval]      mode = "auto"                   # auto | hybrid | manual
                 # hybrid: auto-approve except steps matching the gates below
                 gate_egress_at = "internal"     # egress at/above this classification needs a human

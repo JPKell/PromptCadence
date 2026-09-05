@@ -64,7 +64,12 @@ __all__ = [
 ENV_PREFIX: Final = "PROMPTCADENCE_"
 LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset({"127.0.0.1", "localhost", "::1"})
 _ALL_INTERFACES_HOST = "0.0.0.0"  # noqa: S104 — compared against, never bound to, by this module
-_RESERVED_ENV_SUFFIXES: Final[frozenset[str]] = frozenset({"CONFIG", "DATA_DIR", "LOG_LEVEL"})
+_RESERVED_ENV_SUFFIXES: Final[frozenset[str]] = frozenset(
+    {"CONFIG", "DATA_DIR", "LOG_LEVEL", "API_TOKEN"}
+)
+"""Environment names under the prefix that are not configuration. ``PROMPTCADENCE_API_TOKEN``
+is the bearer token a client-mode command presents (``approve``/``deny``), never a setting.
+"""
 _DEFAULT_PORT: Final = 8768
 
 
@@ -204,6 +209,15 @@ class PlanningSettings(BaseModel):
         default="on_tier_or_classification_change"
     )
     max_plan_steps: int = Field(default=20, ge=1)
+    corrective_retries: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "How many corrective retries the planner may spend after an invalid draft "
+            "(lifecycle §4.1's bounded corrective retry). 0 means one attempt and no retry; the "
+            "draft fails with PLAN_DRAFT_FAILED once the budget is spent."
+        ),
+    )
 
 
 class MoneyAmount(BaseModel):
@@ -751,6 +765,7 @@ enabled = true               # the bypass switch -- governance is never bypassed
 allow_request_override = true
 reapproval_scope = "on_tier_or_classification_change"   # or "any_deviation"
 max_plan_steps = 20
+corrective_retries = 2       # retries after an invalid draft, then PLAN_DRAFT_FAILED
 
 [approval]
 mode = "auto"                # auto | hybrid | manual

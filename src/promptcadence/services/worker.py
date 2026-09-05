@@ -7,10 +7,12 @@ broker and nothing in memory that the database does not also hold — which is w
 ``kill -9`` recoverable rather than fatal.
 
 **Recovery runs before any work is accepted** (lifecycle §8.3, ADR-0036), and again periodically
-for leases that expire while the process lives. At startup every lease found belongs to a process
-that is gone — this is a single-process design — so it is taken over without waiting for it to
-expire. The reaper, by contrast, takes over only *expired* leases: a live worker in this process
-renews its own every ``lease_seconds / 3``, so an expired one is a worker that stalled.
+for leases that expire while the process lives. A ``planning`` lease is redrafted (Phase 7); an
+``executing`` one is reconciled against LoadCoach's own job record. At startup every lease found
+belongs to a process that is gone — this is a single-process design — so it is taken over without
+waiting for it to expire. The reaper, by contrast, takes over only *expired* leases: a live worker
+in this process renews its own every ``lease_seconds / 3``, so an expired one is a worker that
+stalled.
 
 Recovery is idempotent: a second pass finds nothing foreign and nothing expired.
 """
@@ -126,7 +128,10 @@ def recover(
     deferred: list[str] = []
     for trajectory_id, status in rows:
         if status == TrajectoryState.PLANNING.value:
-            (failed if controller.fail_planning(trajectory_id, now=now) else deferred).append(
+            # Lifecycle §8.3: re-claim, cancel any in-flight plan job, discard the partial draft
+            # and redraft — drafting has no side effects to reconcile. The redrafting worker is
+            # the one running this pass, so the trajectory joins ``resumed`` and is run below.
+            (resumed if controller.redraft(trajectory_id, now=now) else deferred).append(
                 trajectory_id
             )
             continue
@@ -334,13 +339,22 @@ class TrajectoryWorker:
             for parked in controller.parked_trajectory_ids():
                 if controller.release_window(parked) is TrajectoryState.EXECUTING:
                     self._run_held(controller, parked)
+            # A pending approval expires by its persisted clock (ADR-0049 rule 4); this pass is
+            # what reads it. A timeout is never a grant, and never an indefinite wait.
+            controller.approvals.expire(now=now)
+            # A grant (T8) releases a trajectory into ``executing`` with no lease; a worker takes
+            # it here, within one poll interval of the grant.
+            released = controller.next_released()
+            if released is not None and controller.claim_released(released):
+                self._run_held(controller, released)
+                continue
             candidate = controller.next_queued()
             if candidate is None:
                 self._wake.wait(self.poll_interval_seconds)
                 self._wake.clear()
                 continue
             claimed = controller.claim(candidate)
-            if claimed is TrajectoryState.EXECUTING:
+            if claimed in {TrajectoryState.EXECUTING, TrajectoryState.PLANNING}:
                 self._run_held(controller, candidate)
 
     def _run_held(self, controller: LoopController, trajectory_id: str) -> None:

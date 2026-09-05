@@ -121,13 +121,23 @@ class TurnView:
     loadcoach_ms: float | None
     overhead_ms: float | None
     created_at: datetime
+    step_id: str = "loop"
+    prompt_id: str | None = None
+    prompt_version: str | None = None
+    prompt_sha256: str | None = None
 
     def as_json(self) -> dict[str, Any]:
-        """Return the API document: the transcript row with its provenance and timings."""
+        """Return the API document: the transcript row with its provenance and timings.
+
+        ``step_id`` names the step whose thread the turn belongs to (``loop`` on the bypass
+        path); the three ``prompt_*`` fields carry the PromptCadence prompt record a framing turn
+        was rendered from (spec §9), and are ``None`` on every other turn.
+        """
         turn = self.turn
         usage = turn.usage
         return {
             "turn_id": turn.turn_id,
+            "step_id": self.step_id,
             "sequence": turn.sequence,
             "role": turn.role.value,
             "content": turn.content,
@@ -148,6 +158,9 @@ class TurnView:
             "loadcoach_job_id": self.loadcoach_job_id,
             "loadcoach_ms": self.loadcoach_ms,
             "overhead_ms": self.overhead_ms,
+            "prompt_id": self.prompt_id,
+            "prompt_version": self.prompt_version,
+            "prompt_sha256": self.prompt_sha256,
             "created_at": to_rfc3339(self.created_at),
         }
 

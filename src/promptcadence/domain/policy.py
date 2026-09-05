@@ -77,6 +77,7 @@ __all__ = [
     "evaluate_gates",
     "evaluate_plan",
     "evaluate_step",
+    "gate_reason",
     "requires_human_approval",
 ]
 
@@ -158,6 +159,10 @@ class VerdictReason(StrEnum):
     GATED_EGRESS = "gated_egress"
     GATED_STEP_COST = "gated_step_cost"
     MANUAL_MODE = "manual_mode"
+    SCOPED_REAPPROVAL = "scoped_reapproval"
+    """A drift asked for something the intent does not cover (lifecycle §5). Not a verdict
+    :func:`evaluate_step` renders — the reason an ``approval_request`` raised from ``executing``
+    carries, so the record says a person was asked because of a deviation and not a gate."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -680,7 +685,7 @@ def evaluate_step(
     )
     needs_human = requires_human_approval(gate, mode=policy.mode)
     if needs_human and reason is VerdictReason.AUTO_APPROVED:
-        reason = _gate_reason(gate, mode=policy.mode)
+        reason = gate_reason(gate, mode=policy.mode)
     return StepVerdict(
         step_id=step.step_id,
         outcome=outcome,
@@ -694,8 +699,20 @@ def evaluate_step(
     )
 
 
-def _gate_reason(gate: GateVerdict, *, mode: ApprovalMode) -> VerdictReason:
-    """Return the reason a step needs a person, preferring the gate that actually fired."""
+def gate_reason(gate: GateVerdict, *, mode: ApprovalMode) -> VerdictReason:
+    """Return the reason a minting needs a person, preferring the gate that actually fired.
+
+    Public because the bypass path asks the same question at the minting of its default intent
+    (ADR-0049 rule 3): the reason on that request must be the same vocabulary a planned step's
+    request carries, or the two paths would explain the same pause in two ways.
+
+    Args:
+        gate: What the gates said at minting.
+        mode: The configured approval mode.
+
+    Returns:
+        ``manual_mode`` in manual mode; otherwise the gate that fired, egress before cost.
+    """
     if mode is ApprovalMode.MANUAL:
         return VerdictReason.MANUAL_MODE
     if gate.egress_gated:

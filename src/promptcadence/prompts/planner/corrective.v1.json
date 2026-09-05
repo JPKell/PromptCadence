@@ -1,0 +1,34 @@
+{
+  "prompt_id": "planner.corrective",
+  "version": "1.0.0",
+  "schema_version": "1.0",
+  "purpose": "Feed every validation issue back to the planner at once, so a bounded corrective budget is spent on correction rather than on discovering one problem per attempt.",
+  "task": "tools.plan",
+  "capability": "structured_output",
+  "system": null,
+  "template": "Your previous plan was refused by the validator, which reported {{ issue_count }} issue(s):\n{{ issues }}\n\nReturn a corrected plan document that fixes every issue listed, keeps everything that was not refused, and again contains nothing but the JSON document.",
+  "variables": {
+    "issue_count": {
+      "type": "integer",
+      "required": true,
+      "description": "How many issues the validator reported.",
+      "minimum": 1
+    },
+    "issues": {
+      "type": "string",
+      "required": true,
+      "description": "The issues rendered by Python, one per line, each naming the step and the field (PlanIssue.message)."
+    }
+  },
+  "response": {
+    "format": "json",
+    "json_schema_ref": null,
+    "expectations": [
+      "A single JSON object with a `steps` array, re-validated exactly as the first draft was."
+    ]
+  },
+  "metadata": {
+    "change_reason": "First version. Every issue at once, by design: plan.py's module docstring explains why a validator that reports one problem per attempt spends a two-attempt budget on bookkeeping.",
+    "owner": "promptcadence"
+  }
+}

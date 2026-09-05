@@ -17,7 +17,7 @@ a move rather than a rewrite (spec §10, the ThreadRack rejection).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from baseaicore import ConflictError, NotFoundError, TokenUsage, is_supported
 from sqlalchemy import func, select
@@ -34,7 +34,7 @@ from promptcadence.domain.threads import (
 from promptcadence.infrastructure.db import models
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from datetime import datetime
 
     from sqlalchemy.orm import Session, sessionmaker
@@ -168,15 +168,24 @@ class SqlThreadStore:
         return build_snapshot(thread_id, self.turns(thread_id), taken_at=taken_at)
 
 
-def thread_row(thread: Thread) -> models.Thread:
+def thread_row(thread: Thread, *, step_id: str) -> models.Thread:
     """Map a domain thread onto its row, for a caller composing it into a larger transaction.
 
-    The loop opens a thread in the same write as the claim that starts it (T3) and the intent it
-    mints — one transaction, one event set (ADR-0044) — which :meth:`SqlThreadStore.create_thread`
+    The loop opens a thread in the same write as the transition that starts a step — T3 for the
+    bypass loop, ``step.started`` for a planned step — which :meth:`SqlThreadStore.create_thread`
     cannot join because it owns its own session. This is the mapping without the session.
+
+    Args:
+        thread: The package-shaped thread.
+        step_id: The step this thread is the transcript of; ``loop`` on the bypass path. A host
+            column, not a package field, so the thread package stays free of PromptCadence's
+            vocabulary (spec §10).
     """
     return models.Thread(
-        id=thread.thread_id, trajectory_id=thread.owner_id, created_at=thread.created_at
+        id=thread.thread_id,
+        trajectory_id=thread.owner_id,
+        step_id=step_id,
+        created_at=thread.created_at,
     )
 
 
@@ -186,6 +195,8 @@ def turn_row(
     loadcoach_job_id: str | None = None,
     loadcoach_ms: float | None = None,
     overhead_ms: float | None = None,
+    prompt: tuple[str, str, str] | None = None,
+    tool_calls: Sequence[Mapping[str, Any]] | None = None,
 ) -> models.Turn:
     """Map a domain turn onto the ``turns`` row, with the host-only columns the row carries.
 
@@ -195,6 +206,12 @@ def turn_row(
             recovery reconciles against and the explanation links to.
         loadcoach_ms: LoadCoach's own ``total_ms`` for the turn.
         overhead_ms: PromptCadence's time around the call, reported separately (spec §15).
+        prompt: ``(prompt_id, version, sha256)`` of the PromptCadence prompt record this turn's
+            text was rendered from (spec §9), or ``None`` for a turn whose text is the caller's,
+            the model's or a tool's.
+        tool_calls: The calls an assistant turn requested, verbatim from the wire, or ``None``.
+            Persisted so the calls survive a park or a crash between the turn and their
+            execution.
 
     Returns:
         The row, ready to be added to a session the caller owns.
@@ -203,6 +220,10 @@ def turn_row(
     row.loadcoach_job_id = loadcoach_job_id
     row.loadcoach_ms = loadcoach_ms
     row.overhead_ms = overhead_ms
+    if prompt is not None:
+        row.prompt_id, row.prompt_version, row.prompt_sha256 = prompt
+    if tool_calls:
+        row.tool_calls_json = [dict(call) for call in tool_calls]
     return row
 
 

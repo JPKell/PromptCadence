@@ -1,0 +1,54 @@
+{
+  "prompt_id": "planner.draft",
+  "version": "1.0.0",
+  "schema_version": "1.0",
+  "purpose": "Ask a local model for a plan of steps over the caller's task, as JSON, for PromptCadence to validate against its own schema and approve against policy.",
+  "task": "tools.plan",
+  "capability": "structured_output",
+  "system": "You draft plans for a governed agent harness. You propose; you do not execute, and you do not decide whether the plan runs — a deterministic validator checks the document and an approval policy decides each step. Return only the JSON document: no prose before or after it, no code fence.",
+  "template": "TASK\n{{ task }}\n\nDATA CLASSIFICATION\nThe task's data is classified \"{{ classification }}\". A step may declare that level or a lower one, never a higher one. A step that reads the task text itself handles data at the task's level.\n\nTOOLS AVAILABLE TO THIS TRAJECTORY\n{{ tools }}\nDeclare only tools from this list. A step that needs no tool declares an empty list.\n\nTIERS\n{{ tiers }}\nDeclare exactly one tier name from this list per step.\n\nPLAN\nProduce between 1 and {{ max_steps }} steps. Each step is one unit of work a single model session can finish with the tools it declares. Steps form a directed acyclic graph through depends_on. Keep the plan as short as the task allows: a one-step plan is the right plan for a one-step task.\n\nFOR EACH STEP\n- step_id: a short identifier unique within the plan, such as \"s1\".\n- description: what the step must achieve, in one or two sentences.\n- depends_on: the step_ids that must finish first; [] when none.\n- tools: the tools the step will call, from the list above; [] when none.\n- tier: one tier name from the list above.\n- data_classification: \"public\", \"internal\" or \"confidential\", at or below \"{{ classification }}\".\n- expected_turns: your estimate of tool round trips, an integer from 1 to 100. Advisory only; it sizes nothing.\n\nSCHEMA\nThe document must validate against this JSON Schema:\n{{ schema }}\n\nRETURN\n{\"steps\": [ ... ]}\nand nothing else.",
+  "variables": {
+    "task": {
+      "type": "string",
+      "required": true,
+      "description": "The caller's task, verbatim (spec §9: caller prompts are passed through unmodified)."
+    },
+    "classification": {
+      "type": "string",
+      "required": true,
+      "description": "The trajectory's declared data classification: public, internal or confidential."
+    },
+    "tools": {
+      "type": "string",
+      "required": true,
+      "description": "The trajectory allowlist rendered by Python as one line per tool with its registered description, so the model declares names it did not invent."
+    },
+    "tiers": {
+      "type": "string",
+      "required": true,
+      "description": "The configured tiers rendered by Python as one line per tier: name, local or remote, and the classification ceiling."
+    },
+    "max_steps": {
+      "type": "integer",
+      "required": true,
+      "description": "planning.max_plan_steps, the upper bound on step count.",
+      "minimum": 1
+    },
+    "schema": {
+      "type": "string",
+      "required": true,
+      "description": "PromptCadence's committed plan schema (domain/plan.schema.json), shown to the model. Shown, never handed to LoadCoach for validation (ADR-0041)."
+    }
+  },
+  "response": {
+    "format": "json",
+    "json_schema_ref": null,
+    "expectations": [
+      "A single JSON object with a `steps` array, validated by PromptCadence against PLAN_SCHEMA and lifecycle §4.1's five rules."
+    ]
+  },
+  "metadata": {
+    "change_reason": "First version. The rules restated here are statements of the validator, not the validator: domain/plan.py decides, and this text exists so an honest model can satisfy checks it would otherwise fail by accident.",
+    "owner": "promptcadence"
+  }
+}

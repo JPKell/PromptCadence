@@ -26,16 +26,18 @@ import json
 from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
 from baseaicore import DataClassification, ValidationError, canonical_json, sha256_of
 
 from promptcadence.domain.errors import PlanInvalidError
+from promptcadence.domain.events import EventType
 
 __all__ = [
     "PLAN_SCHEMA",
     "PLAN_SCHEMA_ID",
     "Plan",
+    "PlanDrafted",
     "PlanIssue",
     "PlanIssueReason",
     "PlanStep",
@@ -806,3 +808,35 @@ def schema_document() -> str:
     it against, so the schema the model is shown and the schema this module enforces cannot drift.
     """
     return canonical_json(PLAN_SCHEMA) + "\n"
+
+
+@dataclass(frozen=True, slots=True)
+class PlanDrafted:
+    """``plan.drafted`` — one drafting attempt, valid or not, in the write that recorded it.
+
+    Emitted once per attempt rather than once per plan, because a corrective retry is part of the
+    record: the explanation should show that the model was refused twice before it was approved.
+    The body carries the digest, the counts and the attempt number — never a step description,
+    which is model output (``domain.events``).
+    """
+
+    event_type: ClassVar[EventType] = EventType.PLAN_DRAFTED
+    trajectory_id: str
+    plan_id: str
+    attempt: int
+    valid: bool
+    step_count: int
+    issue_count: int
+    document_sha256: str
+
+    def as_canonical(self) -> dict[str, Any]:
+        """Return the persisted and streamed mapping form."""
+        return {
+            "trajectory_id": self.trajectory_id,
+            "plan_id": self.plan_id,
+            "attempt": self.attempt,
+            "valid": self.valid,
+            "step_count": self.step_count,
+            "issue_count": self.issue_count,
+            "document_sha256": self.document_sha256,
+        }

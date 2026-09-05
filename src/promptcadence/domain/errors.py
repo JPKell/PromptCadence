@@ -31,6 +31,7 @@ __all__ = [
     "IllegalTransitionError",
     "LoadCoachError",
     "LoadCoachUnavailableError",
+    "PlanDraftFailedError",
     "PlanInvalidError",
     "ProjectUnknownError",
     "SchemaVersionUnsupportedError",
@@ -187,6 +188,16 @@ class UnpricedEgressRefusedError(SuiteError):
     """A remote tier named no pricing source. Unpriced egress is refused, not free (ADR-0030)."""
 
     code: ClassVar[str] = ErrorCode.UNPRICED_EGRESS_REFUSED
+
+
+class PlanDraftFailedError(SuiteError):
+    """The planner spent its corrective budget without producing a valid plan (T7).
+
+    ``details["attempts"]`` lists every attempt's issue reasons, so the failure names what the
+    model could not fix rather than only that it did not.
+    """
+
+    code: ClassVar[str] = ErrorCode.PLAN_DRAFT_FAILED.value
 
 
 class ApprovalInvalidStateError(SuiteError):

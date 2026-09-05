@@ -129,7 +129,7 @@ def schema_harness(monkeypatch: pytest.MonkeyPatch, tmp_path: object) -> Iterato
 # --------------------------------------------------------------------------------------------
 
 
-def test_t3_claims_in_one_write_with_thread_task_turn_intent_and_both_events(
+def test_t3_claims_in_one_write_with_the_intent_and_both_events(
     harness: Harness,
 ) -> None:
     trajectory_id = harness.submit()
@@ -144,10 +144,9 @@ def test_t3_claims_in_one_write_with_thread_task_turn_intent_and_both_events(
         "trajectory.claimed",
         "intent.minted",
     ]
-    (task_turn,) = harness.service.turns(trajectory_id)
-    assert task_turn.turn.role.value == "user"
-    assert task_turn.turn.content == "summarize ./notes"
-    assert task_turn.turn.provenance.intent_revision == 1
+    # Phase 7: the thread opens at the step's first dispatch (``step.started``), on both paths,
+    # so the claim leaves the intent and nothing to converse in yet.
+    assert harness.service.turns(trajectory_id) == []
     with harness.database.read() as session:
         intent = session.execute(select(models.ExecutionIntent)).scalar_one()
     assert intent.minted_by == "bypass_default"
@@ -162,19 +161,14 @@ def test_a_second_worker_cannot_claim_the_same_trajectory(harness: Harness) -> N
     assert harness.controller("host:1/1").next_queued() is None
 
 
-def test_a_planned_trajectory_is_claimed_and_failed_with_the_cause(harness: Harness) -> None:
-    """No planner before Phase 7: loud (T2 then T7 in one write), never queued forever."""
+def test_a_planned_trajectory_is_claimed_for_planning(harness: Harness) -> None:
+    """T2: the claim takes the lease and nothing more; drafting is ``run``'s (Phase 7)."""
     trajectory_id = harness.submit(bypass_planning=None)
     assert harness.service.get(trajectory_id).bypass_planning is False
-    assert harness.controller().claim(trajectory_id) is TrajectoryState.FAILED
+    assert harness.controller().claim(trajectory_id) is TrajectoryState.PLANNING
     view = harness.service.get(trajectory_id)
-    assert view.error_code == ErrorCode.PLAN_DRAFT_FAILED.value
-    assert "Phase 7" in (view.halted_reason or "")
-    assert harness.events(trajectory_id) == [
-        "trajectory.created",
-        "trajectory.claimed",
-        "trajectory.failed",
-    ]
+    assert view.lease_owner == "host:1/0"
+    assert harness.events(trajectory_id) == ["trajectory.created", "trajectory.claimed"]
 
 
 def test_the_tier_pin_is_honoured_by_the_minted_intent(harness: Harness) -> None:
@@ -208,9 +202,11 @@ def test_a_text_profile_turn_completes_on_a_declared_stop(harness: Harness) -> N
         "trajectory.created",
         "trajectory.claimed",
         "intent.minted",
+        "step.started",
         "turn.started",
         "budget.debited",
         "turn.completed",
+        "step.completed",
         "trajectory.completed",
     ]
     turns = harness.service.turns(trajectory_id)
@@ -263,23 +259,56 @@ def test_a_schema_validated_result_completes_the_trajectory(schema_harness: Harn
     view = schema_harness.service.get(trajectory_id)
     assert view.completed_at is not None
     assert view.lease_owner is None
-    assert schema_harness.events(trajectory_id)[-2:] == ["turn.completed", "trajectory.completed"]
-    completed = schema_harness.service.events(trajectory_id)[-2]
+    assert schema_harness.events(trajectory_id)[-3:] == [
+        "turn.completed",
+        "step.completed",
+        "trajectory.completed",
+    ]
+    completed = schema_harness.service.events(trajectory_id)[-3]
     assert completed.data["schema_validated"] is True
     assert completed.data["decision"] == "complete"
+
+
+def test_no_eligible_model_escalates_to_a_scoped_reapproval_or_halts_when_the_order_ends(
+    harness: Harness,
+) -> None:
+    """Spec §13's ``NO_ELIGIBLE_MODEL`` cell, real at Phase 7.
+
+    The intent's tiers cannot serve and the next tier in the escalation order is outside the
+    intent: a ``tier_escalation`` deviation (lifecycle §5), whose disposition is a scoped
+    re-approval carrying the next tier. When the order is exhausted there is nothing to grant, and
+    the trajectory halts with the cause naming the failure.
+    """
+    harness.fake.script(ScriptedError("NO_ELIGIBLE_MODEL", details={"candidates": []}))
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.AWAITING_APPROVAL
+    view = harness.service.get(trajectory_id)
+    assert "no_eligible_model" in (view.halted_reason or "")
+    assert harness.events(trajectory_id)[-3:] == [
+        "turn.started",
+        "deviation.detected",
+        "approval.requested",
+    ]
+    with harness.database.read() as session:
+        request = session.execute(select(models.ApprovalRequest)).scalar_one()
+        deviation = session.execute(select(models.Deviation)).scalar_one()
+    assert request.kind == "reapproval"
+    assert request.detail_json is not None
+    assert request.detail_json["category"] == "tier_escalation"
+    assert request.detail_json["next_tier"] == "local_large"
+    assert deviation.category == "tier_escalation"
+
+    harness.fake.script(ScriptedError("NO_ELIGIBLE_MODEL", details={"candidates": []}))
+    trajectory_id, state = _claim_and_run(harness, tier="local_large")  # last in the order
+    assert state is TrajectoryState.HALTED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.TIER_UNAVAILABLE.value
+    assert "escalation order is exhausted" in (view.halted_reason or "")
 
 
 def test_loadcoach_errors_halt_with_the_mapped_code_and_the_original_in_the_cause(
     harness: Harness,
 ) -> None:
-    harness.fake.script(ScriptedError("NO_ELIGIBLE_MODEL", details={"candidates": []}))
-    trajectory_id, state = _claim_and_run(harness)
-    assert state is TrajectoryState.HALTED
-    view = harness.service.get(trajectory_id)
-    assert view.error_code == ErrorCode.TIER_UNAVAILABLE.value
-    assert "NO_ELIGIBLE_MODEL" in (view.halted_reason or "")
-    assert harness.events(trajectory_id)[-2:] == ["turn.started", "trajectory.halted"]
-
     harness.fake.script(ScriptedError("CONTEXT_LIMIT_EXCEEDED"))
     _, state = _claim_and_run(harness)
     assert harness.service.list(state=TrajectoryState.HALTED)[0][0].error_code == (
@@ -432,18 +461,27 @@ def test_a_budget_overrun_is_recorded_and_continued_under_the_default_scope(
     assert deviation.detail_json["tokens_spent"] == 1100
 
 
-def test_a_budget_overrun_halts_for_want_of_reapproval_under_any_deviation(
+def test_a_budget_overrun_parks_for_scoped_reapproval_under_any_deviation(
     harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Under ``any_deviation`` a budget overrun is a scoped re-approval (lifecycle §5), and at
+    Phase 7 that is a real T10: one request, scoped to the drifted step, carrying what it asked."""
     monkeypatch.setenv("PROMPTCADENCE_PLANNING__REAPPROVAL_SCOPE", "any_deviation")
     strict = Harness(_cheap_estimates(load_settings().settings), harness.database, harness.fake)
     strict.fake.script(ScriptedGeneration(input_tokens=900, output_tokens=200))
     trajectory_id, state = _claim_and_run(strict, token_budget=1000)
-    assert state is TrajectoryState.HALTED
+    assert state is TrajectoryState.AWAITING_APPROVAL
     view = strict.service.get(trajectory_id)
-    assert view.error_code == ErrorCode.DEVIATION_HALTED.value
     assert "budget_overrun" in (view.halted_reason or "")
-    assert "Phase 7" in (view.halted_reason or "")
+    assert view.lease_owner is None
+    with strict.database.read() as session:
+        request = session.execute(select(models.ApprovalRequest)).scalar_one()
+    assert request.status == "pending"
+    assert request.kind == "reapproval"
+    assert request.step_ids_json == ["loop"]
+    assert request.detail_json is not None
+    assert request.detail_json["category"] == "budget_overrun"
+    assert request.detail_json["tokens_spent"] == 1100
 
 
 def test_a_remote_answer_on_a_local_tier_is_a_violation_that_halts(harness: Harness) -> None:

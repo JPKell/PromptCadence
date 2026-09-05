@@ -29,6 +29,12 @@ row per revision, none ever updated (ADR-0056 §3). ``trajectories.tier_snapshot
 foreign key deliberately: a snapshot is content-addressed and shared by every trajectory whose
 configuration matched, so a cascade from one trajectory must never reach it.
 
+Phase 7 (migration ``0007``) adds the planned path's record: a ``step_id`` on ``threads`` (one
+thread per step), prompt provenance on ``turns``, the drafting attempt's usage and validity on
+``plans``, execution state on ``plan_steps``, the request's ``kind`` and ``detail_json`` on
+``approval_requests``, and drops ``deviations.turn_id``'s foreign key — a ``tier_escalation``
+names a turn that was announced and never answered.
+
 Phase 4 adds ``tool_call_records`` (migration ``0004``) and one column on ``turns``. The column is
 ``tool_call_id``: the domain has always refused a ``TOOL`` turn that names no call, and a
 non-``TOOL`` turn that names one, and until Phase 4 nothing wrote either, so the row had nowhere to
@@ -200,6 +206,11 @@ class Thread(Base):
     trajectory_id: Mapped[str] = mapped_column(
         String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
     )
+    # One thread per step (Phase 7, migration 0007): a planned trajectory's steps each run their
+    # own transcript so a parallel pair never interleaves, and the bypass loop's one thread carries
+    # the synthetic step id ``loop`` — the same shape in both modes, never a nullable column that
+    # every reader would have to branch on (ADR-0056 §1).
+    step_id: Mapped[str] = mapped_column(String(64), nullable=False, default="loop")
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
 
     __table_args__ = (Index("ix_threads_trajectory_id", "trajectory_id"),)
@@ -245,6 +256,16 @@ class Turn(Base):
     overhead_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     loadcoach_job_id: Mapped[str | None] = mapped_column(String(60), nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    # Spec §9: PromptCadence's own prompt records are recorded on the turn that used them. Set on
+    # the step-framing turn a planned step opens with; ``NULL`` on every turn whose text is the
+    # caller's, the model's or a tool's (migration 0007).
+    prompt_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    prompt_sha256: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    # The tool calls an assistant turn requested, verbatim from the wire, so a step resumed after
+    # a scoped re-approval or a crash executes the calls the model already asked for instead of
+    # losing them (migration 0007). ``NULL`` on a turn that requested none.
+    tool_calls_json: Mapped[list[Any] | None] = mapped_column(PortableJSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
 
     __table_args__ = (
@@ -342,6 +363,25 @@ class Plan(Base):
     raw_document: Mapped[str] = mapped_column(Text, nullable=False)
     validated_json: Mapped[dict[str, Any]] = mapped_column(PortableJSON, nullable=False)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Phase 7 (migration 0007): every drafting attempt is a row, valid or not, so the record shows
+    # what the model proposed each time it was refused. ``validated_json`` is ``{}`` and
+    # ``issues_json`` names every issue on an invalid attempt; the planning call's own usage and
+    # subject are kept here — the four token classes, never money (ADR-0030) — because the call
+    # is not a turn and runs under no intent, so it is not a ledger debit (contract 1: debits
+    # occur under an intent on every turn).
+    valid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    issues_json: Mapped[list[Any] | None] = mapped_column(PortableJSON, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    loadcoach_job_id: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    model_canonical_id: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    loadcoach_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prompt_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    prompt_sha256: Mapped[str | None] = mapped_column(String(71), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
 
     __table_args__ = (Index("ix_plans_trajectory_id", "trajectory_id"),)
@@ -364,6 +404,12 @@ class PlanStep(Base):
     tier: Mapped[str] = mapped_column(String(60), nullable=False)
     data_classification: Mapped[str] = mapped_column(String(20), nullable=False)
     expected_turns: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Phase 7 (migration 0007): the step's execution state, which is what the ready set is computed
+    # from — ``pending`` until dispatched, ``running`` while a thread is open, ``committed`` on a
+    # declared finish. A halt ends the trajectory and leaves the step as it was.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    started_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
 
     __table_args__ = (UniqueConstraint("plan_id", "step_id", name="uq_plan_steps_plan_id_step_id"),)
 
@@ -414,6 +460,13 @@ class ApprovalRequest(Base):
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     approver_token_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    # Phase 7 (migration 0007): what the grant produces. ``kind`` is one of ``plan``,
+    # ``gated_step``, ``bypass_gate``, ``reapproval`` and ``ceiling_raise``; ``detail_json`` carries
+    # the ask a grant widens (the drift's category and what it wanted); ``resolution_reason`` is
+    # the denier's stated reason, or the timeout's.
+    kind: Mapped[str] = mapped_column(String(30), nullable=False, default="plan")
+    detail_json: Mapped[dict[str, Any] | None] = mapped_column(PortableJSON, nullable=True)
+    resolution_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         Index("ix_approval_requests_trajectory_id_status", "trajectory_id", "status"),
@@ -475,9 +528,11 @@ class Deviation(Base):
     trajectory_id: Mapped[str] = mapped_column(
         String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
     )
-    turn_id: Mapped[str] = mapped_column(
-        String(26), ForeignKey("turns.id", ondelete="CASCADE"), nullable=False
-    )
+    # No foreign key to ``turns`` since migration 0007: a ``tier_escalation`` is a statement about
+    # a turn that was announced (``turn.started``) and never answered, because no permitted tier
+    # could serve it — there is no turn row to point at, and inventing one would be a turn that
+    # did not happen. The id still names the turn the event stream records.
+    turn_id: Mapped[str] = mapped_column(String(26), nullable=False)
     intent_id: Mapped[str] = mapped_column(String(26), nullable=False)
     intent_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     category: Mapped[str] = mapped_column(String(30), nullable=False)
