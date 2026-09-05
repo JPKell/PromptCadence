@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ## [Unreleased]
 
 ### Added
+- **A step's attempts are on the record** (G3). `plan_steps.attempt` (migration `0008`) counts
+  which attempt of a step is running or last ran, and a new `step.retried` event carries each
+  attempt's number, the turn that was announced and never answered, its tier, its cause and its
+  error code — written in the same write that starts the attempt (ADR-0044). The events are the
+  history and the counter is a summary: the bypass loop's synthetic `loop` step has no
+  `plan_steps` row, so an explanation reads attempts from the events and both paths' records stay
+  identical.
+- **`[execution] step_retries`** (G3, default `1`, `ge=0`), the per-step retry budget —
+  configuration, not a constant, the `[planning] corrective_retries` precedent. `0` is one attempt
+  and no repeat.
 - **The model is told which tools it has** (G2). Every executing turn now carries the step's
   declared tool definitions on LoadCoach's `/generate` — name, registered description and argument
   schema, taken verbatim from the tool catalog so the wire and `GET /tools` cannot drift. The set

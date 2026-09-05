@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 from baseaicore import ConfigurationError
 
-from promptcadence.config import InsecureBindingError, load_settings
+from promptcadence.config import (
+    EXAMPLE_CONFIG_TOML,
+    InsecureBindingError,
+    load_settings,
+)
 
 
 def test_zero_configuration_defaults_validate_cleanly(tmp_path: Path) -> None:
@@ -302,3 +306,24 @@ def test_money_amount_parses_and_normalizes_currency(tmp_path: Path) -> None:
     loaded = load_settings(config_path=config_file)
     assert loaded.settings.budget.default_money_ceiling.currency == "USD"
     assert loaded.settings.budget.default_money_ceiling.nanos == 1_000_000_000
+
+
+def test_step_retries_defaults_to_one_and_zero_means_no_repeat(tmp_path: Path) -> None:
+    """ADR-0076's budget is configuration, not a constant, and its default is pinned here.
+
+    ``0`` is one attempt and no repeat — the ``[planning] corrective_retries`` reading exactly —
+    and it must be a legal value, because an operator who wants the old halting behaviour has to
+    be able to ask for it without editing the loop.
+    """
+    assert load_settings(config_path=tmp_path / "absent.toml").settings.execution.step_retries == 1
+
+    target = tmp_path / "no-repeat.toml"
+    target.write_text("[execution]\nstep_retries = 0\n", encoding="utf-8")
+    assert load_settings(config_path=target).settings.execution.step_retries == 0
+
+
+def test_the_shipped_example_config_pins_the_same_step_retries(tmp_path: Path) -> None:
+    """The file `config init` writes must say what the default is, not drift from it."""
+    target = tmp_path / "example.toml"
+    target.write_text(EXAMPLE_CONFIG_TOML, encoding="utf-8")
+    assert load_settings(config_path=target).settings.execution.step_retries == 1

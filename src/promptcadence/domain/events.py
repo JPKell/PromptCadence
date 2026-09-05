@@ -56,6 +56,7 @@ class EventType(StrEnum):
     BUDGET_WINDOW_WAIT = "budget.window_wait"
     EGRESS_EVALUATED = "egress.evaluated"
     DEVIATION_DETECTED = "deviation.detected"
+    STEP_RETRIED = "step.retried"
     STEP_COMPLETED = "step.completed"
     TRAJECTORY_COMPLETED = "trajectory.completed"
     TRAJECTORY_RESUMED = "trajectory.resumed"

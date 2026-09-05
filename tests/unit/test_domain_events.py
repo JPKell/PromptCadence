@@ -38,6 +38,7 @@ _SPEC_17_TYPES = {
     "budget.window_wait",
     "egress.evaluated",
     "deviation.detected",
+    "step.retried",
     "step.completed",
     "trajectory.completed",
     "trajectory.resumed",

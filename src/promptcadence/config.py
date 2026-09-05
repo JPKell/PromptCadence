@@ -262,6 +262,18 @@ class ExecutionSettings(BaseModel):
     max_concurrent_steps: int = Field(default=1, ge=1)
     max_concurrent_remote_steps: int = Field(default=2, ge=1)
     max_turns_per_step: int = Field(default=8, ge=1)
+    step_retries: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "How many times a step's failed turn is repeated under the same ExecutionIntent "
+            "revision (ADR-0076). 0 means one attempt and no repeat; the trajectory then halts "
+            "naming the last cause and every attempt. Only a LoadCoach service failure that "
+            "could plausibly answer differently is repeated — a governance outcome never is. "
+            "There is no backoff, and attempts share the envelope with turns, so "
+            "max_turns_per_step binds too."
+        ),
+    )
     max_steps: int = Field(default=20, ge=1)
     lease_seconds: int = Field(default=60, ge=1)
 
@@ -781,6 +793,7 @@ max_concurrent_trajectories = 1
 max_concurrent_steps = 1
 max_concurrent_remote_steps = 2
 max_turns_per_step = 8
+step_retries = 1             # repeats of a failed turn under the SAME intent (ADR-0076); 0 = none
 max_steps = 20
 lease_seconds = 60
 

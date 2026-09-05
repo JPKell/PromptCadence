@@ -410,6 +410,10 @@ class PlanStep(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     started_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    # Row G3 (migration 0008): which attempt of this step is running or last ran — 1 for a step
+    # that never repeated. A summary of the ``step.retried`` events, which are the history and the
+    # only half the bypass path also has (ADR-0076); never the only source an explanation reads.
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     __table_args__ = (UniqueConstraint("plan_id", "step_id", name="uq_plan_steps_plan_id_step_id"),)
 

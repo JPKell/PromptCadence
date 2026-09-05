@@ -23,7 +23,7 @@ from promptcadence.domain.events import EventType
 from promptcadence.domain.plan import PlanStep
 from promptcadence.domain.tiers import Tier
 
-__all__ = ["StepCompleted", "StepStarted", "dispatchable"]
+__all__ = ["StepCompleted", "StepRetried", "StepStarted", "dispatchable"]
 
 
 def dispatchable(
@@ -110,6 +110,51 @@ class StepStarted:
             "intent_revision": self.intent_revision,
             "approved_tier": self.approved_tier,
             "depends_on": list(self.depends_on),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StepRetried:
+    """``step.retried`` — a repeat of a failed turn, in the write that starts the attempt.
+
+    A retryable LoadCoach service failure repeats the step's turn under the **same** intent
+    revision (`ADR-0076`), so this body names the revision it repeats under rather than a new one:
+    a retry that minted an envelope would be an escalation wearing a repeat's name.
+
+    These events are the attempt **history**. ``plan_steps.attempt`` counts, but only on the
+    planned path — the bypass loop's synthetic ``loop`` step has no such row — so an explanation
+    reads the attempts from here and both paths' records are identical (spec §11 contract 1).
+
+    ``cause`` and ``error_code`` are LoadCoach's own, never model output: this module's rule holds.
+    """
+
+    event_type: ClassVar[EventType] = EventType.STEP_RETRIED
+    trajectory_id: str
+    step_id: str
+    thread_id: str
+    intent_id: str
+    intent_revision: int
+    attempt: int
+    """The attempt this write starts — ``2`` is the first repeat."""
+    failed_turn_id: str
+    """The turn that was announced and never answered."""
+    failed_tier: str
+    cause: str
+    error_code: str
+
+    def as_canonical(self) -> dict[str, Any]:
+        """Return the persisted and streamed mapping form."""
+        return {
+            "trajectory_id": self.trajectory_id,
+            "step_id": self.step_id,
+            "thread_id": self.thread_id,
+            "intent_id": self.intent_id,
+            "intent_revision": self.intent_revision,
+            "attempt": self.attempt,
+            "failed_turn_id": self.failed_turn_id,
+            "failed_tier": self.failed_tier,
+            "cause": self.cause,
+            "error_code": self.error_code,
         }
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from commissioner.sql import DEFAULT_TABLE_PREFIX as EGRESS_TABLE_PREFIX
 from loadledger.sql import DEFAULT_TABLE_PREFIX
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from weightsdb import MigrationRunner, restore
 from weightsdb.testing import temporary_postgres, temporary_sqlite
 
@@ -37,7 +37,7 @@ def test_fresh_database_migrates_to_head_sqlite() -> None:
         runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
         assert runner.current() is None
         outcome = runner.upgrade(backup=False)
-        assert outcome.to_revision == _head() == "0007"
+        assert outcome.to_revision == _head() == "0008"
         assert runner.is_at_head()
 
 
@@ -209,3 +209,44 @@ def test_migrated_schema_matches_the_metadata_autogenerate_would_diff_against() 
         runner.upgrade(backup=False)
         parity = runner.check_parity(Base.metadata)
         assert parity.matches, parity.diff
+
+
+_STEP_AT_0007 = """
+INSERT INTO trajectories (id, task, data_classification, status, tools_json, bypass_planning,
+                          window_days_waited, cancel_requested, created_at, updated_at)
+VALUES ('01J0000000000000000000TRAJ', 'a task', 'internal', 'executing', '[]', 0, 0, 0,
+        '2026-09-05 00:00:00', '2026-09-05 00:00:00');
+INSERT INTO plans (id, trajectory_id, document_sha256, raw_document, validated_json, attempt,
+                   valid, created_at)
+VALUES ('01J0000000000000000000PLAN', '01J0000000000000000000TRAJ', 'sha256:0', '{}', '{}', 1, 1,
+        '2026-09-05 00:00:00');
+INSERT INTO plan_steps (id, plan_id, step_id, sequence, description, depends_on_json, tools_json,
+                        tier, data_classification, expected_turns, status)
+VALUES ('01J0000000000000000000STEP', '01J0000000000000000000PLAN', 's1', 1, 'do it', '[]', '[]',
+        'local_fast', 'internal', 2, 'committed');
+"""
+"""One trajectory, plan and step as ``0007`` shaped them — no ``plan_steps.attempt`` column."""
+
+
+def test_a_step_written_before_0008_upgrades_to_its_first_attempt() -> None:
+    """An existing step row is valid after ``0008`` and reads as the one attempt it in fact had.
+
+    The column is ``NOT NULL``, so the claim worth proving is that rows written before it existed
+    do not have to be rewritten — the server default fills them, and the value it fills with says
+    something true: a step recorded before retries existed never repeated.
+    """
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        runner.upgrade("0007", backup=False)
+        with engine.begin() as connection:
+            for statement in _STEP_AT_0007.strip().split(";\n"):
+                if statement.strip():
+                    connection.execute(text(statement))
+        runner.upgrade(backup=False)
+        with engine.connect() as connection:
+            attempts = (
+                connection.execute(text("SELECT attempt FROM plan_steps WHERE step_id = 's1'"))
+                .scalars()
+                .all()
+            )
+        assert attempts == [1]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from baseaicore import DataClassification, ValidationError
 
-from promptcadence.domain.dispatch import dispatchable
+from promptcadence.domain.dispatch import StepRetried, dispatchable
 from promptcadence.domain.plan import PlanStep
 from promptcadence.domain.tiers import TierSnapshot
 
@@ -119,3 +119,36 @@ def test_a_bound_below_one_and_an_unknown_tier_are_refused(tier_snapshot: TierSn
             max_concurrent_steps=1,
             max_concurrent_remote_steps=2,
         )
+
+
+def test_step_retried_canonical_payload_is_exactly_this() -> None:
+    """The golden an explanation reads a repeat back from (ADR-0076).
+
+    ``plan_steps.attempt`` counts and only on the planned path; these events are the history, so
+    every fact the halt's text and the explanation need — which attempt, which turn was announced
+    and never answered, on which tier, and why — has to be here and nowhere else.
+    """
+    body = StepRetried(
+        trajectory_id="tr1",
+        step_id="s1",
+        thread_id="th1",
+        intent_id="in1",
+        intent_revision=1,
+        attempt=2,
+        failed_turn_id="tu1",
+        failed_tier="local_fast",
+        cause="LoadCoach refused /api/v1/generate with ALL_CANDIDATES_FAILED",
+        error_code="LOADCOACH_ERROR",
+    )
+    assert body.as_canonical() == {
+        "trajectory_id": "tr1",
+        "step_id": "s1",
+        "thread_id": "th1",
+        "intent_id": "in1",
+        "intent_revision": 1,
+        "attempt": 2,
+        "failed_turn_id": "tu1",
+        "failed_tier": "local_fast",
+        "cause": "LoadCoach refused /api/v1/generate with ALL_CANDIDATES_FAILED",
+        "error_code": "LOADCOACH_ERROR",
+    }
