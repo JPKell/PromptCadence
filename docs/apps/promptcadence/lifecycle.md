@@ -196,6 +196,17 @@ Rules, each load-bearing:
   plan retains the original); a scoped re-approval **supersedes** the intent with a new revision
   rather than editing it, and the superseded revision is retained — the audit trail holds every
   envelope a turn ever ran under.
+* **A retry is a repeat, not a re-approval.** When a turn fails for a reason the loop may repeat —
+  a LoadCoach service failure at the call site, enumerated in
+  [ADR-0076](../../adr/0076-a-step-retry-is-a-repeat-under-the-same-intent.md) — the next attempt
+  is a **new turn under this same intent revision**: the same tiers in the same order, the same
+  tools, the same classification ceiling and the same budget slice, on the step's thread, through
+  the same pre-flight order and the same debit. Nothing is minted and nothing widens. The repeat is
+  bounded by `[execution] step_retries` and, together with the step's turns, by `max_turns`; when
+  the budget is spent the trajectory halts (T12) naming the last cause **and every attempt**.
+  Widening is the other mechanism — a `tier_escalation` drift's scoped re-approval (§5) — and the
+  repeat is exhausted first, because an escalation claims the approved tiers cannot serve and one
+  untried failure is not that claim.
 * **Universal.** The bypass path mints one default intent from `TierPolicy`'s defaults
   (`policy.default_tier`, the trajectory allowlist, the trajectory's classification and budget,
   `execution.max_steps` as `max_turns`) before its first turn. Governance invariance
@@ -266,6 +277,16 @@ Two severities exist and are not configurable:
 | `undeclared_tool` | `approved_tools` | The model requests a tool outside the intent. Outside the *trajectory allowlist* as well: the call is refused outright (structured `ToolResult`) and recorded — never re-approvable, because the allowlist is the caller's, not the model's | drift | Inside the trajectory allowlist: continue, recorded | Scoped re-approval even for allowlisted tools |
 | `budget_overrun` | `token_budget` / `money_budget` | The step's actual spend exceeds its intent budget (estimate × 2) | drift | Continue while trajectory ceilings hold, recorded | Scoped re-approval |
 | `turn_overrun` | `max_turns` | The step reaches `max_turns` without a declared finish | drift | Scoped re-approval (a revision may extend `max_turns`) | Same |
+
+**A retry is not a deviation, and it comes before `tier_escalation`.** Nothing about the executed
+reality contradicted the intent — a failed attempt produced no reality at all — so `compare()` sees
+nothing and no category applies. A turn that fails on a retryable LoadCoach service failure
+(ADR-0076) stops the tier ladder and repeats on the same tier under the same intent, up to
+`[execution] step_retries`; only when every permitted tier answers that it *cannot serve*
+(`NO_ELIGIBLE_MODEL`, tier unavailable) is a `tier_escalation` raised, and only then can a scoped
+re-approval widen the envelope. The order is the record's: a repeat says "that attempt failed",
+an escalation says "these tiers cannot do this", and a transient failure is never evidence for the
+second. An exhausted retry budget halts with the last attempt's error code and no deviation row.
 
 Trajectory-level ceiling crossings are **not** deviations — they are the budget machinery's own
 halt/pause (§6); a deviation is always a statement about one turn against one intent.
@@ -438,12 +459,18 @@ that this table does not list; terminal states have no outgoing rows.
 | T9 | `awaiting_approval` | `halted` | Deny, or `request_timeout_hours` elapsed | — | `approval.denied` (or timeout) + `trajectory.halted` |
 | T10 | `executing` | `awaiting_approval` | A hybrid-gated step becomes ready; a drift needs scoped re-approval; a ceiling raise is requested | `approval_request` created; in-flight turns finish first | `approval.requested` |
 | T11 | `executing` | `completed` | All steps terminal-success / declared finish | — | `trajectory.completed` |
-| T12 | `executing` | `halted` | `tier_violation`; re-approval denied; deviation limit; budget exhaustion (halt policy); egress denial with no permitted tier | Cause recorded | `trajectory.halted` |
+| T12 | `executing` | `halted` | `tier_violation`; re-approval denied; deviation limit; budget exhaustion (halt policy); egress denial with no permitted tier; a step's retry budget spent on a LoadCoach service failure ([ADR-0076](../../adr/0076-a-step-retry-is-a-repeat-under-the-same-intent.md)) | Cause recorded, naming every attempt where a retry budget was spent | `trajectory.halted` |
 | T13 | `executing` | `failed` | Unrecoverable error | Cause recorded | `trajectory.failed` |
 | T14 | any non-terminal | `cancelled` | `POST /cancel` or CLI | From `executing`: honoured at the next turn boundary; any in-flight LoadCoach job cancelled | `trajectory.cancelled` |
 | T15 | `planning` or `executing` | `awaiting_window` | The per-day ceiling would be exceeded by the plan or by the next step, and `on_daily_exhausted = "window"` | Parked-from state and the next UTC-day edge persisted; in-flight turns finish first; lease released | `budget.window_wait` |
 | T16 | `awaiting_window` | the state it parked from | The UTC day rolls | The per-day ceiling now admits the plan or step; `window_wait_max_days` not exceeded; lease re-acquired | `trajectory.resumed` |
 | T17 | `awaiting_window` | `halted` | `window_wait_max_days` elapsed — the ceiling still refused at that many day edges | Cause recorded | `trajectory.halted` |
+
+**A step failure during execution is T12, or T13 when nothing can be recovered — never T7.** T7 is
+`planning → failed`: the plan *draft* failed after `[planning] corrective_retries`. A step whose
+LoadCoach call fails, with the retry budget spent, halts at **T12** with `LOADCOACH_ERROR` and
+LoadCoach's own code in the cause; an unreachable LoadCoach mid-turn is **T13** (`failed`) with
+`LOADCOACH_UNAVAILABLE`, after cancelling any job the request may have started.
 
 Turn-loop activity inside `executing` (turns, tool calls, debits, egress verdicts, compactions)
 emits its own events but is not a state transition; `executing` is one state, not many.

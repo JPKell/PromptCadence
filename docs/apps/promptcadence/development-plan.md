@@ -353,8 +353,11 @@ dispatch under the disjoint-surface rule; the contract-1 diff with its named all
 `approvals list|approve|deny`, `tiers list|show|check`, `token create|list|revoke`,
 `GET /approvals`, `/plan`, `/intents`, the `tiers` health component and a real
 `GET /system/status`. Two things the plan's wording implied are **not** in this version and are
-recorded rather than approximated: a per-step *retry/wait* policy (spec §13 — no §12 key exists
-for one; the cells halt with the cause), and LoadCoach reporting whether it has a remote provider
+recorded rather than approximated: a per-step *retry/wait* policy (spec §13 — no §12 key existed
+for one; the cells halted with the cause. Built at row G3 on 2026-09-05 as `[execution]
+step_retries` under [ADR-0076](../../adr/0076-a-step-retry-is-a-repeat-under-the-same-intent.md):
+a repeat, never a wait — no `waiting` state and no backoff were added), and LoadCoach reporting
+whether it has a remote provider
 (lifecycle §3 — a parameter with the safe default `False` until LC-E1 supplies the fact, so the
 hybrid egress gate on the planned path is exercised against the fake and cannot fire in a real
 deployment before LC-E1). The planner's own spend is recorded on the `plans` row, not the ledger

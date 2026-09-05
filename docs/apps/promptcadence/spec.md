@@ -333,6 +333,12 @@ deliberate rejection, like `LoadCoachClient`.
                 max_concurrent_steps = 1        # >1 dispatches only across disjoint surfaces
                 max_concurrent_remote_steps = 2
                 max_turns_per_step = 8          # tool round trips within one step
+                step_retries = 1                # repeats of a failed turn under the SAME intent
+                                                # (ADR-0076). 0 is one attempt and no repeat. Only
+                                                # a LoadCoach service failure is repeated; a
+                                                # governance outcome never is. Attempts and turns
+                                                # draw on one envelope: max_turns_per_step also
+                                                # binds. No backoff — a repeat is immediate
                 max_steps = 20                  # bypass mode: max turns in the direct loop
                 lease_seconds = 60              # trajectory worker lease (recovery per ADR-0036)
 [budget]        default_money_ceiling = { currency = "USD", nanos = 5_000_000_000 }   # $5.00
@@ -481,27 +487,46 @@ caller as `INTERNAL_ERROR`:
 
 | LoadCoach code | PromptCadence behaviour | Surfaced as |
 |---|---|---|
-| `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT` | Retry per step policy, then fallback per plan, then halt | `LOADCOACH_ERROR` with the original code in `details` |
+| `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT`, `PROVIDER_PROTOCOL_ERROR`, `ALL_CANDIDATES_FAILED`, `INSUFFICIENT_RESOURCES`, `INTERNAL_ERROR` | Repeated under the same intent up to `[execution] step_retries` (ADR-0076); then halt naming the last cause and every attempt | `LOADCOACH_ERROR` with the original code in `details` |
 | `NO_ELIGIBLE_MODEL` | The tier cannot serve this step now; fall to the intent's next `fallback_tier`, else raise a `tier_escalation` deviation (scoped re-approval) or halt | `TIER_UNAVAILABLE`, candidates and reasons preserved |
-| `QUEUE_FULL`, `MAX_WAIT_EXCEEDED` | Trajectory waits with a reason, then halts | `LOADCOACH_ERROR` |
+| `QUEUE_FULL`, `MAX_WAIT_EXCEEDED`, `RATE_LIMITED` | Repeated under the same intent up to `step_retries`, then halts. It does **not** wait: there is no `waiting` state and no backoff (ADR-0076) | `LOADCOACH_ERROR` |
 | `CONTEXT_LIMIT_EXCEEDED` | Trigger compaction and retry once; then halt | `COMPACTION_FAILED` if compaction cannot fit it |
 | `VALIDATION_FAILED`, `STRUCTURED_OUTPUT_INVALID` | LoadCoach's own retry/fallback ran; PromptCadence records and applies its bounded corrective (planner only) | `PLAN_DRAFT_FAILED` / `LOADCOACH_ERROR` |
 | connection refused / DNS | Trajectory parks in `waiting` with the reason; health degraded | `LOADCOACH_UNAVAILABLE` |
 | `TASK_PROFILE_NOT_FOUND` | The tier is configured here and cannot be served there; `promptcadence tiers check` names it | `TIER_UNAVAILABLE` with `reason = task_profile_not_found` |
-| Every other LoadCoach code — `PROVIDER_PROTOCOL_ERROR`, `PROVIDER_REJECTED`, `ALL_CANDIDATES_FAILED`, `MODEL_NOT_FOUND`, `CAPABILITY_UNSUPPORTED`, `INSUFFICIENT_RESOURCES`, `GENERATION_CANCELLED`, `JOB_NOT_FOUND`, `JOB_NOT_CANCELLABLE`, its web layer's `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMITED`, `INTERNAL_ERROR`, and any code this build does not know | Halt with the cause naming the code | `LOADCOACH_ERROR` with the original code and details preserved — never `INTERNAL_ERROR` |
-| The client's own read timeout | Cancel the job the request may have started, then halt | `LOADCOACH_ERROR` with `reason = client_timeout` |
+| Every other LoadCoach code — `PROVIDER_REJECTED`, `MODEL_NOT_FOUND`, `CAPABILITY_UNSUPPORTED`, `GENERATION_CANCELLED`, `JOB_NOT_FOUND`, `JOB_NOT_CANCELLABLE`, its web layer's `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, and any code this build does not know | Halt with the cause naming the code, **without a repeat**: the same request gets the same answer, and an unknown code cannot be shown to be transient | `LOADCOACH_ERROR` with the original code and details preserved — never `INTERNAL_ERROR` |
+| The client's own read timeout | Cancel the job the request may have started, then repeat under the same intent up to `step_retries`, then halt | `LOADCOACH_ERROR` with `reason = client_timeout` |
 
 The mapping is complete from Phase 3 (`infrastructure/loadcoach.py`, `LOADCOACH_CODE_MAP`, walked
 by a test against LoadCoach's own spec §13 list); the *behaviour* column is the target. The
 `NO_ELIGIBLE_MODEL` and `TASK_PROFILE_NOT_FOUND` cells are real from Phase 7: the intent's
 fallback tiers are tried in order, and when none can serve the turn is a `tier_escalation`
 deviation whose scoped re-approval carries the next tier in the escalation order, or a halt
-naming an exhausted order. **No per-step retry policy is configured in this version** — §12
-has no key for one — so the "retry" and "wait" cells halt with the cause; adding one is an
-additive `[execution]` key, not an ADR. And there is no `waiting` state in
-[Lifecycle §8.1](lifecycle.md): until one is specified, an unreachable LoadCoach mid-turn is T13
-(`failed`) with the cause, after cancelling any job the request may have started — never a silent
-retry of the same request.
+naming an exhausted order.
+
+**The per-step retry is `[execution] step_retries`**
+([ADR-0076](../../adr/0076-a-step-retry-is-a-repeat-under-the-same-intent.md), from G3; this
+supersedes this section's earlier statement that no such policy is configured). The ladder a
+failing turn descends is: the intent's permitted tiers in order for a tier that *cannot serve*;
+a **repeat on the same tier under the same intent revision** for a service failure that could
+plausibly answer differently; then `tier_escalation`, whose scoped re-approval is the only thing
+that widens anything. The repeat comes before the escalation, because an escalation claims the
+approved tiers cannot serve the step and one untried failure is not that claim. A repeat is a new
+turn — announced, pre-flighted in ADR-0073's order, debited, counted against `max_turns_per_step` —
+and it is recorded as `plan_steps.attempt` plus a `step.retried` event written in the same write
+that starts it. When the budget is spent the trajectory halts at T12 with the last attempt's error
+code, its cause naming **every** attempt with its tier.
+
+A governance outcome is never repeated. That is structural rather than a list of exceptions: the
+repeat lives at the LoadCoach call site, and egress evaluation, pricing, availability and budget
+all run before the call while every deviation is compared after it, so an egress denial, an
+unpriced-egress refusal, a `tier_violation`, a deviation limit, a denied re-approval, a budget
+ceiling and an approval timeout are out of the repeat's reach entirely.
+
+There is still no `waiting` state in [Lifecycle §8.1](lifecycle.md) and `step_retries` introduces
+no backoff: an unreachable LoadCoach mid-turn is T13 (`failed`) with the cause, after cancelling
+any job the request may have started — never a silent retry of the same request, and never an
+immediate hammering of a service that is down.
 
 Behavioural rules:
 
@@ -595,7 +620,10 @@ executing unisolated; all other tools work everywhere.
   `approval.requested`, `approval.granted`, `approval.denied`, `intent.minted`, `step.started`,
   `turn.started`, `turn.completed`, `tool.call.started`, `tool.call.completed`,
   `context.compacted`, `budget.debited`, `budget.window_wait`, `egress.evaluated`,
-  `deviation.detected` (carrying the category), `step.completed`, `trajectory.completed`,
+  `deviation.detected` (carrying the category),
+  `step.retried` (carrying the attempt number, the failed turn, its tier, its cause and its error
+  code — written in the same write that starts the attempt, ADR-0076), `step.completed`,
+  `trajectory.completed`,
   `trajectory.resumed`, `trajectory.halted`, `trajectory.failed`, `trajectory.cancelled`,
   `trajectory.recovered`. The emitting transition for each is the
   [Lifecycle §8.2](lifecycle.md) table.
