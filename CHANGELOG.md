@@ -51,6 +51,17 @@ refused before any request reached a remote tier. What did **not** pass, and shi
   read from its row — LoadCoach's message body carries no `tool_calls`, so it could never be
   replayed natively and the next turn failed. The row keeps the empty content the model produced.
 
+### Build
+- **Release plumbing, which had never existed in the shape the suite uses.** `release.yml` gains
+  the `pypi` environment (the trusted publisher's, so a tag push waits for the operator's one
+  approval), a manual `workflow_dispatch` TestPyPI dry run (Packaging and Release Standards §6
+  requires one ahead of a package's first release, and 0.9.0b0 is this package's first), and the
+  hash-pinned build chain: `requirements/release.in` and `requirements/release.lock` (`build`,
+  `hatchling`, `twine`; byte-identical to LoadCoach's and LoadLedger's, which is the
+  reproducibility check) installed with `--require-hashes` before `python -m build
+  --no-isolation`, in both jobs, so the artifact the dry run proved is the artifact the tag
+  builds. CI still installs from ranges; a `ci.lock` is a separate change.
+
 ### Known limitations
 - **No model-directed sandboxed tool call has succeeded on the real stack**, and none can until
   LoadCoach's `/generate` carries tool definitions and `tool_calls` (outstanding-work **G2**). A
