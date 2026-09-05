@@ -6,6 +6,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [0.9.0b0] — 2026-09-04
+
+**The M11 beta.** Cut by operator decision after G1's live demonstration on a real LoadCoach over
+Ollama with the shipped defaults: a bypassed and a (tool-free) planned trajectory completed, their
+records identical minus the plan rows by the contract-1 diff, and a `confidential` trajectory was
+refused before any request reached a remote tier. What did **not** pass, and ships known, is under
+*Known limitations* below.
+
+### Added — Phase 7, gate E: the approval, tier and token surfaces
+- **HTTP:** `GET /approvals` (the pending requests — `kind`, the step ids, the ask, and for a
+  `ceiling_raise` the proposed budget), `POST /approvals/{id}/approve` and
+  `POST /approvals/{id}/deny` (idempotent; a decision on a resolved request is
+  `APPROVAL_INVALID_STATE`, 409); `GET /trajectories/{id}/plan` (every drafting attempt with
+  `valid` and its issues, and the approved plan) and `GET /trajectories/{id}/intents` (every
+  revision, `minted_by`, the gate); `GET /system/status` is real — the pending approval requests,
+  the active trajectories and the ledger position, no placeholder.
+- **CLI:** `promptcadence approvals list|approve|deny` (the token from `PROMPTCADENCE_API_TOKEN`,
+  now a reserved name); `promptcadence tiers list|show|check` — `check` asks LoadCoach whether
+  every configured tier's profile and `tools.plan` resolve, and exits 4 when one does not;
+  `promptcadence token create|list|revoke`; `--follow` ends on `plan.rejected` as it does on the
+  terminal events; `doctor` gains a `tiers` component.
+- **Authentication, the minimum the `approve` scope needs (spec §14):** bearer tokens stored as
+  SHA-256; scopes `read`, `write`, `approve`, `admin` (`admin` grants all; `approve` is
+  deliberately not `write`); `UNAUTHORIZED` 401, `FORBIDDEN` 403, `TOKEN_NOT_FOUND` 404. A
+  loopback bind with no active token is open and records its decisions as `approver:loopback`
+  (LoadCoach's precedent); a non-loopback bind with no token refuses.
+
+### Fixed — Phase 7, gate F: what the real stack forced (gpt-oss:20b under `tools.plan`)
+- The corrective never replays an empty answer as an assistant turn (ModelRack refuses a turn
+  with neither content nor calls), and the validator names an empty document as such: *a model
+  that spends its output budget thinking returns nothing*. A planning call that fails with a
+  LoadCoach error cancels every planning job under the trajectory's key prefix — LoadCoach's own
+  corrective retry refuses its own request in exactly this case and leaves the job `executing`.
+- A LoadCoach **validation** failure on a drafting call (`VALIDATION_ERROR`, `VALIDATION_FAILED`,
+  `STRUCTURED_OUTPUT_INVALID`) is recorded as an empty attempt whose issue names the code, and
+  `corrective_retries` decides whether to try again (spec §13's planner row). Unavailability and
+  every other code still propagate.
+- **`planner.draft` 1.1.0** — the field list is the schema and a tool is one sentence (1.6k
+  characters, from 4.4k). Shown the schema block, the model returned an empty document on every
+  try. `PLAN_SCHEMA` and the five rules are untouched; ADR-0041 never required the schema to be
+  shown.
+- An assistant turn that answered with tool calls alone is replayed as text naming the calls,
+  read from its row — LoadCoach's message body carries no `tool_calls`, so it could never be
+  replayed natively and the next turn failed. The row keeps the empty content the model produced.
+
+### Known limitations
+- **No model-directed sandboxed tool call has succeeded on the real stack**, and none can until
+  LoadCoach's `/generate` carries tool definitions and `tool_calls` (outstanding-work **G2**). A
+  model is never told which tools exist, invents names, and every call is refused and recorded —
+  contract 1 holds; spec §20 #2's sandboxed-tool clause is exercised against the fake only.
+- A failed step halts the trajectory; per-step retry is scheduled (**G3**).
+- `pytest -m isolation -rs` green on a real podman host is an M11 exit condition this release
+  does not carry (outstanding-work §4).
+
 ### Added — Phase 7, gate B: approval in three modes, and minting as its output
 - **`auto`** mints every approved step by policy in the write that approves the plan (T4).
   **`manual`** holds every plan on one `plan` request (T5) — **and holds a bypassed trajectory
