@@ -345,7 +345,7 @@ benchmark, not something to paper over.
 **Gold standards:** the model never decides control flow; approval before execution.
 **Deferred:** compaction, UI, hardening.
 
-**Built (G1, 2026-09-04; `G1_HANDOFF.md`).** Every work item above, in six gates: the planner
+**Built (G1, 2026-09-04; `docs/history/G1_HANDOFF.md`).** Every work item above, in six gates: the planner
 and its prompt pack; approval in three modes on both paths, the bypass gate wired (a `manual`
 or gated `hybrid` bypass parks before any turn, and the grant supersedes the default intent);
 scoped re-approval, tier escalation and the ceiling raise as real T10 requests; ready-set DAG

@@ -102,3 +102,12 @@ docs/api/openapi-v1.json.tmp
 # ---- import-linter cache ----
 # `lint-imports` writes this on every gate run; it is a cache, never an input.
 .import_linter_cache/
+
+# ---- Agent / editor tooling (local state, never a build input) ----
+.agents/
+.obsidian/
+.codex/
+.claude/settings.local.json
+
+# Agent skill lockfile (local tooling state)
+skills-lock.json

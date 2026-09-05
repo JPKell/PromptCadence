@@ -292,7 +292,7 @@ deliberate rejection, like `LoadCoachClient`.
    read as success. **The declared finish must be on the wire.** LoadCoach renders the provider's
    declared reason at `output.finish_reason` in both the `/generate` response and the job
    document since its commit `846348b` (before it, the reason was recorded per
-   attempt and rendered nowhere — the gap `D2_HANDOFF.md` §2 named); the job document also
+   attempt and rendered nowhere — the gap `docs/history/D2_HANDOFF.md` §2 named); the job document also
    carries the validation `checks`, so a turn reconciled after a crash is judged on the same
    facts as one read from the response. PromptCadence reads that field and nothing else for the
    declared finish, and treats its absence — an older LoadCoach — as *absence*: a halt naming the
