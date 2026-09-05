@@ -107,14 +107,17 @@ def test_a_valid_first_draft_is_returned_with_its_provenance(
     assert "summarize ./notes" in request["messages"][1]["content"]
 
 
-def test_the_schema_is_shown_to_the_model_and_never_handed_to_loadcoach(
+def test_the_schema_is_never_handed_to_loadcoach_and_tools_are_described_briefly(
     fake: FakeLoadCoach, client: LoadCoachClient, inputs: PlanningInputs
 ) -> None:
-    """ADR-0041: the prompt shows PLAN_SCHEMA; the request carries no schema for LoadCoach."""
+    """ADR-0041: the request carries no schema for LoadCoach; the prompt names the fields once
+    and each tool by its first sentence (``planner.draft`` 1.1.0)."""
     fake.script(ScriptedGeneration(text=_document(_step())))
     _planner(client).draft(inputs, trajectory_id="01T", on_attempt=lambda _: None)
     request = fake.requests[-1]["body"]
-    assert "promptcadence.local/schemas/plan" in request["messages"][1]["content"]
+    user = request["messages"][1]["content"]
+    assert "promptcadence.local/schemas/plan" not in user and "$schema" not in user
+    assert "- read_file: read a file" in user and "- list_dir: list a directory" in user
     assert "json_schema" not in request
     assert request.get("overrides") is None
 

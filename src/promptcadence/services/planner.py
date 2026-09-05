@@ -9,8 +9,10 @@ once: a two-attempt budget is spent immediately by a validator that reports one 
 
 What this module does not do, each by decision:
 
-* It never hands the schema to LoadCoach for validation (ADR-0041) — the schema is *shown* to the
-  model in the prompt, and the profile's own ``require_valid_json`` is all LoadCoach checks.
+* It never hands the schema to LoadCoach for validation (ADR-0041), and since ``planner.draft``
+  1.1.0 it does not show the JSON Schema document to the model either — the prompt's field list
+  is the schema, stated once — because the schema block made a reasoning model think its output
+  budget away. The profile's own ``require_valid_json`` is all LoadCoach checks.
 * It never lets a plan leave PromptCadence (ADR-0051): the document goes to the validator and the
   record, and nowhere else.
 * It never decides anything about the plan. A draft is a proposal; approval is
@@ -33,7 +35,7 @@ from typing import TYPE_CHECKING, Final
 from baseaicore import ValidationError, sha256_of
 
 from promptcadence.domain.errors import PlanDraftFailedError, PlanInvalidError
-from promptcadence.domain.plan import Plan, PlanIssue, PlanIssueReason, schema_document
+from promptcadence.domain.plan import Plan, PlanIssue, PlanIssueReason
 from promptcadence.infrastructure.loadcoach import GenerateRequest, Message
 from promptcadence.services.prompts import (
     PLANNER_CORRECTIVE_PROMPT_ID,
@@ -220,7 +222,6 @@ class Planner:
                 "tools": _render_tools(inputs),
                 "tiers": _render_tiers(inputs.tier_snapshot),
                 "max_steps": inputs.max_plan_steps,
-                "schema": schema_document().rstrip("\n"),
             },
         )
         messages: list[Message] = []
@@ -356,13 +357,24 @@ def validate(raw_document: str, inputs: PlanningInputs) -> Plan:
 
 
 def _render_tools(inputs: PlanningInputs) -> str:
-    """One line per allowlisted tool: its name and its registered description."""
+    """One line per allowlisted tool: its name and the first sentence of its description.
+
+    The first sentence and not the page: the registered descriptions are written for the model
+    that *calls* a tool, and on the reference machine the planner shown all five in full thought
+    its output budget away and returned nothing (the ``planner.draft`` 1.1.0 change reason).
+    """
     if not inputs.tool_allowlist:
         return "(none — every step must declare an empty tools list)"
     return "\n".join(
-        f"- {name}: {inputs.tool_descriptions.get(name, '')}".rstrip(": ")
+        f"- {name}: {_brief(inputs.tool_descriptions.get(name, ''))}".rstrip(": ")
         for name in inputs.tool_allowlist
     )
+
+
+def _brief(description: str) -> str:
+    """The first sentence of a description, without its full stop."""
+    first = description.strip().split(". ")[0].rstrip(".")
+    return first
 
 
 def _render_tiers(snapshot: TierSnapshot) -> str:

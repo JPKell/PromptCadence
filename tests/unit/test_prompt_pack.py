@@ -63,7 +63,7 @@ def test_every_record_states_a_change_reason_and_its_owner() -> None:
         assert record["metadata"]["owner"] == "promptcadence"
 
 
-def test_the_planner_draft_shows_the_schema_and_carries_provenance() -> None:
+def test_the_planner_draft_states_the_fields_once_and_carries_provenance() -> None:
     rendered = render(
         PLANNER_DRAFT_PROMPT_ID,
         {
@@ -72,16 +72,17 @@ def test_the_planner_draft_shows_the_schema_and_carries_provenance() -> None:
             "tools": "- read_file: read a file",
             "tiers": "- local_fast: local, admits data up to 'confidential'",
             "max_steps": 20,
-            "schema": '{"$id": "plan"}',
         },
     )
     assert rendered.prompt_id == PLANNER_DRAFT_PROMPT_ID
-    assert rendered.version == "1.0.0"
+    assert rendered.version == "1.1.0"
     assert rendered.sha256.startswith("sha256:")
     assert rendered.system and "Return only the JSON document" in rendered.system
     assert "summarize ./notes" in rendered.user
-    assert '{"$id": "plan"}' in rendered.user
-    assert "local_fast" in rendered.user
+    assert "expected_turns" in rendered.user and "local_fast" in rendered.user
+    # 1.1.0's change reason: the JSON Schema document is not shown (a reasoning model thought its
+    # output budget away over it); the field list is the schema, stated once.
+    assert "$schema" not in rendered.user and "json-schema.org" not in rendered.user
 
 
 def test_the_corrective_names_every_issue_at_once() -> None:
