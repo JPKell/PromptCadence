@@ -17,6 +17,8 @@ from __future__ import annotations
 import json as json_module
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
@@ -192,6 +194,36 @@ def _local_service(settings: Settings) -> Iterator[Any]:
     with Database.from_url(database_url) as database:
         ensure_ready(database, auto_migrate=settings.storage.auto_migrate)
         yield TrajectoryService(database, TrajectoryEventSink(database), settings)
+
+
+def _utc_now() -> datetime:
+    """The instant, for a command with no service to inject one from."""
+    return datetime.now(UTC)
+
+
+@contextmanager
+def _local_explanations(settings: Settings) -> Iterator[Any]:
+    """The explanation builder over the configured database, for the ``either`` fallback."""
+    from promptcadence.services.budget import BudgetService
+    from promptcadence.services.database import Database, ensure_ready
+    from promptcadence.services.egress import EgressService
+    from promptcadence.services.explanation import ExplanationBuilder, explanation_store
+    from promptcadence.services.pricing import PricingCatalog
+
+    database_url = settings.storage.database_url
+    if database_url is None:  # pragma: no cover — StorageSettings always fills this in
+        typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
+        raise typer.Exit(3)
+    with Database.from_url(database_url) as database:
+        ensure_ready(database, auto_migrate=settings.storage.auto_migrate)
+        yield ExplanationBuilder(
+            database,
+            budget=BudgetService(
+                database, settings, PricingCatalog.from_settings(settings), clock=_utc_now
+            ),
+            egress=EgressService(database, clock=_utc_now),
+            artifacts=explanation_store(settings),
+        )
 
 
 def _server_answers(client: httpx.Client) -> bool:
@@ -401,3 +433,77 @@ def wait(
             time.sleep(0.2)
     _print_view(view, json_output=json_output)
     raise typer.Exit(_TERMINAL_EXIT.get(str(view["state"]), 1))
+
+
+@app.command("explain")
+def explain(
+    trajectory_id: Annotated[str, typer.Argument(help="A trajectory id or unambiguous prefix.")],
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Write the document here instead of to stdout."),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print the document, rather than a summary of it.")
+    ] = False,
+    config: Annotated[
+        str | None, typer.Option("--config", help="Path to a config.toml file.")
+    ] = None,
+) -> None:
+    """Print the trajectory's composed explanation (spec §11 contract 2). Mode: either.
+
+    The full reconstructable record as one ``promptcadence.trajectory_explanation`` document: the
+    plan when planned, every intent revision, every turn with its model, tier, usage and timings,
+    every tool call, every debit, every egress verdict, every deviation, every compaction.
+
+    Without ``--json`` it prints a summary — the counts and the composition path — because a
+    500-turn trajectory's document is not something to read in a terminal. ``--output`` writes the
+    document to a file, which is what a reader who wants to diff two of them needs.
+
+    Example:
+        promptcadence trajectory explain 01J... --output explanation.json
+    """
+    settings = _settings(config)
+    with _client(settings) as client:
+        if _server_answers(client):
+            response = client.get(f"/api/v1/trajectories/{trajectory_id}/explanation")
+            if response.status_code != 200:
+                raise _envelope_error(response, json_output=json_output)
+            document = response.json()
+            source = response.headers.get("X-Explanation-Source", "unknown")
+            revision = response.headers.get("X-Explanation-Revision")
+        else:
+            from baseaicore import SuiteError
+
+            with _local_explanations(settings) as builder:
+                try:
+                    read = builder.read(trajectory_id)
+                except SuiteError as exc:
+                    typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
+                    raise typer.Exit(1) from exc
+            document = read.document
+            source = read.source
+            revision = str(read.revision.revision) if read.revision is not None else None
+
+    body = json_module.dumps(document, indent=2, sort_keys=True)
+    if output is not None:
+        output.write_text(body + "\n", encoding="utf-8")
+    if json_output:
+        typer.echo(body)
+        return
+    threads = document.get("threads", [])
+    typer.echo(f"trajectory      {document['trajectory']['trajectory_id']}")
+    typer.echo(f"schema          {document['schema']} {document['version']}")
+    typer.echo(f"source          {source}{f' (revision {revision})' if revision else ''}")
+    typer.echo(f"state           {document['trajectory']['state']}")
+    typer.echo(f"planned         {document['plan'] is not None}")
+    typer.echo(f"intents         {len(document['intents'])}")
+    typer.echo(f"threads         {len(threads)}")
+    typer.echo(f"turns           {sum(len(thread['turns']) for thread in threads)}")
+    typer.echo(f"tool calls      {len(document['tool_calls'])}")
+    typer.echo(f"compactions     {len(document['compactions'])}")
+    typer.echo(f"debits          {len(document['ledger_entries'])}")
+    typer.echo(f"egress          {len(document['egress_decisions'])}")
+    typer.echo(f"deviations      {len(document['deviations'])}")
+    typer.echo(f"events          {len(document['events'])}")
+    if output is not None:
+        typer.echo(f"written         {output}")

@@ -1,7 +1,7 @@
 """promptcadence.web.routes.trajectories — ``/trajectories`` (spec §7.1), Phase 3's surface.
 
-``POST``, ``GET`` (list and one), ``/turns``, ``/plan``, ``/intents``, ``/cancel`` and the SSE
-``/stream``. Every
+``POST``, ``GET`` (list and one), ``/turns``, ``/plan``, ``/intents``, ``/explanation``,
+``/cancel`` and the SSE ``/stream``. Every
 handler calls one service method and renders (coding standards §5); the bypass decision, the
 tier snapshot, the state machine and the cancel semantics are all
 :class:`~promptcadence.services.trajectories.TrajectoryService`'s.
@@ -29,6 +29,7 @@ from promptcadence.domain.trajectory import TrajectoryState
 from promptcadence.services.events import TERMINAL_EVENTS
 from promptcadence.services.runtime import Runtime
 from promptcadence.services.trajectories import TrajectorySubmission
+from promptcadence.web.auth import require_scope
 
 __all__ = ["GENERATOR", "TrajectoryBody", "router"]
 
@@ -202,6 +203,34 @@ def get_intents(request: Request, trajectory_id: str) -> Response:
     return paginated_response(
         documents, limit=max(len(documents), 1), has_more=False, request_id=_request_id(request)
     )
+
+
+@router.get("/trajectories/{trajectory_id}/explanation", summary="The composed explanation")
+def get_explanation(request: Request, trajectory_id: str) -> Response:
+    """The full reconstructable record (spec §11 contract 2), as one document.
+
+    Served from the materialized revision for a terminal trajectory and composed live for an
+    in-flight one — and also composed live for a terminal one whose revision has not been written
+    yet or was dropped, which is an ordinary state rather than an error (ADR-0093 rule 3). The
+    response's headers say which path answered and which revision, because the two carry different
+    spec §15 budgets — ≤ 25 ms materialized, ≤ 2 s composed — and because the **body is the
+    document**: the schema is a byte-stable composition of the rows, and folding a
+    "which cache answered" field into it would make two reads of the same rows differ.
+
+    ``read`` scope. ``404 TRAJECTORY_NOT_FOUND`` for an unknown trajectory.
+    """
+    require_scope(request, "read")
+    read = _runtime(request).explanations.read(trajectory_id)
+    revision = read.revision
+    headers = {
+        "X-Explanation-Source": read.source,
+        "X-Explanation-Composed-Ms": f"{read.composed_ms:.3f}",
+    }
+    if revision is not None:
+        headers["X-Explanation-Revision"] = str(revision.revision)
+        headers["X-Explanation-Revision-Cause"] = revision.cause
+        headers["ETag"] = f'"{revision.document_sha256}"'
+    return json_response(read.document, request_id=_request_id(request), headers=headers)
 
 
 @router.post(
