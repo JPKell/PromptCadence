@@ -1,0 +1,55 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, kv_list, table %}
+{% block title %}System — PromptCadence{% endblock %}
+{% block content %}
+<h2>System</h2>
+<p class="muted">Health, the last recovery pass, and how this install authenticates.</p>
+
+<h3>Components</h3>
+{% set columns = [{"label": "Component"}, {"label": "Status"}, {"label": "Detail"}, {"label": "Checked"}] %}
+{% set rows = [] %}
+{% for one in report.components %}
+{% set _ = rows.append([
+  one.name,
+  badge(one.status, tone=outcome_tone(one.status)),
+  one.detail or "—",
+  one.checked_at or "—"
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Health components", row_count=rows | length) }}
+{% if report.degraded %}
+<p class="muted">A degraded component is not a failure to serve: an unreachable LoadCoach degrades
+the tiers that need it and the API keeps answering.</p>
+{% endif %}
+
+<h3>Recovery</h3>
+{% if report.last_recovery %}
+{{ kv_list([
+  {"label": "Touched", "value": report.last_recovery.touched},
+  {"label": "Resumed", "value": report.last_recovery.resumed | join(", ") or "none"},
+  {"label": "Finished", "value": report.last_recovery.finished | join(", ") or "none"},
+  {"label": "Halted", "value": report.last_recovery.halted | join(", ") or "none"},
+  {"label": "Failed", "value": report.last_recovery.failed | join(", ") or "none"},
+  {"label": "Deferred", "value": report.last_recovery.deferred | join(", ") or "none"}
+]) }}
+<p class="muted">A trajectory whose worker died mid-turn is reconciled against LoadCoach's own job
+record rather than re-run: the turn either happened or it did not, and asking is cheaper than
+guessing.</p>
+{% else %}
+{{ empty_state("No recovery pass has run in this process.") }}
+{% endif %}
+
+<h3>Access</h3>
+{{ kv_list([
+  {"label": "Bind", "value": report.bind_host ~ ":" ~ report.bind_port},
+  {"label": "LoadCoach", "value": report.loadcoach_base_url},
+  {"label": "Concurrency", "value": report.max_concurrent}
+]) }}
+<p class="muted">This console authenticates exactly as the API does and adds no session cookie
+(ADR-0094). Loopback with no tokens is open and holds every scope; the moment any token exists, or
+the bind is not loopback, every page needs a bearer token — which a browser has no way to send, so
+the console is loopback-first by decision. A browser-usable console on another machine needs login,
+rotation, fixation defence, logout and idle expiry, and that is its own decision with its own
+threat model. Create a token for scripts and the CLI with
+<code>promptcadence token create</code>.</p>
+{% endblock %}

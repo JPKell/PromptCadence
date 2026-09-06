@@ -1,0 +1,79 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, card, empty_state, table %}
+{% from "_macros.html" import measure, short, trajectory_link %}
+{% block title %}Ledger — PromptCadence{% endblock %}
+{% block content %}
+<h2>Ledger</h2>
+<p class="muted">What was spent, and what each ceiling said at the moment it was spent. Money is
+never stored — every figure here is derived from recorded usage and a pricing hash, and a local
+model's cost is <em>unpriced</em>, never <code>$0.00</code>.</p>
+
+<h3>Today</h3>
+<ul class="card-grid">
+  {{ card("Day tokens left", report.position.day.tokens_remaining_display, note="UTC day " ~ report.position.utc_day) }}
+  {{ card("Day money left", report.position.day.money_remaining_display, note="the shared per-day ceiling") }}
+  {% if report.position.trajectory %}
+  {{ card("This trajectory", report.position.trajectory.tokens_remaining_display, note="tokens left on its own ceiling") }}
+  {% endif %}
+</ul>
+
+{% if report.position.projects %}
+<h3>Projects</h3>
+{% set columns = [{"label": "Project"}, {"label": "Tokens left"}, {"label": "Money left"}, {"label": "Binds"}] %}
+{% set rows = [] %}
+{% for one in report.position.projects %}
+{% set _ = rows.append([
+  one.project,
+  one.tokens_remaining_display,
+  one.money_remaining_display,
+  badge("binding", tone="warning") if one.binds else "no"
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Configured project ceilings", row_count=rows | length) }}
+{% endif %}
+
+{% if report.position.tiers %}
+<h3>Per-tier spend</h3>
+<p class="muted">Spend, not headroom: no tier ceiling is configured, so a tier has an accumulated
+balance and nothing about it can be exceeded.</p>
+{% set columns = [{"label": "Tier"}, {"label": "Tokens"}, {"label": "Money"}] %}
+{% set rows = [] %}
+{% for one in report.position.tiers %}
+{% set _ = rows.append([one.tier, one.tokens_spent_display, one.money_spent_display]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Ledger-wide spend by tier", row_count=rows | length) }}
+{% endif %}
+
+<h3>Recorded debits</h3>
+<form class="filter-bar" action="/ledger" method="get" role="search">
+  <div class="field">
+    <label for="trajectory_id">Trajectory</label>
+    <input id="trajectory_id" name="trajectory_id" type="text" value="{{ report.trajectory_id }}"
+           placeholder="a trajectory id">
+  </div>
+  <button type="submit">Filter</button>
+</form>
+{% if report.entries %}
+{% set columns = [
+  {"label": "Trajectory"}, {"label": "Turn"}, {"label": "When"},
+  {"label": "Input", "numeric": true}, {"label": "Output", "numeric": true},
+  {"label": "Cache read", "numeric": true}, {"label": "Priced"}, {"label": "Tags"}
+] %}
+{% set rows = [] %}
+{% for one in report.entries %}
+{% set _ = rows.append([
+  trajectory_link(one.trajectory_id),
+  short(one.turn_id),
+  one.occurred_at,
+  measure(one.usage.input),
+  measure(one.usage.output),
+  measure(one.usage.cache_read),
+  badge("unpriced", tone="neutral") if one.unpriced else badge("priced", tone="success"),
+  one.tags | join(", ")
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Recorded debits, newest first", complete=false, row_count=report.row_count) }}
+{% else %}
+{{ empty_state("No debits recorded for this filter.", "Show every debit", "/ledger") }}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,79 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, json_viewer, table %}
+{% from "_macros.html" import short, trajectory_link %}
+{% block title %}Approvals — PromptCadence{% endblock %}
+{% block content %}
+<h2>Approvals</h2>
+<p class="muted">Every request waiting for a person, oldest first. A grant mints the envelope the
+work then runs under, and a denial halts the trajectory with your reason on the record — so both
+answers are recorded, not just the one that let work continue.</p>
+
+{% if not may_approve %}
+<p class="muted" role="status">This session holds the <code>read</code> scope and not
+<code>approve</code>, so the buttons are not shown. Granting is deliberately a separate scope from
+submitting, so the identity that starts work cannot approve its own egress.</p>
+{% endif %}
+
+{% if report.pending %}
+{% for one in report.pending %}
+<section class="card">
+  <h3>{{ one.kind }} — {{ trajectory_link(one.trajectory_id) }}</h3>
+  <p>{{ one.reason }}</p>
+  <p class="muted">
+    Waiting {{ one.age_seconds | round(0) | int }} s · requested {{ one.created_at }} ·
+    expires {{ one.expires_at }} ·
+    steps {{ one.step_ids | join(", ") if one.step_ids else "—" }}
+  </p>
+  {% if one.detail %}{{ json_viewer(one.detail, label="What a grant would widen") }}{% endif %}
+  {% if may_approve %}
+  <div class="actions">
+    <form action="/approvals/{{ one.trajectory_id }}/grant" method="post">
+      <input type="hidden" name="{{ csrf_field_name }}" value="{{ csrf_token }}">
+      <button type="submit">Grant</button>
+    </form>
+    <form action="/approvals/{{ one.trajectory_id }}/deny" method="post">
+      <input type="hidden" name="{{ csrf_field_name }}" value="{{ csrf_token }}">
+      <div class="field">
+        <label for="reason-{{ one.request_id }}">Reason for denying</label>
+        <input id="reason-{{ one.request_id }}" name="reason" type="text"
+               placeholder="recorded on the request and in the halt's cause">
+      </div>
+      <button type="submit" class="danger">Deny</button>
+    </form>
+  </div>
+  {% endif %}
+</section>
+{% endfor %}
+<p class="row-count">{{ report.row_count }} request{{ '' if report.row_count == 1 else 's' }} pending</p>
+{% else %}
+{{ empty_state("Nothing is waiting for a person.", "Trajectories", "/trajectories") }}
+{% endif %}
+
+<h3>Resolved</h3>
+{% if report.include_resolved %}
+{% if report.resolved %}
+{% set columns = [
+  {"label": "Request"}, {"label": "Trajectory"}, {"label": "Kind"}, {"label": "Status"},
+  {"label": "Approver"}, {"label": "Reason"}, {"label": "Resolved"}
+] %}
+{% set rows = [] %}
+{% for one in report.resolved %}
+{% set _ = rows.append([
+  short(one.request_id),
+  trajectory_link(one.trajectory_id),
+  one.kind,
+  badge(one.status, tone=outcome_tone(one.status)),
+  one.approver_token_id or "—",
+  one.resolution_reason or "—",
+  one.resolved_at or "—"
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Resolved requests", complete=false, row_count=report.resolved | length) }}
+{% else %}
+{{ empty_state("No requests have been resolved yet.") }}
+{% endif %}
+<p><a href="/approvals">Hide resolved</a></p>
+{% else %}
+<p><a href="/approvals?resolved=true">Show resolved requests</a></p>
+{% endif %}
+{% endblock %}

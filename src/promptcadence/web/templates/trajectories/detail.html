@@ -1,0 +1,302 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, card, empty_state, json_viewer, kv_list, table %}
+{% from "_macros.html" import content_cell, measure, short %}
+{% block title %}{{ report.trajectory.trajectory_id }} — PromptCadence{% endblock %}
+{% block content %}
+{% set doc = report.document %}
+<h2>Trajectory {{ short(report.trajectory.trajectory_id) }}</h2>
+<p class="muted">
+  {{ badge(report.trajectory.state, tone=state_tone(report.trajectory.state)) }}
+  · {{ report.trajectory.data_classification }}
+  · {{ "bypassed" if report.trajectory.bypass_planning else "planned" }}
+  · served {{ report.source }}{% if report.revision %} from revision {{ report.revision }} ({{ report.revision_cause }}){% endif %} in {{ report.composed_ms }} ms
+</p>
+<p class="muted">This page renders the composed
+<code>promptcadence.trajectory_explanation</code> document — the same bytes
+<code>GET /trajectories/{id}/explanation</code> returns, so nothing shown here is a second reading
+of the rows.</p>
+
+<p id="pc-live" class="muted" role="status" aria-live="polite" hidden></p>
+
+<h3>The request</h3>
+{{ kv_list([
+  {"label": "Task", "value": report.trajectory.task},
+  {"label": "State", "value": report.trajectory.state},
+  {"label": "Cause", "value": report.trajectory.cause or "—"},
+  {"label": "Error code", "value": report.trajectory.error_code or "—"},
+  {"label": "Project", "value": report.trajectory.project or "—"},
+  {"label": "Token budget", "value": report.trajectory.budget.tokens if report.trajectory.budget.tokens else "—"},
+  {"label": "Created", "value": report.trajectory.created_at},
+  {"label": "Completed", "value": report.trajectory.completed_at or "—"}
+]) }}
+
+<h3>Plan</h3>
+{% if doc.plan %}
+<p class="muted">{{ doc.plan.attempts | length }} drafting attempt(s); the validated plan is
+{{ short(doc.plan.plan_id) if doc.plan.plan_id else "none — no attempt validated" }}.</p>
+{% set columns = [
+  {"label": "Attempt", "numeric": true}, {"label": "Valid"}, {"label": "Model"},
+  {"label": "Input", "numeric": true}, {"label": "Output", "numeric": true}, {"label": "Issues"}
+] %}
+{% set rows = [] %}
+{% for one in doc.plan.attempts %}
+{% set _ = rows.append([
+  one.attempt,
+  badge("valid", tone="success") if one.valid else badge("invalid", tone="danger"),
+  one.model_canonical_id or "—",
+  measure(one.usage.input_tokens),
+  measure(one.usage.output_tokens),
+  one.issues | length
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Drafting attempts", row_count=rows | length) }}
+{% if doc.plan.steps %}
+{% set step_columns = [
+  {"label": "Step"}, {"label": "Description"}, {"label": "Depends on"},
+  {"label": "Tier"}, {"label": "Tools"}, {"label": "Status"}
+] %}
+{% set step_rows = [] %}
+{% for one in doc.plan.steps %}
+{% set _ = step_rows.append([
+  one.step_id, one.description, one.depends_on | join(", ") or "—",
+  one.tier, one.tools | join(", ") or "none",
+  badge(one.status, tone=outcome_tone(one.status))
+]) %}
+{% endfor %}
+{{ table(step_columns, step_rows, caption="Validated steps", row_count=step_rows | length) }}
+{% endif %}
+{% if doc.plan.approval %}
+{{ json_viewer(doc.plan.approval.verdict, label="Plan verdict — " ~ doc.plan.approval.outcome) }}
+{% endif %}
+{% else %}
+{{ empty_state("This trajectory bypassed planning, so there is no plan — the record is otherwise identical in shape.") }}
+{% endif %}
+
+<h3>Envelopes</h3>
+{% set columns = [
+  {"label": "Step"}, {"label": "Revision", "numeric": true}, {"label": "Tier"},
+  {"label": "Fallbacks"}, {"label": "Tools"}, {"label": "Max classification"},
+  {"label": "Max turns", "numeric": true}, {"label": "Minted by"}
+] %}
+{% set rows = [] %}
+{% for one in doc.intents %}
+{% set _ = rows.append([
+  one.step_id, one.revision, one.approved_tier,
+  one.fallback_tiers | join(", ") or "—",
+  one.approved_tools | join(", ") or "none",
+  one.max_classification, one.max_turns, one.minted_by
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Every ExecutionIntent revision, superseded ones included", row_count=rows | length) }}
+
+<h3>Timeline</h3>
+{% for thread in doc.threads %}
+<section class="card">
+  <h4>
+    {% if thread.kind == "compaction" %}Compaction summary{% else %}Step {{ thread.step_id }}{% endif %}
+    <span class="muted">· {{ thread.turns | length }} turn(s) · opened {{ thread.created_at }}</span>
+  </h4>
+  {% if thread.kind == "compaction" %}
+  <p class="muted">A summarization run in its own thread: it is not part of the transcript it
+  summarized, so it is never replayed to the model and never spends the step's turn allowance.</p>
+  {% endif %}
+  {% if thread.turns %}
+  {% set columns = [
+    {"label": "#", "numeric": true}, {"label": "Role"}, {"label": "Tier"}, {"label": "Model"},
+    {"label": "Finish"}, {"label": "Input", "numeric": true}, {"label": "Output", "numeric": true},
+    {"label": "LoadCoach", "numeric": true}, {"label": "Overhead", "numeric": true},
+    {"label": "Content"}
+  ] %}
+  {% set rows = [] %}
+  {% for turn in thread.turns %}
+  {% set _ = rows.append([
+    turn.sequence, turn.role, turn.tier or "—", turn.model.canonical_id or "—",
+    turn.finish_reason or "—",
+    measure(turn.usage.input_tokens), measure(turn.usage.output_tokens),
+    measure(turn.loadcoach_ms | round(0) | int if turn.loadcoach_ms is not none else none, "ms"),
+    measure(turn.overhead_ms | round(0) | int if turn.overhead_ms is not none else none, "ms"),
+    content_cell(turn.content)
+  ]) %}
+  {% endfor %}
+  {{ table(columns, rows, caption="Turns", row_count=rows | length) }}
+  {% else %}
+  {{ empty_state("This thread has no recorded turn.") }}
+  {% endif %}
+  {% if thread.failed_attempts %}
+  {% set attempt_columns = [
+    {"label": "Attempt", "numeric": true}, {"label": "Failed turn"}, {"label": "Tier"},
+    {"label": "Error"}, {"label": "Cause"}, {"label": "At"}
+  ] %}
+  {% set attempt_rows = [] %}
+  {% for one in thread.failed_attempts %}
+  {% set _ = attempt_rows.append([
+    one.attempt, short(one.failed_turn_id), one.failed_tier, one.error_code, one.cause, one.at
+  ]) %}
+  {% endfor %}
+  {{ table(attempt_columns, attempt_rows, caption="Attempts that produced no turn", row_count=attempt_rows | length) }}
+  <p class="muted">A failed attempt was announced and never answered, so it has an event and no
+  turn row — which is why it is listed separately rather than mixed into the transcript.</p>
+  {% endif %}
+</section>
+{% else %}
+{{ empty_state("This trajectory opened no thread.") }}
+{% endfor %}
+
+<h3>Tool calls</h3>
+{% if doc.tool_calls %}
+{% set columns = [
+  {"label": "Tool"}, {"label": "Outcome"}, {"label": "Reason"}, {"label": "Risk"},
+  {"label": "Egress"}, {"label": "Isolation"}, {"label": "Duration", "numeric": true},
+  {"label": "Arguments"}, {"label": "Result"}
+] %}
+{% set rows = [] %}
+{% for one in doc.tool_calls %}
+{% set _ = rows.append([
+  one.tool_name,
+  badge(one.status, tone=outcome_tone(one.status)),
+  one.reason or "—", one.risk_class, one.egress, one.isolation_tier or "—",
+  one.duration_ms ~ " ms",
+  content_cell(one.arguments),
+  content_cell(one.result)
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Every recorded call, refusals and failures included", row_count=rows | length) }}
+{% else %}
+{{ empty_state("This trajectory called no tools.") }}
+{% endif %}
+
+<h3>Compactions</h3>
+{% if doc.compactions %}
+{% set columns = [
+  {"label": "Step"}, {"label": "Tier"}, {"label": "Target", "numeric": true},
+  {"label": "Before", "numeric": true}, {"label": "After", "numeric": true},
+  {"label": "Turns"}, {"label": "Masked"}, {"label": "Summarized"}, {"label": "Dropped"},
+  {"label": "Budget met"}
+] %}
+{% set rows = [] %}
+{% for one in doc.compactions %}
+{% set _ = rows.append([
+  one.step_id, one.tier, one.budget_tokens,
+  one.tokens_before, one.tokens_after_estimate,
+  one.turns_before ~ " → " ~ one.turns_after,
+  one.masked_turn_ids | length, one.summarized_turn_ids | length, one.dropped_turn_ids | length,
+  badge("unmet", tone="warning") if one.budget_unmet else badge("met", tone="success")
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Where the wire differed from the rows", row_count=rows | length) }}
+<p class="muted">Compaction is a view and never a deletion: every turn above is still recorded.
+These rows are why one turn saw less history than the turn before it.</p>
+{% else %}
+{{ empty_state("Nothing was compacted: the transcript stayed inside its tier's budget.") }}
+{% endif %}
+
+<h3>Debits</h3>
+{% if doc.ledger_entries %}
+{% set columns = [
+  {"label": "Turn"}, {"label": "When"}, {"label": "Input", "numeric": true},
+  {"label": "Output", "numeric": true}, {"label": "Priced"}, {"label": "Tags"}
+] %}
+{% set rows = [] %}
+{% for one in doc.ledger_entries %}
+{% set _ = rows.append([
+  short(one.turn_id), one.occurred_at,
+  measure(one.usage.input), measure(one.usage.output),
+  badge("unpriced", tone="neutral") if one.unpriced else badge("priced", tone="success"),
+  one.tags | join(", ")
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Recorded debits", row_count=rows | length) }}
+{% else %}
+{{ empty_state("Nothing was debited.") }}
+{% endif %}
+
+<h3>Egress decisions</h3>
+{% if doc.egress_decisions %}
+{% set columns = [
+  {"label": "Verdict"}, {"label": "Target"}, {"label": "Classification"},
+  {"label": "Policy"}, {"label": "Reason"}, {"label": "When"}
+] %}
+{% set rows = [] %}
+{% for one in doc.egress_decisions %}
+{% set _ = rows.append([
+  badge(one.verdict, tone=verdict_tone(one.verdict)),
+  one.request.target.name, one.request.data_classification, one.policy_name,
+  one.reason or "—", one.decided_at
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Every decision about whether data could leave", row_count=rows | length) }}
+{% else %}
+{{ empty_state("No egress decision was recorded.") }}
+{% endif %}
+
+<h3>Deviations</h3>
+{% if doc.deviations %}
+{% set columns = [
+  {"label": "Category"}, {"label": "Severity"}, {"label": "Disposition"},
+  {"label": "Turn"}, {"label": "Envelope"}, {"label": "When"}
+] %}
+{% set rows = [] %}
+{% for one in doc.deviations %}
+{% set _ = rows.append([
+  badge(one.category, tone="danger" if one.disposition == "halt" else "warning"),
+  one.severity, one.disposition, short(one.turn_id),
+  short(one.intent_id) ~ " r" ~ one.intent_revision, one.created_at
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Where execution differed from its envelope", row_count=rows | length) }}
+{% else %}
+{{ empty_state("Execution never differed from its envelope.") }}
+{% endif %}
+
+<h3>Approvals</h3>
+{% if doc.approvals %}
+{% set columns = [
+  {"label": "Kind"}, {"label": "Status"}, {"label": "Reason"}, {"label": "Steps"},
+  {"label": "Approver"}, {"label": "Resolved"}
+] %}
+{% set rows = [] %}
+{% for one in doc.approvals %}
+{% set _ = rows.append([
+  one.kind, badge(one.status, tone=outcome_tone(one.status)), one.reason,
+  one.step_ids | join(", ") or "—", one.approver_token_id or "—", one.resolved_at or "—"
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Requests this trajectory raised", row_count=rows | length) }}
+{% else %}
+{{ empty_state("Nothing about this trajectory needed a person.") }}
+{% endif %}
+
+<h3>Events</h3>
+{% set columns = [{"label": "#", "numeric": true}, {"label": "Event"}, {"label": "At"}] %}
+{% set rows = [] %}
+{% for one in doc.events %}
+{% set _ = rows.append([one.sequence, one.event_type, one.timestamp]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Every persisted event, in sequence order", row_count=rows | length) }}
+{% endblock %}
+
+{% block scripts %}
+{# Progressive enhancement, and nothing more (ADR-0020). The page above is complete without this
+   script: it is rendered from the composed document, and a reader with JavaScript off sees the
+   whole record. What the script adds is a notice that the record has moved on, in a polite live
+   region, with a link — it does **not** reload underneath somebody who is reading, and it does not
+   re-render anything itself, because a second renderer would be a second definition of the
+   timeline. Inlined rather than served as a file: it is ten lines, and a static mount for ten
+   lines is a second asset pipeline to keep honest. #}
+{% if not report.trajectory.completed_at %}
+<script>
+  (function () {
+    var region = document.getElementById("pc-live");
+    if (!region || typeof EventSource === "undefined") { return; }
+    var seen = 0;
+    var source = new EventSource({{ ("/api/v1/trajectories/" ~ report.trajectory.trajectory_id ~ "/stream") | tojson }});
+    source.onmessage = function () {
+      seen += 1;
+      region.textContent = seen + " new event" + (seen === 1 ? "" : "s") + " since this page loaded.";
+      region.hidden = false;
+    };
+    source.onerror = function () { source.close(); };
+  })();
+</script>
+{% endif %}
+{% endblock %}

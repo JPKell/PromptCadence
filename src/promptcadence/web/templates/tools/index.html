@@ -1,0 +1,49 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, json_viewer, kv_list, table %}
+{% block title %}Tools — PromptCadence{% endblock %}
+{% block content %}
+<h2>Tools</h2>
+<p class="muted">Every tool configuration names, registered or not. A tool that was asked for and
+withheld is on this page with its cause — a list of only the working tools cannot tell that apart
+from a tool nobody asked for.</p>
+
+<h3>Isolation</h3>
+{% if report.isolation %}
+{{ kv_list([
+  {"label": "Rung", "value": report.isolation.tier or "none"},
+  {"label": "Runtime", "value": report.isolation.runtime or "—"},
+  {"label": "Reason", "value": report.isolation.reason or "—"},
+  {"label": "Resource limits", "value": "unenforced" if report.isolation.limits_unenforced else "enforced"}
+]) }}
+<p class="muted">Where no sandbox rung is available, <code>run_command</code> refuses with a
+recorded reason rather than executing unisolated.</p>
+{% else %}
+<p class="muted">The isolation ladder has not been probed in this process.</p>
+{% endif %}
+
+<h3>Registry</h3>
+{% if report.rows %}
+{% set columns = [
+  {"label": "Tool"}, {"label": "Registered"}, {"label": "Risk"}, {"label": "Egress"},
+  {"label": "Isolation required"}, {"label": "Args redacted"}, {"label": "Cause"}
+] %}
+{% set rows = [] %}
+{% for one in report.rows %}
+{% set _ = rows.append([
+  one.name,
+  badge("registered", tone="success") if one.registered else badge("withheld", tone="warning"),
+  one.risk_class or "—",
+  one.egress or "—",
+  "yes" if one.requires_isolation else "no",
+  "yes" if one.redact_args else "no",
+  one.withheld_cause or "—"
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Configured tools", row_count=report.row_count) }}
+{% for one in report.rows %}
+{% if one.parameters %}{{ json_viewer(one.parameters, label=one.name ~ " arguments") }}{% endif %}
+{% endfor %}
+{% else %}
+{{ empty_state("No tools are enabled.") }}
+{% endif %}
+{% endblock %}

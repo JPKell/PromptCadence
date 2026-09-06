@@ -85,11 +85,29 @@ def _run(client: TestClient, **body: Any) -> dict[str, Any]:
         time.sleep(0.02)
 
 
+def _wait_materialized(client: TestClient, trajectory_id: str) -> None:
+    """Wait for the revision the terminal transition's follow-up write produces.
+
+    The window is real and documented: the transition commits alone and materialization is the
+    **next** write (ADR-0093), so a reader that arrives between the two is served live. That is
+    correct behaviour, not a bug, which is exactly why a test asserting "materialized" has to wait
+    for it rather than assume the two writes are one.
+    """
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/v1/trajectories/{trajectory_id}/explanation")
+        if response.headers.get("X-Explanation-Source") == "materialized":
+            return
+        time.sleep(0.02)
+    raise AssertionError("the explanation was never materialized")
+
+
 def test_the_endpoint_answers_the_document_from_the_materialized_revision(
     client: TestClient,
 ) -> None:
     view = _run(client)
     assert view["state"] == "completed", view["cause"]
+    _wait_materialized(client, view["trajectory_id"])
     response = client.get(f"/api/v1/trajectories/{view['trajectory_id']}/explanation")
     assert response.status_code == 200, response.text
     document = response.json()
@@ -127,6 +145,7 @@ def test_the_endpoint_requires_the_read_scope(client: TestClient) -> None:
     endpoint needs a bearer, and a bearer without ``read`` is refused.
     """
     view = _run(client)
+    _wait_materialized(client, view["trajectory_id"])
     runtime = cast("FastAPI", client.app).state.runtime
     writer = create_token(
         runtime.database, name="writer-only", scopes=["write"], now=datetime.now(UTC)
@@ -155,6 +174,7 @@ def test_the_cli_and_the_api_answer_the_same_document(
 ) -> None:
     """One record, two surfaces. A difference here is a second definition of the document."""
     view = _run(client)
+    _wait_materialized(client, view["trajectory_id"])
     from_api = client.get(f"/api/v1/trajectories/{view['trajectory_id']}/explanation").json()
 
     monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
@@ -182,7 +202,7 @@ def test_rebuild_explanations_reports_an_intact_cache(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``rebuilt 0`` over an intact cache is the assertion that the cache was correct."""
-    _run(client)
+    _wait_materialized(client, _run(client)["trajectory_id"])
     monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
     runner = CliRunner()
     intact = runner.invoke(cli_app, ["db", "rebuild-explanations", "--json"])

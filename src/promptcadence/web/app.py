@@ -4,12 +4,22 @@
 a test can build an app without touching the filesystem. The database handle is created by the
 lifespan, which runs only when the application is actually served.
 
-Host validation, the request-ID middleware and the error envelope come from MirrorWall, not from
-this module — three implementations of one security control are three chances to get it subtly
-different, and the difference will be in the application nobody audited (ADR-0026 §1). There is
-no HTML UI yet (Phase 8), so CSRF and same-origin protection are not wired: the state-changing
-routes take JSON bodies and bearer-less loopback callers only, and a browser form cannot reach
-them.
+Host validation, the request-ID middleware, the error envelope and the CSRF check all come from
+MirrorWall, not from this module — three implementations of one security control are three chances
+to get it subtly different, and the difference will be in the application nobody audited
+(ADR-0026 §1).
+
+**The operator console is served from this application** (Phase 8): the API under ``/api/v1`` and
+the pages at the root. The console authenticates exactly as the API does and adds no session
+cookie (ADR-0094), which makes it loopback-first by decision — a browser sends no bearer header,
+so an install that has created a token, or that binds off-loopback, answers ``401`` on the pages
+as it does on the endpoints.
+
+``CsrfMiddleware`` is wired because the approvals inbox posts forms. MirrorWall exempts
+``application/json`` on stated grounds rather than by omission: a cross-origin HTML form cannot
+send that content type, so a request arriving as JSON has already passed a CORS preflight, which
+fails while CORS is disabled. Same-origin checking, body caps and rate limits are Phase 9's, where
+the security checklist lists them together.
 """
 
 from __future__ import annotations
@@ -23,12 +33,21 @@ from baseaicore import SuiteError, new_id
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from mirrorwall import HostValidationMiddleware, RequestIdMiddleware, error_body, loopback_allowlist
+from mirrorwall import (
+    CsrfMiddleware,
+    HostValidationMiddleware,
+    RequestIdMiddleware,
+    error_body,
+    loopback_allowlist,
+    mount_static,
+)
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from promptcadence.__about__ import __version__
 from promptcadence.config import LOOPBACK_HOSTS, Settings
+from promptcadence.web.rendering import templates
 from promptcadence.web.routes import approvals as approval_routes
+from promptcadence.web.routes import console as console_routes
 from promptcadence.web.routes import egress as egress_routes
 from promptcadence.web.routes import ledger as ledger_routes
 from promptcadence.web.routes import system as system_routes
@@ -226,6 +245,8 @@ def create_app(settings: Settings, *, runtime_builder: Any | None = None) -> Fas
 
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(HostValidationMiddleware, allowed_hosts=_resolve_allowed_hosts(settings))
+    # The console's forms, and every form after them (ADR-0026 §2, ADR-0094 rule 3).
+    app.add_middleware(CsrfMiddleware)
 
     register_exception_handlers(app)
 
@@ -234,5 +255,9 @@ def create_app(settings: Settings, *, runtime_builder: Any | None = None) -> Fas
     app.include_router(egress_routes.router, prefix="/api/v1")
     app.include_router(trajectory_routes.router, prefix="/api/v1")
     app.include_router(approval_routes.router, prefix="/api/v1")
+    # The console last: its ``/`` and ``/trajectories/{id}`` must not shadow an API path, and
+    # registering it after the API makes that ordering visible rather than incidental.
+    app.include_router(console_routes.ui_router)
+    mount_static(app, environment=templates())
 
     return app

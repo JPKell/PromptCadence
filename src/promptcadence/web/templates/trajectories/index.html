@@ -1,0 +1,46 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, filter_bar, pagination, table %}
+{% from "_macros.html" import trajectory_link %}
+{% block title %}Trajectories — PromptCadence{% endblock %}
+{% block content %}
+<h2>Trajectories</h2>
+<p class="muted">Newest first. Every row opens the whole record — the plan, every turn, every tool
+call, every debit and every egress verdict.</p>
+
+<form class="filter-bar" action="/trajectories" method="get" role="search">
+  <div class="field">
+    <label for="state">State</label>
+    <select id="state" name="state">
+      <option value=""{{ ' selected' if not report.state else '' }}>All states</option>
+      {% for one in report.states %}
+      <option value="{{ one }}"{{ ' selected' if report.state == one else '' }}>{{ one }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button type="submit">Filter</button>
+</form>
+
+{% if report.rows %}
+{% set columns = [
+  {"label": "Trajectory"}, {"label": "State"}, {"label": "Task"},
+  {"label": "Classification"}, {"label": "Planned"}, {"label": "Created"}, {"label": "Cause"}
+] %}
+{% set rows = [] %}
+{% for one in report.rows %}
+{% set _ = rows.append([
+  trajectory_link(one.trajectory_id),
+  badge(one.state, tone=state_tone(one.state)),
+  one.task,
+  one.data_classification,
+  "bypassed" if one.bypass_planning else "planned",
+  one.created_at,
+  one.cause or "—"
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Trajectories", complete=report.next_cursor is none, row_count=report.row_count) }}
+{{ pagination(next_href=("/trajectories?cursor=" ~ report.next_cursor) if report.next_cursor else none,
+              summary=(report.row_count ~ " shown")) }}
+{% else %}
+{{ empty_state("No trajectories match this filter.", "Show all states", "/trajectories") }}
+{% endif %}
+{% endblock %}

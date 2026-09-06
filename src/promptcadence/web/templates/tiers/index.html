@@ -1,0 +1,43 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, kv_list, table %}
+{% from "_macros.html" import short %}
+{% block title %}Tiers — PromptCadence{% endblock %}
+{% block content %}
+<h2>Tiers</h2>
+<p class="muted">A tier is configuration over exactly one LoadCoach task profile: which model
+serves it is LoadCoach's decision, not this application's. Escalation is explicit and ordered —
+nothing silently climbs to a more capable tier.</p>
+
+{{ kv_list([
+  {"label": "Snapshot", "value": short(report.snapshot_id)},
+  {"label": "Default tier", "value": report.default_tier},
+  {"label": "Escalation order", "value": report.escalation_order | join(" → ")},
+  {"label": "Remote provider registered", "value": "yes" if report.remote_provider else "no"}
+]) }}
+
+{% if report.rows %}
+{% set columns = [
+  {"label": "Tier"}, {"label": "Task profile"}, {"label": "Egress"},
+  {"label": "Max classification"}, {"label": "Context budget", "numeric": true},
+  {"label": "Available"}
+] %}
+{% set rows = [] %}
+{% for one in report.rows %}
+{% set _ = rows.append([
+  one.name,
+  one.task_profile,
+  badge("remote" if one.is_remote else "local", tone="warning" if one.is_remote else "success"),
+  one.effective_max_classification,
+  one.context_budget_tokens ~ " tokens",
+  badge("available", tone="success") if one.available else badge(one.unavailable_reason, tone="warning")
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Configured tiers", row_count=report.row_count) }}
+{% else %}
+{{ empty_state("No tiers are configured.") }}
+{% endif %}
+
+<p class="muted">A local tier's declared ceiling is shown as its <em>effective</em> one: nothing
+leaves the machine, so a local tier admits every classification whatever it declares. A remote tier
+with no ceiling is refused at startup, never assumed public.</p>
+{% endblock %}

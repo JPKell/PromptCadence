@@ -1,0 +1,51 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, table %}
+{% from "_macros.html" import short, trajectory_link %}
+{% block title %}Egress decisions — PromptCadence{% endblock %}
+{% block content %}
+<h2>Egress decisions</h2>
+<p class="muted">Every decision about whether data could leave this machine, approvals and refusals
+alike. A declined call is as auditable as an approved one, so they are on one page rather than
+behind a filter somebody has to discover.</p>
+
+<form class="filter-bar" action="/egress" method="get" role="search">
+  <div class="field">
+    <label for="verdict">Verdict</label>
+    <select id="verdict" name="verdict">
+      <option value=""{{ ' selected' if not report.verdict else '' }}>All verdicts</option>
+      {% for one in report.verdicts %}
+      <option value="{{ one }}"{{ ' selected' if report.verdict == one else '' }}>{{ one }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="egress_trajectory">Trajectory</label>
+    <input id="egress_trajectory" name="trajectory_id" type="text" value="{{ report.trajectory_id }}"
+           placeholder="a trajectory id">
+  </div>
+  <button type="submit">Filter</button>
+</form>
+
+{% if report.rows %}
+{% set columns = [
+  {"label": "Decision"}, {"label": "Verdict"}, {"label": "Trajectory"}, {"label": "Target"},
+  {"label": "Classification"}, {"label": "Policy"}, {"label": "Reason"}, {"label": "When"}
+] %}
+{% set rows = [] %}
+{% for one in report.rows %}
+{% set _ = rows.append([
+  short(one.decision_id),
+  badge(one.verdict, tone=verdict_tone(one.verdict)),
+  trajectory_link(one.request.run_id),
+  one.request.target.name,
+  one.request.data_classification,
+  one.policy_name,
+  one.reason or "—",
+  one.decided_at
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Recorded egress decisions, newest first", complete=false, row_count=report.row_count) }}
+{% else %}
+{{ empty_state("No egress decisions match this filter.", "Show every decision", "/egress") }}
+{% endif %}
+{% endblock %}

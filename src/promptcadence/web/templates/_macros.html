@@ -1,0 +1,44 @@
+{# PromptCadence's own template macros — the ones MirrorWall's component set does not cover.
+
+   Every one of them **builds markup rather than concatenating it**, which is the point. A cell
+   holding a link is markup, and the obvious way to make one is a string with `| safe` on it; do
+   that once beside a value that came from a model and the console has an injection. Macro output
+   is already-escaped Markup, so `link(href, text)` escapes `text` and cannot be turned off from a
+   call site. #}
+
+{% macro link(href, text) -%}
+<a class="mono" href="{{ href }}">{{ text }}</a>
+{%- endmacro %}
+
+{% macro trajectory_link(trajectory_id) -%}
+{{ link("/trajectories/" ~ trajectory_id, short(trajectory_id)) }}
+{%- endmacro %}
+
+{% macro short(value) -%}
+{# Long identifiers are truncated in the middle, with the full value on hover (UI standards §5). #}
+{%- if value and value | length > 14 -%}
+<span title="{{ value }}">{{ value[:6] }}…{{ value[-4:] }}</span>
+{%- else -%}
+{{ value }}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro measure(value, unit="") -%}
+{# A number with its unit, or an em dash for an unsupported one — never a fabricated zero
+   (ADR-0016, UI standards §5). #}
+{%- if value is none or value == "unsupported" -%}
+<span class="muted" title="not reported by the provider; not the same as zero">—</span>
+{%- else -%}
+{{ value }}{% if unit %} {{ unit }}{% endif %}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro content_cell(content) -%}
+{# Model output. Rendered as text, always escaped, never as markup, and a scrubbed body says so
+   rather than looking like an empty turn. #}
+{%- if content.removed -%}
+<span class="muted">content removed by retention</span>
+{%- else -%}
+{{ content.text }}
+{%- endif -%}
+{%- endmacro %}
