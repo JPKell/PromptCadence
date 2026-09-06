@@ -7,6 +7,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ## [Unreleased]
 
 ### Added
+- **Context compaction** (P8, lifecycle §7). Before every turn the transcript is estimated against
+  `threshold × context_budget_tokens`, and above it CutCtx plans a compaction over the configured
+  `[compaction] policy_chain`. The threshold and the compaction target are **one figure**:
+  compacting to the whole tier budget leaves no headroom and writes a `compactions` row per turn
+  saying nothing changed. Compaction is a view, never a deletion — every original turn stays in
+  `turns`, and the new `compactions` table (migration `0009`) plus its `context.compacted` event
+  are the record that the wire differed from the rows.
+- **`[compaction] policy_chain` is validated at startup.** An unknown policy name is a
+  configuration refusal rather than a compaction that quietly skipped the policy an operator asked
+  for.
+- **The compaction summary is a governed turn** (ADR-0090, ADR-0091).
+  It runs on the cheapest admissible **local** tier, under a superseding revision of the step's own
+  intent — that tier, no fallbacks, no tools, the step's classification ceiling carried — and a
+  second supersession restores the step's envelope. It is debited against every ceiling and does
+  **not** count against `max_turns`, because that is the step's advance budget and a step must not
+  be ended by its own housekeeping. It lives in its own thread (`compaction:<thread id>`), so it is
+  never replayed into the transcript it replaced.
+- **The `compaction.summarize` prompt record**, a versioned JSON record like every other
+  (ADR-0012). The pack is `1.1.0`.
+- **`COMPACTION_FAILED` has three producers and none is a traceback**: CutCtx's
+  `BudgetUnsatisfiable` with both figures in `details`, the absence of any admissible local tier,
+  and a summary LoadCoach could not serve.
+- **The composed explanation** (P8, spec §11 contract 2): the
+  `promptcadence.trajectory_explanation` `1.0` document, golden-tested, holding the request, the
+  plan and its verdicts, every intent revision, every turn with its model, tier, usage and
+  timings, every tool call, every debit with its ceiling verdicts, every egress decision, every
+  deviation, every approval, every compaction and every event.
+- **Materialized explanation revisions** (migration `0010`, ADR-0093). Composed
+  once **after** the terminal transition, in its own write, into `explanation_revisions` plus an
+  artifact under its digest. A missing revision is not a missing explanation: the live composition
+  path serves it. `materialize(rows) == compose_live(rows)` byte for byte; dropping the whole
+  table changes no answer; a rebuild over an intact cache writes nothing.
+- **The invalidation entry point** (ADR-0092):
+  `invalidate(trajectory_id, cause=…)` over `retention_scrub`, `recosting` and `schema_upgrade`.
+  The retention **sweep** that will call it stays Phase 9's.
+- **`GET /trajectories/{id}/explanation`** and **`promptcadence trajectory explain`**, answering
+  the same document. Response headers say which path served it and under which revision; the body
+  is the document, because a "which cache answered" field folded into it would make two reads of
+  the same rows differ.
+- **`promptcadence db rebuild-explanations`**, with `--drop` for the stronger form.
+- **The operator console** (P8, ADR-0020): dashboard, trajectories, timeline, approvals inbox,
+  tiers, tools, ledger, egress and system pages, server-rendered with progressive enhancement. The
+  timeline renders the composed explanation document — the same bytes the API returns — so a
+  record type that appears in one appears in the other. The one script shipped is a polite live
+  region on an in-flight timeline; every read-only page is complete without it.
+- **CSRF on every form** (ADR-0094). MirrorWall's double-submit token, wired because the inbox posts. The console authenticates
+  exactly as the API does and adds no session cookie, which makes it loopback-first by decision;
+  the System page says so and what changing it would take.
 - **A step's attempts are on the record** (G3). `plan_steps.attempt` (migration `0008`) counts
   which attempt of a step is running or last ran, and a new `step.retried` event carries each
   attempt's number, the turn that was announced and never answered, its tier, its cause and its
@@ -28,6 +76,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   stack.
 
 ### Changed
+- **`plans.raw_document` is nullable** (migration `0010`). A plan document is model output and
+  must follow the retention scrub exactly as transcript text does; the column was `NOT NULL`, so
+  the sweep Phase 9 will write could not have scrubbed it. Nothing writes `NULL` — a drafting
+  attempt always records what came back, and `document_sha256` outlives the words.
+- **Migrations run with SQLite foreign keys off**, restored afterwards — LoadCoach's `env.py`,
+  copied rather than reinvented. Altering a column on SQLite is a table rebuild, and dropping a
+  table that other rows reference `ON DELETE CASCADE` deletes those rows: without this, `0010`'s
+  rebuild of `plans` silently deleted every `plan_steps` row.
 - **A failed step repeats before it halts the trajectory** (G3, ADR-0076). A LoadCoach service
   failure that could plausibly answer differently — `ALL_CANDIDATES_FAILED`, `PROVIDER_TIMEOUT`,
   `QUEUE_FULL`, `RATE_LIMITED`, the client's own read timeout and their kind — is repeated on the
