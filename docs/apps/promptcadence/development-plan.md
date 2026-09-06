@@ -373,27 +373,43 @@ deployment before LC-E1). The planner's own spend is recorded on the `plans` row
 
 **Work**
 * `TierRouter` compaction trigger ([lifecycle §7](lifecycle.md)); summarization execution on the
-  cheapest admissible local tier; `compactions` table; `context.compacted` events; the
-  compaction-summary prompt record.
+  cheapest admissible local tier, under a superseding revision of the step's own intent and
+  restored by a second supersession
+  ([ADR-0090](../../adr/0090-a-compaction-summary-runs-under-a-superseding-revision.md)), debited
+  but not counted against `max_turns`
+  ([ADR-0091](../../adr/0091-a-compaction-turn-is-debited-and-does-not-spend-the-steps-advance.md));
+  `compactions` table; `context.compacted` events; the compaction-summary prompt record.
 * `ExplanationBuilder`; `promptcadence.trajectory_explanation` 1.0 schema + goldens
   ([ADR-0035](../../adr/0035-application-owned-document-schemas.md));
   `GET /trajectories/{id}/explanation`; `promptcadence trajectory explain`.
-* Materialized explanation revisions ([lifecycle §9.1](lifecycle.md)): compose-once at the
-  terminal transition into `explanation_revisions` + artifact; live composition for in-flight
-  reads; invalidation and re-materialization on retention scrub and re-costing;
+* Materialized explanation revisions ([lifecycle §9.1](lifecycle.md)): compose-once **after** the
+  terminal transition, in its own write, into `explanation_revisions` + artifact
+  ([ADR-0093](../../adr/0093-materialization-follows-the-terminal-transition.md)); live composition
+  for in-flight reads and for a terminal trajectory whose revision is missing; the invalidation
+  entry point and its revision bump — **not** the retention sweep, which stays Phase 9's
+  ([ADR-0092](../../adr/0092-the-invalidation-entry-point-ships-before-the-sweep-that-calls-it.md));
   `promptcadence db rebuild-explanations`.
 * Operator UI (MirrorWall): trajectory list and timeline detail (plan, turns, tools, debits,
-  egress badges, deviations), approvals inbox, tiers, tools, ledger, egress, system pages.
-  Server-rendered, progressive enhancement, SSE live updates
-  ([ADR-0020](../../adr/0020-ui-rendering-strategy.md)).
+  egress badges, deviations, compactions), approvals inbox, tiers, tools, ledger, egress, system
+  pages. Server-rendered, progressive enhancement, SSE live updates
+  ([ADR-0020](../../adr/0020-ui-rendering-strategy.md)). The inbox's two buttons are the first
+  forms this application has ever served, so CSRF and the console's authentication answer are due
+  in the same commit
+  ([ADR-0094](../../adr/0094-the-console-authenticates-as-the-api-does.md)) — `web/app.py`'s "there
+  is no HTML UI yet" paragraph is rewritten there and not left standing.
 
 **Tests**
 * A 100-turn scripted trajectory compacts and completes within its tier budget; the summary call
   is itself a debited, recorded turn; `COMPACTION_FAILED` when the chain cannot fit.
 * Explanation goldens; the `materialize(rows) == compose_live(rows)` equality golden, before and
-  after a retention scrub and a re-costing (each bumping a revision); a scrubbed-by-retention
+  after a simulated retention scrub and a re-costing (each bumping a revision); a scrubbed
   trajectory still explains itself; explanation retrieval within the spec §15 budget regardless
-  of turn count; drop-and-rebuild via `rebuild-explanations` reproduces identical documents.
+  of turn count; drop-and-rebuild via `rebuild-explanations` reproduces identical documents, and
+  deleting every `explanation_revisions` row mid-suite changes no answer.
+* A tool call and its result are never separated: asserted at the `Message` level after a
+  compaction that drops an assistant turn, not at the plan level.
+* A step at `max_turns - 1` that compacts still completes; the summary turn is debited and appears
+  in the ledger.
 * UI template rendering suite; accessibility checks per UI standards.
 
 **Acceptance criteria**

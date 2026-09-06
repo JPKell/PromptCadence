@@ -192,8 +192,9 @@ LoadCoach responses (results, routing metadata, usage, tool-call requests), conf
 Trajectory records and state transitions, plans, per-step approvals and the `ExecutionIntent`s
 they mint (every revision retained), turns with full provenance (model identity, tier, the
 `(intent_id, revision)` executed under, `TokenUsage`, timings — LoadCoach time and PromptCadence
-overhead separately), tool-call records, ledger entries, egress decisions, compaction events, the
-composed explanation document with its materialized revisions, SSE event streams, typed errors.
+overhead separately), tool-call records, ledger entries, egress decisions, compactions with their
+`context.compacted` events and their summary turns, the composed explanation document with its
+materialized revisions, SSE event streams, typed errors.
 
 **The explanation is an application-owned document** — schema name
 `promptcadence.trajectory_explanation`, version `1.0`, published under the ADR-0035 namespace
@@ -249,7 +250,16 @@ deliberate rejection, like `LoadCoachClient`.
    order — retrievable for the lifetime of the trajectory. Terminal trajectories are served from a
    materialized revision that is a **derived cache, never the source of truth**: it is rebuilt
    whenever the authoritative rows change, and `materialize(rows) == compose_live(rows)` is a
-   golden-tested equality ([Lifecycle §9.1](lifecycle.md)).
+   golden-tested equality ([Lifecycle §9.1](lifecycle.md)). The revision is written in its own
+   write immediately after the terminal transition, never inside it
+   ([ADR-0093](../../adr/0093-materialization-follows-the-terminal-transition.md)), so **a missing
+   revision is not a missing explanation**: the live composition path answers, `promptcadence db
+   rebuild-explanations` fills it in, and the whole table can be dropped at any time without
+   changing a single answer. That last property is asserted directly — the suite deletes every
+   `explanation_revisions` row mid-run and re-reads every explanation. The equality is a **byte**
+   equality, which makes determinism a requirement of this contract rather than a style
+   preference: fixed key order, timestamps rendered from stored values and never from `now`, no
+   dict-iteration dependence, and no `set` in a serialized position.
 3. **Egress contract.** No request whose data classification exceeds the target tier's
    `max_data_classification` is ever sent; the refusal is recorded as an `EgressDecision` exactly
    as an approval would be. A declined call is as auditable as an approved one.
@@ -497,6 +507,15 @@ caller as `INTERNAL_ERROR`:
 | Every other LoadCoach code — `PROVIDER_REJECTED`, `MODEL_NOT_FOUND`, `CAPABILITY_UNSUPPORTED`, `GENERATION_CANCELLED`, `JOB_NOT_FOUND`, `JOB_NOT_CANCELLABLE`, its web layer's `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, and any code this build does not know | Halt with the cause naming the code, **without a repeat**: the same request gets the same answer, and an unknown code cannot be shown to be transient | `LOADCOACH_ERROR` with the original code and details preserved — never `INTERNAL_ERROR` |
 | The client's own read timeout | Cancel the job the request may have started, then repeat under the same intent up to `step_retries`, then halt | `LOADCOACH_ERROR` with `reason = client_timeout` |
 
+`COMPACTION_FAILED` has exactly three producers, and none of them is a traceback. CutCtx's
+`BudgetUnsatisfiable` — the untouchable turns alone exceed the tier's budget — is translated to it
+with both figures in `details`. So is the absence of any admissible **local** tier to summarize on
+([ADR-0090](../../adr/0090-a-compaction-summary-runs-under-a-superseding-revision.md)), naming the
+step's classification ceiling and the tiers that were considered. So is a summarization call that
+could not be served. CutCtx's `SummaryMissing` is **not** among them: it is unreachable from the
+loop by construction, because every plan carrying a `SummarizationRequest` is fulfilled before it
+is applied, and a test asserts the unreachability rather than handling the exception.
+
 The mapping is complete from Phase 3 (`infrastructure/loadcoach.py`, `LOADCOACH_CODE_MAP`, walked
 by a test against LoadCoach's own spec §13 list); the *behaviour* column is the target. The
 `NO_ELIGIBLE_MODEL` and `TASK_PROFILE_NOT_FOUND` cells are real from Phase 7: the intent's
@@ -564,6 +583,19 @@ calls, and sending data to paid remote providers — so its security posture is 
   host-allowlist, literal-IP, redirect and size rules of ADR-0026 §3.
 * Loopback default; non-loopback requires tokens plus the exposure acknowledgement; `Host` header
   allowlist before routing and before authentication.
+* **The operator console authenticates exactly as the API does, and adds no session cookie**
+  ([ADR-0094](../../adr/0094-the-console-authenticates-as-the-api-does.md)). An open loopback
+  install browses and approves as `loopback`; once a token exists, or the bind is not loopback, the
+  console answers `401` and names `promptcadence token create`. That makes the console
+  loopback-first by decision rather than by accident: a browser-usable off-loopback console needs
+  login, rotation, fixation defence, logout and idle expiry, and that is its own record with its
+  own threat model. Every page carrying a form is rendered with MirrorWall's double-submit CSRF
+  token in a hidden field and in the `__Host-mw-csrf` cookie, and `CsrfMiddleware` refuses a form
+  post that does not match ([ADR-0026 §2](../../adr/0026-local-http-hardening.md)). Scopes are
+  enforced on the page as on the API: a `read`-scoped principal is not shown the grant button and
+  is refused by its POST. Model-authored text reaching a template is a **new** trust surface — the
+  templates autoescape and run under `StrictUndefined`, and no template renders raw HTML from a
+  record.
 * Scopes: `read` (status, trajectories, explanations), `write` (submit, cancel), `approve`
   (resolve approval requests — deliberately separate from `write`, so the identity that submits
   work cannot approve its own egress), `admin` (settings, tokens). Scopes are a **set**, not a
@@ -594,8 +626,13 @@ calls, and sending data to paid remote providers — so its security posture is 
 | Compaction plan, 200-turn transcript | ≤ 50 ms | 200 ms |
 | Added latency per SSE event | ≤ 5 ms | 20 ms |
 | Explanation retrieval, terminal trajectory (materialized), any size | ≤ 25 ms | 100 ms |
-| Explanation materialization at terminal transition, 500-turn trajectory | ≤ 2 s | 10 s |
+| Explanation materialization after the terminal transition, 500-turn trajectory | ≤ 2 s | 10 s |
 | Recovery of 100 in-flight trajectories at startup | ≤ 2 s | 10 s |
+
+The retrieval budget is the **materialized** path's. A terminal trajectory whose revision is
+missing — the window between the transition and its follow-up write, or a database whose cache was
+dropped — is served live and is measured against the materialization budget instead; the surface
+says which path answered.
 
 LoadCoach time, tool time and PromptCadence overhead are always reported separately, per turn and per
 trajectory. Egress evaluation and the deviation comparison carry no budgets of their own: both are

@@ -390,12 +390,44 @@ then drop-oldest — with the system turn and the `protected_recent_turns` never
 tool call never separated from its result ([CutCtx §11](../../packages/cutctx/spec.md)).
 
 CutCtx is pure: when the plan contains a `SummarizationRequest`, **PromptCadence** executes it via
-LoadCoach (`general.summarize`, on the trajectory's cheapest admissible *local* tier — a summary
-of confidential turns must not itself become egress) and hands the summary back to the executor.
-Compaction is a view, never a deletion: the store keeps every original turn; what changes is the
-`ThreadSnapshot` sent to the model. Every compaction emits `context.compacted` with before/after
-token estimates and the turns affected, and the summarization call is itself a turn — debited,
-recorded, explainable.
+LoadCoach on the trajectory's cheapest admissible *local* tier — a summary of confidential turns
+must not itself become egress — and hands the summary back to the executor. Compaction is a view,
+never a deletion: the store keeps every original turn; what changes is the `ThreadSnapshot` sent to
+the model. Every compaction emits `context.compacted` with before/after token estimates and the
+turns affected, and the summarization call is itself a turn — debited, recorded, explainable.
+
+**Which envelope the summary runs under**
+([ADR-0090](../../adr/0090-a-compaction-summary-runs-under-a-superseding-revision.md)). A tier is
+configuration over exactly one LoadCoach task profile
+([ADR-0047](../../adr/0047-a-tier-is-configuration-and-a-model-never-sizes-its-own-budget.md)), so
+"`general.summarize`, on tier X" is a combination the tier model does not express: the summarizing
+tier is an ordinary configured **local** tier, chosen as the cheapest admissible one — ordered by
+`context_budget_tokens`, then by name, among the tiers whose `max_data_classification` admits the
+step's ceiling. Contract 1 admits no ungoverned turn, so the summary executes under a **superseding
+revision of the step's own `ExecutionIntent`**: the summarizing tier as `approved_tier`, no
+fallbacks, `approved_tools = ∅`, the step's `max_classification` carried unchanged. A second
+supersession restores the step's envelope when the summary is done, so the step's own turns never
+run under the summary's. Both are `policy` mintings and both emit `intent.minted`. Where no local
+tier admits the step's ceiling there is no summary and no silent fall back to a remote one — the
+compaction fails with `COMPACTION_FAILED` naming the missing tier.
+
+**What the summary turn spends**
+([ADR-0091](../../adr/0091-a-compaction-turn-is-debited-and-does-not-spend-the-steps-advance.md)).
+It is priced and debited exactly as any turn is, against the trajectory's, the day's and the
+project's ceilings. It does **not** count against `max_turns`: that is the step's *advance* budget,
+and a step ended by its own housekeeping would be ended by how verbose a tool result happened to
+be. The separation is structural rather than a filter — the summary is recorded in its own thread
+whose `step_id` is `compaction:<compaction_id>`, which it must be anyway, since a summary appended
+to the thread it summarized would be replayed to the model as a conversational turn on the next
+wire build and double-count the content it replaced.
+
+**Where compaction acts.** The turn sequence is mapped to the wire first, ids and all, and the
+compaction acts on the mapped messages. Tool-call ids are resolved positionally exactly once, over
+the complete recorded sequence — which is always complete, because compaction never deletes a
+row — so by the time a policy may drop an assistant message the call/result mapping is already
+materialized on the messages and cannot shift. CutCtx's exchange invariant keeps a call and its
+results travelling together on top of that; the assistant message's own id is the exchange id its
+tool results carry.
 
 ## 8. Scheduling and the state machine
 
@@ -539,11 +571,20 @@ read becomes "explain trajectory X", and composing it live is a multi-table reco
 grows linearly with trajectory complexity, re-paid on every read. The composed document is
 therefore **materialized** (roadmap §2, D-13):
 
-* When a trajectory reaches a **terminal state**, the same transaction's follow-up work composes
-  the document once and persists it as `explanation_revisions` revision 1 — the document body in
-  the artifact directory with its hash on the row, per the suite's large-payload rule. A terminal
-  trajectory is immutable, so its explanation is write-once and every later read is one row plus
-  one artifact fetch, independent of turn count.
+* When a trajectory reaches a **terminal state**, the transition commits alone (a state change and
+  its event are one write, [ADR-0044](../../adr/0044-a-state-change-and-its-event-are-one-write.md))
+  and the composition runs **immediately afterwards in its own write**
+  ([ADR-0093](../../adr/0093-materialization-follows-the-terminal-transition.md)): two seconds of
+  composition inside the transition's transaction is two seconds of lock, and the guarantee it buys
+  is one the read path does not need. The document is persisted as `explanation_revisions` revision
+  1 — the body in the artifact directory with its hash on the row, per the suite's large-payload
+  rule. A terminal trajectory is immutable, so its explanation is write-once and every later read is
+  one row plus one artifact fetch, independent of turn count.
+* **A process that dies between the two writes loses a cache, not a record.** A terminal trajectory
+  with no revision is served by the live composition path, and `promptcadence db
+  rebuild-explanations` fills it in. There is no repair state and no reader that branches on one.
+  A composition that fails is logged and never makes a completed trajectory fail — the cache does
+  not get to decide the record.
 * Reads of an **in-flight** trajectory compose live — an active trajectory is short relative to
   the archive, and a snapshot of a moving record would be stale by the time it returned.
 * **The rows stay authoritative; the revision is a derived cache** — the same discipline as
@@ -553,6 +594,15 @@ therefore **materialized** (roadmap §2, D-13):
   re-costing under a corrected price record, or a document-schema minor bump on upgrade. A
   revision is never edited; superseded revisions keep their artifacts until the operator prunes
   them.
+* **Phase 8 ships the invalidation entry point; Phase 9 ships the sweep that calls it**
+  ([ADR-0092](../../adr/0092-the-invalidation-entry-point-ships-before-the-sweep-that-calls-it.md)).
+  `invalidate(trajectory_id, cause=…)` marks the current revision superseded and materializes the
+  next from the rows as they now stand, over the causes `retention_scrub`, `recosting` and
+  `schema_upgrade`; only the third has a Phase 8 caller. The first two are tested by scrubbing and
+  re-costing the fixture's rows directly. Nothing in Phase 8 decides retention policy and nothing
+  in Phase 8 deletes content — `plans.raw_document` and `turns.tool_calls_json` are model output
+  and are scrubbed exactly as transcript text is, because an explanation that survives a scrub by
+  keeping its own copy has defeated the scrub.
 * An equality golden asserts `materialize(rows) == compose_live(rows)` for every fixture
   trajectory — the cache can be dropped and rebuilt from the rows at any time, and `promptcadence
   db` gains a `rebuild-explanations` maintenance command for exactly that.
