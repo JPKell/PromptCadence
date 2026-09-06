@@ -68,6 +68,16 @@ _DECISION = re.compile(r"^01DECISION[0-9A-Z]{16}$")
 _ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?")
 
 PLAN_ONLY_TABLES = frozenset({"plans", "plan_steps", "plan_approvals"})
+DERIVED_TABLES = frozenset({"explanation_revisions"})
+"""Tables that are a **derivation** of the record rather than part of it, and are therefore not
+diffed field by field.
+
+This is not a new allowance and does not widen the closed list (G1 §13). Contract 1 is about the
+authoritative rows, and `explanation_revisions` holds a digest of a document *composed from* them —
+a document that embeds the plan on one path and not on the other, which is the difference the list
+already names. Diffing the digest would report that same, allowed difference a second time, through
+a cache. What is asserted instead is that both paths produce a revision at all: a cache that
+existed on one path and not the other would be a real finding."""
 PLAN_ONLY_EVENTS = frozenset({"plan.drafted", "plan.approved"})
 STEP_FRAMING_PROMPT = "step.execute"
 INTENT_SLICE_FIELDS = frozenset(
@@ -206,6 +216,14 @@ def _diff_table(
     if table in PLAN_ONLY_TABLES:
         return (
             [] if planned and not bypassed else [f"{table}: expected rows only on the planned path"]
+        )
+    if table in DERIVED_TABLES:
+        return (
+            []
+            if len(planned) == len(bypassed)
+            else [
+                f"{table}: {len(planned)} rows on the planned path, {len(bypassed)} on the bypass"
+            ]
         )
     if table == "events":
         return _diff_events(planned, bypassed)

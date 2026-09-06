@@ -539,7 +539,11 @@ def recorded_plan(session: Session, trajectory_id: str) -> RecordedPlan | None:
     )
     plan = Plan(
         steps=tuple(plan_step_from_row(row) for row in step_rows),
-        raw_document=plan_row.raw_document,
+        # ``NULL`` once the retention sweep has scrubbed the plan document (migration 0010). The
+        # rebuilt plan is the validated *steps*, which are structure rather than model prose and
+        # are not scrubbed; the raw document is only what the model wrote, and
+        # ``document_sha256`` still proves what that was.
+        raw_document=plan_row.raw_document or "",
         document_sha256=plan_row.document_sha256,
     )
     approval = session.execute(

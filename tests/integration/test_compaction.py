@@ -26,7 +26,7 @@ from promptcadence.domain.errors import ErrorCode
 from promptcadence.domain.events import EventType
 from promptcadence.domain.trajectory import TrajectoryState
 from promptcadence.infrastructure.db import models
-from promptcadence.services.loop import COMPACTION_STEP_PREFIX
+from promptcadence.services.compaction import COMPACTION_STEP_PREFIX
 
 _LONG = "The meeting covered the migration plan in considerable detail. " * 6
 

@@ -93,6 +93,7 @@ __all__ = [
     "TrajectoryTools",
     "isolation_payload",
     "outcome_of",
+    "resolved_root",
     "tools_health_component",
 ]
 
@@ -284,6 +285,17 @@ class ArtifactStore:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         return digest
+
+
+def resolved_root(settings: Settings) -> Path:
+    """Where ``[tools] artifact_root`` resolves to, without building a whole plant.
+
+    A plant probes the isolation ladder by launching a canary, which is far more than a caller who
+    only wants to know a directory should have to pay (the explanation store is the caller).
+    """
+    return _absolute_root(
+        settings.tools.artifact_root, default=data_dir() / "artifacts", field="tools.artifact_root"
+    )
 
 
 @dataclass(frozen=True, slots=True)

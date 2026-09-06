@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from promptcadence.infrastructure.loadcoach import Message, RequestedToolCall
 
 __all__ = [
+    "COMPACTION_STEP_PREFIX",
     "COMPACTION_SUMMARIZE_PROMPT_ID",
     "DEFAULT_ESTIMATOR",
     "POLICY_NAMES",
@@ -83,6 +84,13 @@ __all__ = [
     "to_messages",
     "to_transcript",
 ]
+
+COMPACTION_STEP_PREFIX: Final = "compaction:"
+"""What a compaction thread's ``threads.step_id`` starts with (ADR-0091 rule 3).
+
+A prefix rather than a nullable column or a boolean: every reader of ``threads`` already has to
+know a step id, the bypass path's synthetic ``loop`` set the precedent (ADR-0056 §1), and the
+explanation can tell a compaction thread from a step thread without a join."""
 
 COMPACTION_SUMMARIZE_PROMPT_ID: Final = "compaction.summarize"
 """The versioned record the summarization runs under (ADR-0012). Named here rather than in

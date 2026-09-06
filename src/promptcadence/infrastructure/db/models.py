@@ -101,6 +101,7 @@ __all__ = [
     "Deviation",
     "Event",
     "ExecutionIntent",
+    "ExplanationRevision",
     "Plan",
     "PlanApproval",
     "PlanStep",
@@ -366,7 +367,12 @@ class Plan(Base):
         String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
     )
     document_sha256: Mapped[str] = mapped_column(String(71), nullable=False)
-    raw_document: Mapped[str] = mapped_column(Text, nullable=False)
+    # Nullable from migration 0010, and only for the sweep. ``raw_document`` is model output, so
+    # it follows the retention scrub exactly as transcript text does — an explanation that survived
+    # a scrub by keeping a copy of the plan the model wrote would have defeated the scrub. Nothing
+    # writes ``NULL`` here: a drafting attempt always records what came back, and the digest on
+    # ``document_sha256`` outlives the words either way.
+    raw_document: Mapped[str | None] = mapped_column(Text, nullable=True)
     validated_json: Mapped[dict[str, Any]] = mapped_column(PortableJSON, nullable=False)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # Phase 7 (migration 0007): every drafting attempt is a row, valid or not, so the record shows
@@ -672,6 +678,55 @@ class Compaction(Base):
     __table_args__ = (
         Index("ix_compactions_trajectory_id_created_at", "trajectory_id", "created_at"),
         Index("ix_compactions_thread_id", "thread_id"),
+    )
+
+
+class ExplanationRevision(Base):
+    """One materialized composition of a trajectory's explanation — a **cache**, never the source.
+
+    The rows stay authoritative. This table is the same discipline as ADR-0030's "store usage,
+    derive cost": what is kept is a derivation, and the thing derived from is still there. So the
+    whole table can be deleted at any time, and the only visible effect is that reads recompose
+    live until ``promptcadence db rebuild-explanations`` refills it — asserted directly, by
+    deleting every row mid-suite and re-reading every explanation (ADR-0093 rule 4).
+
+    Revision 1 is written in its own write immediately **after** the terminal transition, never
+    inside it: composing a 500-turn trajectory is budgeted at two seconds and a ceiling of ten,
+    and that much lock on the suite's default engine buys a guarantee the read path does not need
+    (ADR-0093). A terminal trajectory with no revision is therefore an ordinary state, not a
+    repair state.
+
+    Later revisions come from :func:`~promptcadence.services.explanation.invalidate` and name
+    their ``cause``: ``retention_scrub``, ``recosting`` or ``schema_upgrade``. A revision is never
+    edited, and a superseded one keeps its artifact until an operator prunes it (lifecycle §9.1) —
+    which is why ``superseded_at`` is a column here rather than a delete.
+
+    The body is **not** in this table. It is in the artifact directory under its digest, per the
+    suite's large-payload rule, and ``document_sha256`` is both the file's name and the check that
+    what came back is what was written.
+    """
+
+    __tablename__ = "explanation_revisions"
+
+    id: Mapped[str] = ulid_primary_key()
+    trajectory_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    document_sha256: Mapped[str] = mapped_column(String(71), nullable=False)
+    artifact_ref: Mapped[str] = mapped_column(String(71), nullable=False)
+    cause: Mapped[str] = mapped_column(String(40), nullable=False)
+    turn_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    composed_ms: Mapped[float] = mapped_column(Float, nullable=False)
+    superseded_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "trajectory_id", "revision", name="uq_explanation_revisions_trajectory_id_revision"
+        ),
+        Index("ix_explanation_revisions_trajectory_id_revision", "trajectory_id", "revision"),
     )
 
 

@@ -187,6 +187,7 @@ from promptcadence.services.budget import (
     render_remaining_tokens,
 )
 from promptcadence.services.compaction import (
+    COMPACTION_STEP_PREFIX,
     COMPACTION_SUMMARIZE_PROMPT_ID,
     budget_for,
     build_chain,
@@ -202,6 +203,7 @@ from promptcadence.services.egress import (
     host_of,
     tier_target,
 )
+from promptcadence.services.explanation import ExplanationBuilder, explanation_store
 from promptcadence.services.governance import GovernanceContext, load_context
 from promptcadence.services.intents import (
     RecordedPlan,
@@ -305,13 +307,6 @@ _LEASE_HOLDING: Final[frozenset[TrajectoryState]] = frozenset(
 
 _DEVIATION_LIMIT_PER_STEP: Final = 3
 """Lifecycle §5: more than this many deviations on one step halts with ``DEVIATION_HALTED``."""
-
-COMPACTION_STEP_PREFIX: Final = "compaction:"
-"""What a compaction thread's ``threads.step_id`` starts with (ADR-0091 rule 3).
-
-A prefix rather than a nullable column or a boolean: every reader of ``threads`` already has to
-know a step id, the bypass path's synthetic ``loop`` set the precedent (ADR-0056 §1), and the
-explanation can tell a compaction thread from a step thread without a join."""
 
 
 class LeaseLost(Exception):  # noqa: N818 — an internal signal, not a caller-facing error
@@ -548,6 +543,7 @@ class LoopController:
         "_database",
         "_egress",
         "_estimator",
+        "_explanations",
         "_ids",
         "_loadcoach",
         "_planner",
@@ -578,6 +574,7 @@ class LoopController:
         tools: ToolPlant | None = None,
         approvals: ApprovalService | None = None,
         planner: Planner | None = None,
+        explanations: ExplanationBuilder | None = None,
         prompt_renderer: Callable[..., RenderedPrompt] = render,
         loadcoach_has_remote_provider: bool = False,
     ) -> None:
@@ -602,6 +599,9 @@ class LoopController:
             approvals: The approval service, or ``None`` to build one over the same handles.
             planner: The planner, or ``None`` to build one over ``loadcoach`` and
                 ``[planning] corrective_retries``.
+            explanations: The explanation builder, or ``None`` to build one over the same handles.
+                A terminal trajectory's document is materialized through it, in its own write
+                after the transition (ADR-0093).
             prompt_renderer: How prompt records are rendered; injected so a test can watch the
                 step framing without a pack on disk.
             loadcoach_has_remote_provider: Whether LoadCoach has a remote provider registered —
@@ -646,7 +646,22 @@ class LoopController:
                 prompt_renderer=prompt_renderer,
             )
         )
+        self._explanations = (
+            explanations
+            if explanations is not None
+            else ExplanationBuilder(
+                database,
+                budget=budget,
+                egress=egress,
+                artifacts=explanation_store(settings),
+            )
+        )
         self._render = prompt_renderer
+
+    @property
+    def explanations(self) -> ExplanationBuilder:
+        """The explanation builder this controller materializes through."""
+        return self._explanations
 
     @property
     def approvals(self) -> ApprovalService:
@@ -936,7 +951,7 @@ class LoopController:
     # ----------------------------------------------------------------------------------------
 
     def run(self, trajectory_id: str, *, signals: RunSignals | None = None) -> TrajectoryState:
-        """Run a trajectory this worker holds: draft and approve if ``planning``, then execute.
+        """Run a trajectory this worker holds, then materialize its explanation if it ended.
 
         Args:
             trajectory_id: The trajectory.
@@ -947,6 +962,37 @@ class LoopController:
             lease-holding state itself when this worker lost the lease and stopped without
             committing (the recovering worker owns it now).
         """
+        state = self._run(trajectory_id, signals=signals)
+        if state.is_terminal:
+            self._materialize(trajectory_id)
+        return state
+
+    def _materialize(self, trajectory_id: str) -> None:
+        """Compose the terminal trajectory's explanation once, in its own write (ADR-0093).
+
+        **After** the transition, never inside it. The transition is a few hundred bytes of row
+        change and its event, one write as ADR-0044 requires; the composition is a multi-table read
+        of everything the trajectory ever did, budgeted at two seconds for 500 turns and a ceiling
+        of ten. That much held write transaction on SQLite is paid at exactly the moment a worker
+        is finishing one trajectory and wants to claim the next, and it buys a guarantee the read
+        path does not need.
+
+        A failure here is logged and swallowed. The rows are the record; this is a cache, and a
+        completed trajectory that could not have its cache written is still a completed trajectory
+        — making it fail would be the cache deciding the record (ADR-0093 rule 5). The next read
+        composes live and ``promptcadence db rebuild-explanations`` fills the row in.
+        """
+        try:
+            self._explanations.materialize(trajectory_id, now=self._clock())
+        except Exception:  # noqa: BLE001 — a cache write must not decide a trajectory's outcome
+            logger.warning(
+                "explanation.materialize_failed",
+                extra={"trajectory_id": trajectory_id},
+                exc_info=True,
+            )
+
+    def _run(self, trajectory_id: str, *, signals: RunSignals | None = None) -> TrajectoryState:
+        """The run itself; :meth:`run` adds the terminal materialization around it."""
         flags = signals if signals is not None else RunSignals.fresh()
         with correlation(trajectory_id=trajectory_id):
             with self._database.read() as session:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json as json_module
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -22,6 +23,11 @@ if TYPE_CHECKING:
 __all__ = ["app"]
 
 app = typer.Typer(help="Database migration and maintenance.")
+
+
+def _utc_now() -> datetime:
+    """The instant, for a command that has no service to inject one from."""
+    return datetime.now(UTC)
 
 
 @contextmanager
@@ -174,3 +180,67 @@ def restore(
     with _open_database(config) as database:
         result = weightsdb_restore(database.engine, source, confirm=True)
     typer.echo(f"Restored {result.path} from {result.source}.")
+
+
+@app.command("rebuild-explanations")
+def rebuild_explanations(
+    trajectory: Annotated[
+        str | None,
+        typer.Option("--trajectory", help="One trajectory id, or omit for every terminal one."),
+    ] = None,
+    drop: Annotated[
+        bool,
+        typer.Option(
+            "--drop",
+            help="Delete every materialized revision first, then rebuild from the rows.",
+        ),
+    ] = False,
+    config: Annotated[
+        str | None, typer.Option("--config", help="Path to a config.toml file.")
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print JSON instead of a summary.")
+    ] = False,
+) -> None:
+    """Recompose materialized explanations from the rows. Mode: local.
+
+    The maintenance arm of the derived cache (lifecycle §9.1). The rows are authoritative and
+    ``explanation_revisions`` is a cache over them, so this command is always safe: it composes
+    each terminal trajectory's document again and writes a revision only where the bytes actually
+    changed. A run over an intact cache reports ``rebuilt 0``, which is the assertion that the
+    cache was correct rather than a run that did nothing.
+
+    ``--drop`` deletes every revision first, which is the stronger form: the cache is discarded
+    and rebuilt from nothing. Reads keep working throughout — a trajectory with no revision is
+    composed live (ADR-0093).
+
+    Example:
+        promptcadence db rebuild-explanations --drop --json
+    """
+    from promptcadence.config import load_settings
+    from promptcadence.services.budget import BudgetService
+    from promptcadence.services.egress import EgressService
+    from promptcadence.services.explanation import ExplanationBuilder, explanation_store
+    from promptcadence.services.pricing import PricingCatalog
+
+    settings = load_settings(config_path=config).settings
+    with _open_database(config) as database:
+        builder = ExplanationBuilder(
+            database,
+            budget=BudgetService(
+                database, settings, PricingCatalog.from_settings(settings), clock=_utc_now
+            ),
+            egress=EgressService(database, clock=_utc_now),
+            artifacts=explanation_store(settings),
+        )
+        dropped = builder.drop_revisions(trajectory) if drop else 0
+        considered, written = builder.rebuild(now=datetime.now(UTC), trajectory_id=trajectory)
+
+    if json_output:
+        typer.echo(
+            json_module.dumps({"dropped": dropped, "considered": considered, "rebuilt": written})
+        )
+        return
+    typer.echo(f"dropped         {dropped}")
+    typer.echo(f"considered      {considered}")
+    typer.echo(f"rebuilt         {written}")

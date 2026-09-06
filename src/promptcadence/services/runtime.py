@@ -29,6 +29,7 @@ from promptcadence.services.database import Database, database_health_component,
 from promptcadence.services.egress import EgressService
 from promptcadence.services.estimates import StepEstimator
 from promptcadence.services.events import TrajectoryEventSink
+from promptcadence.services.explanation import ExplanationBuilder, explanation_store
 from promptcadence.services.loadcoach_status import loadcoach_health_component
 from promptcadence.services.pricing import PricingCatalog
 from promptcadence.services.records import RecordReader
@@ -56,6 +57,7 @@ class Runtime:
         "approvals",
         "budget",
         "egress",
+        "explanations",
         "loadcoach",
         "pricing",
         "records",
@@ -121,6 +123,15 @@ class Runtime:
             clock=utc_now,
         )
         self.records = RecordReader(database)
+        # One plant per process (below) owns the tool artifact directory; the explanation's
+        # documents go to a sibling of it, so "no tool artifact was filed" stays an answerable
+        # question.
+        self.explanations = ExplanationBuilder(
+            database,
+            budget=self.budget,
+            egress=self.egress,
+            artifacts=explanation_store(settings),
+        )
         # One plant per process: the isolation probe launches a real canary, and every worker
         # thread asking the same question of the same host should ask it once.
         self.tools = ToolPlant(settings)
