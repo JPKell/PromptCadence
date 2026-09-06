@@ -158,9 +158,18 @@ class LoadCoachUnavailableError(SuiteError):
 class CompactionFailedError(SuiteError):
     """LoadCoach reported ``CONTEXT_LIMIT_EXCEEDED`` and nothing here could make the context fit.
 
-    Spec §13 maps that code to "trigger compaction and retry once; then halt". Compaction arrives
-    in Phase 8, so until then every occurrence is the "then halt" half, surfaced as this code with
-    LoadCoach's own in ``details`` — never as a silent retry of the same request.
+    Spec §13 maps that code to "trigger compaction and retry once; then halt", and from Phase 8
+    the code has exactly three producers, none of which is a traceback: CutCtx's
+    ``BudgetUnsatisfiable`` — the untouchable turns alone exceed the tier's budget — translated
+    with both figures in ``details``; the absence of any admissible **local** tier to summarize on
+    (ADR-0090); and a summarization call that could not be served. LoadCoach's own
+    ``CONTEXT_LIMIT_EXCEEDED`` still arrives here when compaction ran and the context still did not
+    fit, with its code in ``details`` — never as a silent retry of the same request.
+
+    CutCtx's ``SummaryMissing`` is deliberately **not** among the producers: every plan carrying a
+    ``SummarizationRequest`` is fulfilled before it is applied, so the exception is unreachable
+    from the loop, and a test asserts the unreachability rather than a handler pretending it is
+    expected.
     """
 
     code: ClassVar[str] = ErrorCode.COMPACTION_FAILED

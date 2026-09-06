@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from setspec.prompts import PromptNotFound, PromptVariableError, build_manifest
 
+from promptcadence.services.compaction import COMPACTION_SUMMARIZE_PROMPT_ID
 from promptcadence.services.prompts import (
     PACK_ROOT,
     PLANNER_CORRECTIVE_PROMPT_ID,
@@ -32,12 +33,13 @@ def test_the_pack_parses_and_names_itself() -> None:
         PLANNER_DRAFT_PROMPT_ID,
         PLANNER_CORRECTIVE_PROMPT_ID,
         STEP_EXECUTE_PROMPT_ID,
+        COMPACTION_SUMMARIZE_PROMPT_ID,
     }
 
 
 def test_the_manifest_is_current() -> None:
     """A record edited without regenerating the manifest silently changes what a model was asked."""
-    _, drift = build_manifest(PACK_ROOT, generated_at="2026-09-04T00:00:00Z")
+    _, drift = build_manifest(PACK_ROOT, generated_at="2026-09-06T00:00:00Z")
     assert drift.added == ()
     assert drift.removed == ()
     assert drift.changed == ()

@@ -320,18 +320,40 @@ def _generate_call_sites() -> set[tuple[str, str]]:
 def test_the_only_generate_call_sites_are_the_governed_turn_and_the_planner() -> None:
     """The diff shows two runs agreed; this shows they had to.
 
-    ``LoadCoachClient.generate`` is reached from exactly two places: the loop's ``_call``, which
-    takes a ``_StepRun`` — an intent and the thread its turns go in — and the planner's ``draft``,
-    which produces no turn and runs under ``tools.plan``. There is no third site, so there is no
-    turn a model could answer outside an envelope. The other half of the proof is
-    ``TurnProvenance``'s ``InitVar``: a turn row cannot be built without an intent object
+    ``LoadCoachClient.generate`` is reached from exactly three places, and every one of them is
+    named here so a fourth is a test failure rather than a discovery:
+
+    * the loop's ``_call``, which takes a ``_StepRun`` — an intent and the thread its turns go in;
+    * the planner's ``draft``, which produces no turn and runs under ``tools.plan``;
+    * the loop's ``_summary_turn`` (P8), which takes the ``ExecutionIntent`` the compaction
+      summary runs under as a **required positional** parameter — the superseding revision naming
+      the summarizing tier, with no fallbacks and no tools (ADR-0090). It produces a turn, in its
+      own thread, debited and recorded, and it cannot be called without an envelope to run under.
+
+    There is therefore no turn a model could answer outside an envelope. The other half of the
+    proof is ``TurnProvenance``'s ``InitVar``: a turn row cannot be built without an intent object
     (``tests/unit/test_domain_intent.py``).
     """
     sites = _generate_call_sites()
     assert sites == {
         ("services/loop.py", "_call"),
+        ("services/loop.py", "_summary_turn"),
         ("services/planner.py", "draft"),
     }, f"an ungoverned call site appeared: {sites}"
+    loop_source = ast.parse((_SRC / "services" / "loop.py").read_text(encoding="utf-8"))
+    summary = next(
+        node
+        for node in ast.walk(loop_source)
+        if isinstance(node, ast.FunctionDef) and node.name == "_summary_turn"
+    )
+    summary_parameters = {
+        argument.arg: ast.unparse(argument.annotation)
+        for argument in summary.args.args
+        if argument.annotation
+    }
+    assert summary_parameters.get("intent") == "ExecutionIntent", (
+        "the compaction summary's call takes the intent it runs under, not an optional one"
+    )
     loop = ast.parse((_SRC / "services" / "loop.py").read_text(encoding="utf-8"))
     call = next(
         node

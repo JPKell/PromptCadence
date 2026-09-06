@@ -70,11 +70,20 @@ from baseaicore import (
     sha256_of,
 )
 from commissioner import Verdict
+from cutctx import (
+    BudgetUnsatisfiable,
+    CompactionExecutor,
+    CompactionPlan,
+    CompactionReport,
+    Transcript,
+    TranscriptTurn,
+)
 from sqlalchemy import select, true, update
 from toolyard import MAX_RECORDED_NAME_CHARS, StoreFailure, ToolCallRequest
 from toolyard import EgressClass as ToolEgressClass
 
 from promptcadence.config import ConfigurationError
+from promptcadence.domain.compaction import ContextCompacted
 from promptcadence.domain.deviation import (
     Deviation,
     DeviationCategory,
@@ -105,7 +114,10 @@ from promptcadence.domain.intent import (
     BYPASS_STEP_ID,
     ExecutionIntent,
     IntentMinted,
+    MintedBy,
+    MintKind,
     mint_bypass_default,
+    supersede,
 )
 from promptcadence.domain.plan import Plan, PlanDrafted, PlanStep
 from promptcadence.domain.policy import (
@@ -173,6 +185,16 @@ from promptcadence.services.budget import (
     CurrencyMismatchError,
     render_remaining_money,
     render_remaining_tokens,
+)
+from promptcadence.services.compaction import (
+    COMPACTION_SUMMARIZE_PROMPT_ID,
+    budget_for,
+    build_chain,
+    should_compact,
+    summarizing_tier,
+    target_tokens,
+    to_messages,
+    to_transcript,
 )
 from promptcadence.services.egress import (
     EgressService,
@@ -283,6 +305,13 @@ _LEASE_HOLDING: Final[frozenset[TrajectoryState]] = frozenset(
 
 _DEVIATION_LIMIT_PER_STEP: Final = 3
 """Lifecycle §5: more than this many deviations on one step halts with ``DEVIATION_HALTED``."""
+
+COMPACTION_STEP_PREFIX: Final = "compaction:"
+"""What a compaction thread's ``threads.step_id`` starts with (ADR-0091 rule 3).
+
+A prefix rather than a nullable column or a boolean: every reader of ``threads`` already has to
+know a step id, the bypass path's synthetic ``loop`` set the precedent (ADR-0056 §1), and the
+explanation can tell a compaction thread from a step thread without a join."""
 
 
 class LeaseLost(Exception):  # noqa: N818 — an internal signal, not a caller-facing error
@@ -461,12 +490,37 @@ class _AttemptFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class _SummaryRecord:
+    """What one compaction's summarization leaves on the ``compactions`` row.
+
+    ``turn_id`` is the **last** summary turn when a chain ran the summarizing policy more than
+    once; every one of them is a turn row in ``thread_id``, and the explanation reads the thread
+    rather than this field when it wants all of them.
+    """
+
+    thread_id: str
+    turn_id: str | None
+    intent_id: str
+    intent_revision: int
+    tier: str
+
+
+@dataclass(slots=True)
 class _StepRun:
     """One step's execution: the envelope its turns run under, and the thread they go in.
 
     The unit :meth:`LoopController._turn` works on, whichever path built it. ``step`` is the plan
     step on the planned path and ``None`` on the bypass path, whose one run is the synthetic
     ``loop``; nothing governance-related reads it — it is what the framing turn is rendered from.
+
+    **Not frozen, for exactly one reason.** A compaction supersedes the step's intent twice — once
+    to narrow the envelope onto the summarizing tier, once to restore it (ADR-0090) — and the
+    step's remaining turns must be compared against, and recorded under, the revision that is
+    actually live. The alternative is threading a replaced value back up through ``_call``,
+    ``_turn`` and ``_run_step``, which puts the same mutation in three signatures and adds a way
+    for one of them to forget. ``intent`` is the only field that moves, it moves only in
+    :meth:`LoopController._supersede_for_compaction`, and it never moves to an envelope wider than
+    the one it left.
     """
 
     step_id: str
@@ -1763,6 +1817,16 @@ class LoopController:
         del surface  # the subject is verified when the turn is recorded, not here
         trajectory_id = ctx.view.trajectory_id
         sequence = len(turns) + 1
+        # The wire is decided before the turn is announced: compaction may itself run a turn (its
+        # own ``turn.started``/``turn.completed``, in its own thread), and nesting that inside this
+        # turn's announcement would put two open turns on one trajectory's stream.
+        messages, origins = self._transcript(run.thread_id, turns)
+        try:
+            messages = self._compact(ctx, run, tier, messages, origins)
+        except CompactionFailedError as exc:
+            return self._end_with(
+                trajectory_id, halt, cause=exc.message, error_code=ErrorCode.COMPACTION_FAILED
+            )
         started = self._clock()
         started_clock = time.perf_counter()
         with self._sink.write() as (session, events):
@@ -1783,7 +1847,7 @@ class LoopController:
         flags.announce(turn_id)
         request = GenerateRequest(
             task=tier.task_profile,
-            messages=self._transcript(run.thread_id, turns),
+            messages=messages,
             idempotency_key=turn_id,
             tools=self._tool_definitions(run.intent.approved_tools),
         )
@@ -1857,8 +1921,16 @@ class LoopController:
 
     def _transcript(
         self, thread_id: str, turns: Sequence[Turn[TurnProvenance]]
-    ) -> tuple[Message, ...]:
-        """The thread as LoadCoach's wire carries it, tool calls included.
+    ) -> tuple[tuple[Message, ...], tuple[str, ...]]:
+        """The thread as LoadCoach's wire carries it, tool calls included, and whose turn each is.
+
+        Returns:
+            The messages, and the recorded turn id each one came from, positionally aligned. The
+            second half exists because compaction acts on these messages and must name what it
+            acted on in ids a later reader can resolve — a position in a wire built once is
+            meaningless in the ``compactions`` row and in ``context.compacted``. One message per
+            turn at most, so the ids are unique.
+
 
         Since LoadCoach's `/generate` gained ``tool_calls`` on a message (G2), an assistant turn
         that answered with calls and no text replays as what it was rather than as text naming
@@ -1878,7 +1950,7 @@ class LoopController:
         omitted from the wire. The rows keep both, and the refusal that was recorded for it stays
         exactly what it was. An assistant turn left with neither content nor calls is omitted with
         them, because it is a turn no provider will accept.
-        """
+        """  # noqa: D205 — the summary line is above the Returns block, which reads better here
         assistants = [turn.turn_id for turn in turns if turn.role is TurnRole.ASSISTANT]
         calls_by_turn: dict[str, tuple[RequestedToolCall, ...]] = {}
         if assistants:
@@ -1891,6 +1963,7 @@ class LoopController:
                     if raw:
                         calls_by_turn[turn_id] = assemble_tool_calls(list(raw))
         messages: list[Message] = []
+        origins: list[str] = []
         pending: list[str | None] = []
         for turn in turns:
             content = turn.content or ""
@@ -1910,6 +1983,7 @@ class LoopController:
                         tool_calls=replayable,
                     )
                 )
+                origins.append(turn.turn_id)
                 continue
             if turn.role is TurnRole.TOOL:
                 call_id = pending.pop(0) if pending else None
@@ -1918,11 +1992,458 @@ class LoopController:
                 messages.append(
                     Message(role=turn.role.value, content=content, tool_call_id=call_id)
                 )
+                origins.append(turn.turn_id)
                 continue
             messages.append(
                 Message(role=turn.role.value, content=content, tool_call_id=turn.tool_call_id)
             )
-        return tuple(messages)
+            origins.append(turn.turn_id)
+        return tuple(messages), tuple(origins)
+
+    # ---- compaction (lifecycle §7, ADR-0090, ADR-0091) -------------------------------------
+
+    def _compact(
+        self,
+        ctx: GovernanceContext,
+        run: _StepRun,
+        tier: Tier,
+        messages: tuple[Message, ...],
+        origins: tuple[str, ...],
+    ) -> tuple[Message, ...]:
+        """Fit the wire inside the tier's context budget, and record that the wire differed.
+
+        Args:
+            ctx: The governance context, for the tier snapshot and the approval policy.
+            run: The step. Its ``intent`` is superseded twice when a summary runs, and left exactly
+                as it was when one does not.
+            tier: The tier this turn will go to. Its ``context_budget_tokens`` is the budget and
+                the trigger is ``estimate > threshold × budget`` (lifecycle §7).
+            messages: The wire as :meth:`_transcript` built it.
+            origins: The recorded turn each message came from.
+
+        Returns:
+            The messages to send: ``messages`` unchanged when the transcript is inside the
+            threshold, and the compacted view otherwise.
+
+        Raises:
+            CompactionFailedError: The untouchable turns alone exceed the budget
+                (``BudgetUnsatisfiable``), no local tier admits the step's ceiling, or the
+                summarization could not be served. Never a traceback and never a silent oversized
+                request (spec §13).
+
+        Compaction is a **view, never a deletion**: no ``turns`` row is touched. What is written is
+        the ``compactions`` row and its ``context.compacted`` event, in one write (ADR-0044),
+        because otherwise a reader cannot tell why one turn saw less history than the turn before
+        it.
+        """
+        settings = self._settings.compaction
+        transcript = to_transcript(messages, origins)
+        if not should_compact(transcript, tier, settings):
+            return messages
+        try:
+            plan = build_chain(settings).decide(transcript, budget_for(tier, settings))
+        except BudgetUnsatisfiable as exc:
+            message = (
+                f"the transcript cannot be compacted to fit tier {tier.name}: "
+                f"{exc.message} (CutCtx {exc.code})"
+            )
+            raise CompactionFailedError(
+                message,
+                details={"reason": "budget_unsatisfiable", "tier": tier.name, **exc.details},
+            ) from exc
+        summaries, summary = self._summarize(ctx, run, tier, transcript, plan)
+        view = CompactionExecutor().apply(transcript, plan, summaries=summaries)
+        self._record_compaction(ctx, run, tier, report=view.report, summary=summary)
+        return to_messages(view.transcript, messages, origins)
+
+    def _summarize(
+        self,
+        ctx: GovernanceContext,
+        run: _StepRun,
+        tier: Tier,
+        transcript: Transcript,
+        plan: CompactionPlan,
+    ) -> tuple[dict[str, str], _SummaryRecord | None]:
+        """Fulfil the plan's summarization requests through LoadCoach, under their own envelope.
+
+        CutCtx never calls a model (ADR-0052), so this is the middle of its plan → fulfil → apply.
+        Skipping it would raise ``SummaryMissing`` from ``apply``; the loop never reaches that,
+        because a plan carrying requests is always fulfilled here first.
+
+        Args:
+            ctx: The governance context.
+            run: The step, whose ``intent`` is narrowed and restored around the call.
+            tier: The step's tier, named in the refusal when no local tier admits the ceiling.
+            transcript: What was planned over, for rendering the span.
+            plan: The plan, whose ``summarization_requests`` are fulfilled in order.
+
+        Returns:
+            ``(summaries, record)`` — the group id to summary text mapping ``apply`` takes, and
+            what to put on the ``compactions`` row. Both are empty when the chain fitted the budget
+            by masking and dropping alone, which is the common case and costs nothing.
+
+        Raises:
+            CompactionFailedError: No local tier admits the step's ceiling, or LoadCoach could not
+                serve the summary.
+        """
+        if not plan.summarization_requests:
+            return {}, None
+        ceiling = run.intent.max_classification
+        target = summarizing_tier(ctx.tier_policy.snapshot.tiers, ceiling=ceiling, step_tier=tier)
+        by_id = {turn.turn_id: turn for turn in transcript.turns}
+        step_envelope = run.intent
+        narrowed = self._supersede_for_compaction(
+            ctx, run, approved_tier=target.name, approved_tools=frozenset()
+        )
+        thread_id = self._ids()
+        summaries: dict[str, str] = {}
+        last_turn_id: str | None = None
+        sequence = 0
+        try:
+            for request in plan.summarization_requests:
+                rendered = render(
+                    COMPACTION_SUMMARIZE_PROMPT_ID,
+                    {
+                        "turn_count": len(request.turn_ids),
+                        "transcript": _render_span(request.turn_ids, by_id),
+                        "target_tokens": request.target_tokens,
+                    },
+                )
+                sequence += 2
+                turn_id = self._ids()
+                summaries[request.group_id], last_turn_id = self._summary_turn(
+                    ctx,
+                    narrowed,
+                    target,
+                    thread_id=thread_id,
+                    first=sequence == 2,
+                    sequence=sequence,
+                    turn_id=turn_id,
+                    rendered=rendered,
+                )
+        finally:
+            # The step's envelope is restored whatever happened, so a failed summary cannot leave
+            # the step running on the summarizing tier with no tools (ADR-0090 rule 3).
+            self._supersede_for_compaction(
+                ctx,
+                run,
+                approved_tier=step_envelope.approved_tier,
+                fallback_tiers=step_envelope.fallback_tiers,
+                approved_tools=step_envelope.approved_tools,
+            )
+        return summaries, _SummaryRecord(
+            thread_id=thread_id,
+            turn_id=last_turn_id,
+            intent_id=narrowed.intent_id,
+            intent_revision=narrowed.revision,
+            tier=target.name,
+        )
+
+    def _supersede_for_compaction(
+        self,
+        ctx: GovernanceContext,
+        run: _StepRun,
+        *,
+        approved_tier: str,
+        approved_tools: frozenset[str],
+        fallback_tiers: tuple[str, ...] = (),
+    ) -> ExecutionIntent:
+        """Mint the next revision of the step's intent, persist it, and make it the live one.
+
+        Both directions of ADR-0090 rule 3 go through here: the narrowing onto the summarizing
+        tier and the restoration afterwards. A ``policy`` minting in both cases — the compaction
+        policy chose it and no person did, so ``MintKind`` stays the closed three it is.
+
+        Returns:
+            The new revision, which is also now ``run.intent``: the step's remaining turns are
+            compared against, and recorded under, the revision that is actually live.
+        """
+        now = self._clock()
+        intent = supersede(
+            run.intent,
+            tier_policy=ctx.tier_policy,
+            policy=ctx.approval_policy,
+            minted_by=MintedBy(kind=MintKind.POLICY),
+            minted_at=now,
+            approved_tier=approved_tier,
+            fallback_tiers=fallback_tiers,
+            approved_tools=approved_tools,
+        )
+        with self._sink.write() as (session, events):
+            self._owned_cas(session, ctx.view.trajectory_id, values={"updated_at": now})
+            session.add(intent_row(intent))
+            events.append(ctx.view.trajectory_id, IntentMinted.of(intent), now=now)
+        run.intent = intent
+        return intent
+
+    def _summary_turn(
+        self,
+        ctx: GovernanceContext,
+        intent: ExecutionIntent,
+        tier: Tier,
+        *,
+        thread_id: str,
+        first: bool,
+        sequence: int,
+        turn_id: str,
+        rendered: RenderedPrompt,
+    ) -> tuple[str, str]:
+        """Run one summarization as a governed, debited, recorded turn.
+
+        The turn goes in **its own thread**, whose ``step_id`` is ``compaction:<thread id>``: a
+        summary appended to the thread it summarized would be replayed to the model as a
+        conversational turn on the next wire build, double-counting the content it replaced, and
+        it would spend the step's ``max_turns`` on housekeeping the caller never asked for
+        (ADR-0091).
+
+        Returns:
+            ``(summary text, the assistant turn's id)``.
+
+        Raises:
+            CompactionFailedError: LoadCoach could not serve the summary, or answered without a
+                subject this side can verify. Every one of those is a compaction that did not
+                happen, never a summary this method invented.
+        """
+        trajectory_id = ctx.view.trajectory_id
+        now = self._clock()
+        provenance = intent.provenance(trajectory_id=trajectory_id, tier=tier.name)
+        ask = Turn(
+            self._ids(),
+            thread_id,
+            sequence - 1,
+            TurnRole.USER,
+            provenance,
+            content=rendered.user,
+            content_sha256=sha256_of(rendered.user),
+        )
+        with self._sink.write() as (session, events):
+            if first:
+                session.add(
+                    thread_row(
+                        Thread(thread_id=thread_id, owner_id=trajectory_id, created_at=now),
+                        step_id=f"{COMPACTION_STEP_PREFIX}{thread_id}",
+                    )
+                )
+            session.add(
+                turn_row(ask, prompt=(rendered.prompt_id, rendered.version, rendered.sha256))
+            )
+            events.append(
+                trajectory_id,
+                TurnStarted(
+                    trajectory_id=trajectory_id,
+                    turn_id=turn_id,
+                    sequence=sequence,
+                    tier=tier.name,
+                    task_profile=tier.task_profile,
+                    intent_id=intent.intent_id,
+                    intent_revision=intent.revision,
+                ),
+                now=now,
+            )
+        started = time.perf_counter()
+        try:
+            response = self._loadcoach.generate(
+                GenerateRequest(
+                    task=tier.task_profile,
+                    messages=(Message(role=TurnRole.USER.value, content=rendered.user),),
+                    idempotency_key=turn_id,
+                )
+            )
+        except (LoadCoachUnavailableError, LoadCoachError) as exc:
+            message = (
+                f"the compaction summary could not be served on tier {tier.name}: {exc.message}"
+            )
+            raise CompactionFailedError(
+                message,
+                details={"reason": "summary_unserved", "tier": tier.name, "cause": exc.code},
+            ) from exc
+        overhead_ms = max(
+            (time.perf_counter() - started) * 1000.0 - float(response.timing.total_ms or 0), 0.0
+        )
+        if not response.completed:
+            message = (
+                f"the compaction summary's LoadCoach job {response.job_id} ended "
+                f"{response.status!r} rather than completed"
+            )
+            raise CompactionFailedError(
+                message, details={"reason": "summary_unserved", "tier": tier.name}
+            )
+        self._debit_turn(ctx, tier, turn_id=turn_id, response=response, now=self._clock())
+        answer = Turn(
+            turn_id,
+            thread_id,
+            sequence,
+            TurnRole.ASSISTANT,
+            provenance,
+            content=response.text,
+            content_sha256=sha256_of(response.text),
+            model_canonical_id=response.model.canonical_id,
+            finish_reason=response.finish_reason,
+            usage=response.usage,
+        )
+        now = self._clock()
+        with self._sink.write() as (session, events):
+            session.add(
+                turn_row(
+                    answer,
+                    loadcoach_job_id=response.job_id,
+                    loadcoach_ms=response.timing.total_ms,
+                    overhead_ms=overhead_ms,
+                )
+            )
+            events.append(
+                trajectory_id,
+                TurnCompleted(
+                    trajectory_id=trajectory_id,
+                    turn_id=turn_id,
+                    sequence=sequence,
+                    tier=tier.name,
+                    model_canonical_id=response.model.canonical_id,
+                    loadcoach_job_id=response.job_id,
+                    finish_reason=response.finish_reason.value if response.finish_reason else None,
+                    schema_validated=response.validation.schema_validated,
+                    input_tokens=_supported(response.usage.input_tokens),
+                    output_tokens=_supported(response.usage.output_tokens),
+                    loadcoach_ms=response.timing.total_ms,
+                    overhead_ms=int(overhead_ms),
+                    decision=FinishOutcome.COMPLETE,
+                ),
+                now=now,
+            )
+        self._verify_summary_subject(ctx, intent, tier, turn_id=turn_id, response=response)
+        return response.text, turn_id
+
+    def _verify_summary_subject(
+        self,
+        ctx: GovernanceContext,
+        intent: ExecutionIntent,
+        tier: Tier,
+        *,
+        turn_id: str,
+        response: GenerationResponse,
+    ) -> None:
+        """Check the summary against its own envelope, and refuse rather than keep a bad one.
+
+        ADR-0090 rule 5: no summary turn executes outside the envelope of the trajectory it is
+        summarizing. The envelope permits exactly one local tier and no tools, so the comparison
+        this makes is the egress one — a remote provider answering a local-tier summary is the
+        ``tier_violation`` spec §11 contract 4 exists for, and it is **recorded** before it is
+        refused, because refusing without recording deletes the evidence (lifecycle §5).
+        """
+        surface = load_provider_surface(self._loadcoach)
+        try:
+            subject = resolve_subject(response.model, surface=surface)
+        except LoadCoachError as exc:
+            message = (
+                f"the compaction summary's execution subject could not be verified: {exc.message}"
+            )
+            raise CompactionFailedError(
+                message, details={"reason": "summary_subject_unverified", "tier": tier.name}
+            ) from exc
+        facts = TurnFacts(
+            turn_id,
+            tier.name,
+            subject,
+            intent.max_classification,
+            1,
+            0,
+            trajectory_allowlist=ctx.declaration.tool_allowlist,
+        )
+        deviations = compare(facts, intent)
+        if not deviations:
+            return
+        trajectory_id = ctx.view.trajectory_id
+        scope = ctx.approval_policy.reapproval_scope
+        now = self._clock()
+        with self._sink.write() as (session, events):
+            for deviation in deviations:
+                body = DeviationDetected.of(deviation, trajectory_id=trajectory_id, scope=scope)
+                session.add(_deviation_row(deviation, trajectory_id=trajectory_id, body=body))
+                events.append(trajectory_id, body, now=now)
+        message = "the compaction summary ran outside its own envelope: " + ", ".join(
+            sorted(deviation.category.value for deviation in deviations)
+        )
+        raise CompactionFailedError(
+            message,
+            details={
+                "reason": "summary_outside_envelope",
+                "tier": tier.name,
+                "categories": sorted(deviation.category.value for deviation in deviations),
+            },
+        )
+
+    def _record_compaction(
+        self,
+        ctx: GovernanceContext,
+        run: _StepRun,
+        tier: Tier,
+        *,
+        report: CompactionReport,
+        summary: _SummaryRecord | None,
+    ) -> None:
+        """Write the ``compactions`` row and its ``context.compacted`` event in one write."""
+        trajectory_id = ctx.view.trajectory_id
+        now = self._clock()
+        compaction_id = self._ids()
+        settings = self._settings.compaction
+        with self._sink.write() as (session, events):
+            self._owned_cas(session, trajectory_id, values={"updated_at": now})
+            session.add(
+                models.Compaction(
+                    id=compaction_id,
+                    trajectory_id=trajectory_id,
+                    thread_id=run.thread_id,
+                    step_id=run.step_id,
+                    tier=tier.name,
+                    budget_tokens=target_tokens(tier, settings),
+                    threshold=settings.threshold,
+                    policy_name=report.policy_name,
+                    policy_version=report.policy_version,
+                    plan_hash=report.plan_hash,
+                    tokens_before=report.tokens_before,
+                    tokens_after_estimate=report.tokens_after_estimate,
+                    turns_before=report.turns_before,
+                    turns_after=report.turns_after,
+                    budget_unmet=report.budget_unmet,
+                    masked_turn_ids=list(report.masked_turn_ids),
+                    summarized_turn_ids=list(report.summarized_turn_ids),
+                    dropped_turn_ids=list(report.dropped_turn_ids),
+                    summary_turn_id=summary.turn_id if summary is not None else None,
+                    summary_intent_id=summary.intent_id if summary is not None else None,
+                    summary_intent_revision=(
+                        summary.intent_revision if summary is not None else None
+                    ),
+                    created_at=now,
+                )
+            )
+            events.append(
+                trajectory_id,
+                ContextCompacted(
+                    trajectory_id=trajectory_id,
+                    compaction_id=compaction_id,
+                    thread_id=run.thread_id,
+                    step_id=run.step_id,
+                    tier=tier.name,
+                    budget_tokens=target_tokens(tier, settings),
+                    threshold=settings.threshold,
+                    policy_name=report.policy_name,
+                    policy_version=report.policy_version,
+                    plan_hash=report.plan_hash,
+                    tokens_before=report.tokens_before,
+                    tokens_after_estimate=report.tokens_after_estimate,
+                    turns_before=report.turns_before,
+                    turns_after=report.turns_after,
+                    budget_unmet=report.budget_unmet,
+                    masked_turn_ids=report.masked_turn_ids,
+                    summarized_turn_ids=report.summarized_turn_ids,
+                    dropped_turn_ids=report.dropped_turn_ids,
+                    summary_turn_id=summary.turn_id if summary is not None else None,
+                    summary_intent_revision=(
+                        summary.intent_revision if summary is not None else None
+                    ),
+                ),
+                now=now,
+            )
 
     def _escalate(
         self,
@@ -3428,6 +3949,28 @@ def _dangling_turn(events: Sequence[StoredEvent], committed: set[str]) -> Stored
             turn_id = event.data.get("turn_id")
             return None if turn_id in committed or turn_id in escalated else event
     return None
+
+
+def _render_span(turn_ids: Sequence[str], by_id: Mapping[str, TranscriptTurn]) -> str:
+    """Render the span a summarization request names, one labelled block per turn.
+
+    The body is model and tool output, and is the whole point of the prompt — so it is rendered as
+    **data**, labelled by role and separated, with no interpolation into an instruction. The
+    prompt record's own text tells the model to treat it as data and not to obey it; this function
+    is the half that makes "it" a bounded, labelled region rather than free text running into the
+    instructions above it.
+
+    A turn the transcript no longer holds is rendered as a named absence rather than skipped: a
+    span with a silent hole would produce a summary that quietly lost a turn.
+    """
+    blocks = []
+    for turn_id in turn_ids:
+        turn = by_id.get(turn_id)
+        if turn is None:  # pragma: no cover — a plan names only turns of its own transcript
+            blocks.append(f"[{turn_id}] (turn not present)")
+            continue
+        blocks.append(f"[{turn.role.value}] {turn.content}")
+    return "\n\n".join(blocks)
 
 
 def _tokens_spent(turns: Sequence[Turn[TurnProvenance]]) -> int:

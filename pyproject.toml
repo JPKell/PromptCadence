@@ -21,8 +21,8 @@ classifiers = [
 ]
 # modelrack and sweatmeter are deliberately absent (ADR-0045 rule 2): PromptCadence reaches a
 # model only through LoadCoach's HTTP API, and telemetry is displayed from LoadCoach's own
-# /system/status. cutctx, loadledger and commissioner are not dependencies yet; each is added
-# when the phase that consumes it arrives. toolyard arrived at P4, below.
+# /system/status. Each package below arrived with the phase that consumes it: toolyard at P4,
+# loadledger at P5, commissioner at P6, cutctx at P8.
 dependencies = [
     "baseaicore>=0.4.1,<0.5",
     # The floor is 0.5 because spec §5 requires `governance.egress_decision`, which setspec 0.5
@@ -44,6 +44,10 @@ dependencies = [
     # (ADR-0053). A normal pin -- toolyard 0.1.0 is on PyPI. Its own dependencies (baseaicore,
     # jsonschema, httpx) are already compatible with the pins above.
     "toolyard>=0.1,<0.2",
+    # P8: context compaction. A normal pin -- cutctx 0.1.0 is on PyPI, and its only runtime
+    # dependency is baseaicore, already pinned above. CutCtx plans and applies; it never calls a
+    # model, so the summarization half stays here, under an intent, on a local tier (ADR-0090).
+    "cutctx>=0.1,<0.2",
     # P5: the budget. A normal pin -- loadledger 0.2.0 is on PyPI, and its only runtime
     # dependency is baseaicore>=0.4,<0.5, already pinned above. The **[sql] extra** is what is
     # needed and not the bare package: LoadLedger keeps SQLAlchemy behind an extra deliberately

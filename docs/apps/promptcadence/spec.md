@@ -411,9 +411,12 @@ deliberate rejection, like `LoadCoachClient`.
                                                 # is kept as an artifact under its digest, never a
                                                 # truncated body pretending to be the whole one
                 timeout_seconds = 30.0          # per call; no way to express "no timeout"
-[compaction]    threshold = 0.8                 # compact when estimate > 0.8 × tier context budget
+[compaction]    threshold = 0.8                 # compact when estimate > 0.8 × tier context budget,
+                                                # and compact back to that same figure - one number,
+                                                # so the margin up to the tier budget stays headroom
                 policy_chain = ["observation_masking", "summarizing", "drop_oldest"]
-                protected_recent_turns = 4
+                                                # refused at startup if it names an unknown policy
+                protected_recent_turns = 4      # the framing block is pinned separately
 [tiers.local_fast]
                 task_profile = "tools.agent.local_fast"
                 remote = false                  # local ⇒ max classification implicitly confidential

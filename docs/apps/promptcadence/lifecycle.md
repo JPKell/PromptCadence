@@ -421,6 +421,17 @@ whose `step_id` is `compaction:<compaction_id>`, which it must be anyway, since 
 to the thread it summarized would be replayed to the model as a conversational turn on the next
 wire build and double-count the content it replaced.
 
+**The threshold and the target are one figure.** `threshold × context_budget_tokens` is both the
+line a transcript crosses to trigger a compaction and the size the compaction brings it back to.
+The two alternatives both lose the headroom: compacting to the *whole tier budget* means a
+transcript sitting between the threshold and the budget triggers a compaction with nothing to do —
+a `compactions` row per turn saying nothing changed — and then, once it does exceed the budget, is
+brought back to exactly the budget with no slack, so every following turn compacts again; and
+triggering at the tier budget means there is no threshold at all and the first request over the
+line is the one that gets refused. Compacting to the threshold leaves the gap up to the tier budget
+as the margin, and the reduction itself as the hysteresis — a drop or a summary removes whole
+turns, so the next compaction is several turns away rather than on the next one.
+
 **Where compaction acts.** The turn sequence is mapped to the wire first, ids and all, and the
 compaction acts on the mapped messages. Tool-call ids are resolved positionally exactly once, over
 the complete recorded sequence — which is always complete, because compaction never deletes a

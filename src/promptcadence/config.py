@@ -370,17 +370,56 @@ class ToolsSettings(BaseModel):
 
 
 class CompactionSettings(BaseModel):
-    """``[compaction]`` — the CutCtx trigger, from Phase 8 onward."""
+    """``[compaction]`` — the CutCtx trigger (lifecycle §7), live from Phase 8."""
 
     model_config = ConfigDict(extra="forbid")
 
-    threshold: float = Field(default=0.8, gt=0, le=1)
-    policy_chain: tuple[str, ...] = Field(
-        default=("observation_masking", "summarizing", "drop_oldest")
+    threshold: float = Field(
+        default=0.8,
+        gt=0,
+        le=1,
+        description=(
+            "Compact when the transcript estimate exceeds this fraction of the tier's "
+            "context_budget_tokens. The budget compacted *to* is the whole tier budget, not this "
+            "fraction of it: compacting to the threshold would fire the trigger again next turn."
+        ),
     )
-    protected_recent_turns: int = Field(default=4, ge=0)
+    policy_chain: tuple[str, ...] = Field(
+        default=("observation_masking", "summarizing", "drop_oldest"),
+        description=(
+            "CutCtx policies, in the order they run, stopping as soon as the budget fits. The "
+            "default order is an argument about cost: masking is free, summarizing costs a model "
+            "call but keeps the substance, dropping keeps nothing."
+        ),
+    )
+    protected_recent_turns: int = Field(
+        default=4,
+        ge=0,
+        description=(
+            "How many turns at the end of the transcript no policy may touch. The framing block - "
+            "the task and the step description - is pinned separately and is never in this count."
+        ),
+    )
 
     _split_chain = field_validator("policy_chain", mode="before")(_split_csv)
+
+    @field_validator("policy_chain")
+    @classmethod
+    def _known_policies(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Refuse a chain naming a policy CutCtx does not have, and an empty chain.
+
+        A typo here would otherwise be discovered as a compaction that quietly skipped the policy
+        the operator asked for, on a transcript nobody was watching.
+        """
+        known = ("observation_masking", "summarizing", "drop_oldest")
+        if not value:
+            message = "compaction.policy_chain must name at least one policy"
+            raise ValueError(message)
+        unknown = [name for name in value if name not in known]
+        if unknown:
+            message = f"unknown compaction policies {unknown}; expected from {list(known)}"
+            raise ValueError(message)
+        return value
 
 
 class Tier(BaseModel):

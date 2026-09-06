@@ -59,6 +59,11 @@ at Phase 6 and CutCtx's later one should copy. Three things make it an example r
 
 ``egress_decisions`` (Commissioner) is **not** created here yet; it arrives the same way at Phase 6.
 
+Phase 8 adds ``compactions`` (migration ``0009``) and ``explanation_revisions`` (migration
+``0010``). CutCtx is **not** mounted: it owns no table — it plans and applies over values and
+touches no database at all (ADR-0052) — so the compaction record is this application's own shape,
+not a package's.
+
 SQLAlchemy models never leave the repository layer: a service returns a frozen domain value
 object, never one of these.
 """
@@ -92,6 +97,7 @@ __all__ = [
     "ApiToken",
     "ApprovalRequest",
     "Base",
+    "Compaction",
     "Deviation",
     "Event",
     "ExecutionIntent",
@@ -601,6 +607,71 @@ class ToolCallRecord(Base):
         UniqueConstraint("invocation_id", name="uq_tool_call_records_invocation_id"),
         Index("ix_tool_call_records_trajectory_id", "trajectory_id"),
         Index("ix_tool_call_records_turn_id", "turn_id"),
+    )
+
+
+class Compaction(Base):
+    """One compaction of one step thread: what the wire lost, and why it still adds up.
+
+    Compaction is a **view, never a deletion** (lifecycle §7, ADR-0052): every original turn stays
+    in ``turns``. This row is the record that the view differed from the rows, and it is the reason
+    a reader can tell why turn 40 saw less history than turn 39. Without it a transcript that
+    shrank looks exactly like one the model was never shown.
+
+    The counted figures — ``tokens_before``, ``tokens_after_estimate`` — are **estimates**, never
+    counts (ADR-0016): they are this application's per-message figures added up, and CutCtx neither
+    produced nor checked them. ``plan_hash`` is CutCtx's own canonical hash of the plan it decided,
+    so two composes of the same rows name the same decision.
+
+    ``summary_turn_id`` is the turn the summarization ran as, or ``NULL`` when the chain fitted the
+    budget by masking and dropping alone. That turn is in its **own** thread — ``threads.step_id``
+    is ``compaction:<this row's id>`` — because a summary appended to the thread it summarized
+    would be replayed to the model as a conversational turn on the next wire build, double-counting
+    the content it replaced (ADR-0091 rule 3). ``summary_intent_revision`` is the superseding
+    revision the summary executed under (ADR-0090); the restoring revision is
+    ``summary_intent_revision + 1`` and is on ``execution_intents`` like every other.
+
+    The affected turn ids are kept as JSON rather than as a join table. They are a description of
+    one decision, read only as a whole and never queried across compactions, so a table would buy
+    a join and cost a second place the same fact lives.
+    """
+
+    __tablename__ = "compactions"
+
+    id: Mapped[str] = ulid_primary_key()
+    trajectory_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("trajectories.id", ondelete="CASCADE"), nullable=False
+    )
+    thread_id: Mapped[str] = mapped_column(
+        String(26), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tier: Mapped[str] = mapped_column(String(60), nullable=False)
+    # ``threshold × tier.context_budget_tokens``: the line the transcript crossed and the size it
+    # was brought back to, which are one figure (services.compaction.target_tokens).
+    budget_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    policy_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    plan_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    tokens_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    tokens_after_estimate: Mapped[int] = mapped_column(Integer, nullable=False)
+    turns_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    turns_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    budget_unmet: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
+    masked_turn_ids: Mapped[list[Any]] = mapped_column(PortableJSON, nullable=False, default=list)
+    summarized_turn_ids: Mapped[list[Any]] = mapped_column(
+        PortableJSON, nullable=False, default=list
+    )
+    dropped_turn_ids: Mapped[list[Any]] = mapped_column(PortableJSON, nullable=False, default=list)
+    summary_turn_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    summary_intent_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    summary_intent_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (
+        Index("ix_compactions_trajectory_id_created_at", "trajectory_id", "created_at"),
+        Index("ix_compactions_thread_id", "thread_id"),
     )
 
 
