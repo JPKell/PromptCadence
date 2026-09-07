@@ -56,6 +56,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   answers it; the call itself ran with its full arguments, the rows keep them until the retention
   sweep, and nothing is truncated mid-string. One bound, one shape; the record and the wire agree
   by construction.
+- **Every spec §15 budget is a `performance`-marked test** (P9, ADR-0097; `tests/performance/`).
+  Ten rows: the median over 20 measured iterations after 3 warm-ups must not exceed the
+  **ceiling**; median, p95 and the target are printed for the release handoff. Per-turn overhead
+  and tool-dispatch overhead are separated from LoadCoach time and tool time by measuring at the
+  transport boundary and solving two runs for two unknowns; the SSE row is measured over a real
+  loopback socket, where the poll quantisation is visible; the 500-turn materialization and the
+  100-trajectory recovery are built synthetically from rows. Excluded from the default gate.
 - **Context compaction** (P8, lifecycle §7). Before every turn the transcript is estimated against
   `threshold × context_budget_tokens`, and above it CutCtx plans a compaction over the configured
   `[compaction] policy_chain`. The threshold and the compaction target are **one figure**:
