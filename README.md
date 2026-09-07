@@ -53,6 +53,28 @@ reason on the wire (spec §11 contract 6 — an undeclared finish is never read 
 definitions and `tool_calls` on `/generate`, and the serving registration's `is_remote` on every
 response. See [docs/upgrading.md](docs/upgrading.md) for the compatibility table.
 
+## Compatibility
+
+Declared version ranges from `pyproject.toml` — kept from drifting by
+`tests/unit/test_readme_compatibility.py`, which parses the file and fails if this table disagrees:
+
+| Package | Range |
+|---|---|
+| `baseaicore` | `>=0.4.1,<0.5` |
+| `setspec` | `>=0.5,<0.7` |
+| `weightsdb` | `>=0.2,<0.3` |
+| `mirrorwall` | `>=0.2,<0.3` |
+| `toolyard` | `>=0.1.1,<0.2` |
+| `cutctx` | `>=0.1,<0.2` |
+| `loadledger` | `>=0.3,<0.4` |
+| `commissioner` | `>=0.1,<0.2` |
+
+`modelrack` and `sweatmeter` are deliberately absent: PromptCadence reaches a model only through
+LoadCoach's HTTP API, and telemetry is displayed from LoadCoach's own `/system/status` (ADR-0045
+rule 2, in the suite's central `docs/adr/`). `loadledger` and `commissioner` are installed with
+their `[sql]` extra, which is not optional in practice: both tables are mounted unconditionally into
+this application's own metadata and Alembic history.
+
 ## Documentation
 
 | Read this | For |
