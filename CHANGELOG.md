@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Fixed
+- **`test_the_running_worker_applies_a_write_within_one_reap_cadence` no longer flakes under
+  machine load.** It polls a real background thread against a wall-clock deadline once the fake
+  clock is advanced past the reap instant; the only real-time variable left is OS scheduling
+  latency for the worker's `poll_interval_seconds` wake-up, not application logic. Widened from 10s
+  to 30s with a `# ponytail:` comment naming the ceiling, after it failed once while a parallel
+  LoadCoach coverage run was saturating the machine. Ran clean 10/10 in isolation both before and
+  after; nothing about what the test proves changed.
+
 ## [1.2.0] — 2026-09-07
 
 The CLI half of the settings surface. Row I5 built the registry, the API and the console page and

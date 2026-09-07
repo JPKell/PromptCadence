@@ -105,7 +105,14 @@ def test_the_running_worker_applies_a_write_within_one_reap_cadence(harness: Loo
         )
         assert settings.execution.step_retries == 1, "the reap has not come round yet"
         harness.clock.advance(timedelta(seconds=settings.execution.lease_seconds + 1))
-        deadline = time.monotonic() + 10
+        # ponytail: the fake clock already reflects the reap instant, so what remains is real
+        # wall-clock scheduling latency for the background thread's next `poll_interval_seconds`
+        # (0.01s) wake-up — normally a handful of milliseconds. This failed once at 10s under a
+        # parallel LoadCoach coverage run saturating the machine's CPU; 30s (3000 poll intervals)
+        # gives real OS scheduling delay headroom without weakening the one thing this test
+        # proves — that a write reaches the worker within one reap cadence, not one wall-clock
+        # instant. Raise further only if CI keeps flaking under contention.
+        deadline = time.monotonic() + 30
         while settings.execution.step_retries != 5 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert settings.execution.step_retries == 5, "one reap cadence, one applied setting"
