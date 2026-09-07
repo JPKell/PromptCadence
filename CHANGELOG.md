@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-09-06
+
+A maintenance release: the two vendored LoadCoach snapshots move to LoadCoach 1.1.1, and I2's two
+deferred findings are settled — one by naming the behaviour and making it visible, one by fixing a
+digest that matched nothing.
+
 ### Fixed
 - **The test suite no longer leaks a closed log stream between tests.** `configure_logging`
   installs a `StreamHandler` bound to the `sys.stderr` that exists when it is called, which is
