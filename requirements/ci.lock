@@ -1327,9 +1327,9 @@ starlette==1.6.0 \
     # via
     #   fastapi
     #   mirrorwall
-toolyard==0.1.0 \
-    --hash=sha256:4276545831821f032836fe6170cebd48f9bcb8b6adb8d62f668dfeab5d65eb4c \
-    --hash=sha256:d1bafcfdb1df1b11bf8cdbe6788365d8f5fed9a42ba3cad5ee0af4f2fdc048f5
+toolyard==0.1.1 \
+    --hash=sha256:2f662294c713b5ff3182c7a8c2a4ccb486967223b6c706e96f0d0dc2317db9c2 \
+    --hash=sha256:92d092e97f092015af245145f2d59e9b7f734cfa53a1bdfea099a676dcf551ce
     # via promptcadence (pyproject.toml)
 typer==0.27.2 \
     --hash=sha256:269b7eb9d3c202ca84b4bc9618cb04ebb43d3d4d1e567e4c768607232c05f945 \
