@@ -470,6 +470,82 @@ def test_version_verifies_the_api_major(client: LoadCoachClient) -> None:
             other.version()
 
 
+# --------------------------------------------------------------------------------------------
+# ADR-0013: generate() negotiates on first contact, cached with a TTL
+# --------------------------------------------------------------------------------------------
+
+
+def _mock_version(mock: respx.MockRouter, *, supported: tuple[str, ...] = ("v1",)) -> respx.Route:
+    return mock.get("/api/v1/version").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "application": {"version": "1.1.2"},
+                "api": {"current": supported[-1], "supported": list(supported)},
+            },
+        )
+    )
+
+
+def test_generate_checks_compatibility_on_first_contact() -> None:
+    """A compatible LoadCoach costs exactly one ``/version`` round trip for the call."""
+    with respx.mock(base_url=_BASE) as mock:
+        version_route = _mock_version(mock)
+        mock.post("/api/v1/generate").mock(
+            return_value=httpx.Response(200, json=_generate_document())
+        )
+        client = LoadCoachClient(httpx.Client(base_url=_BASE))
+        response = client.generate(GenerateRequest(task="t", prompt="p", idempotency_key="k1"))
+        assert response.completed
+        assert version_route.call_count == 1
+
+
+def test_an_incompatible_api_major_refuses_generate_as_a_loadcoach_error() -> None:
+    """The refusal is where a LoadCoach error surfaces today: ``SchemaVersionUnsupportedError``
+    is a :class:`LoadCoachError`, so a caller catching that catches this too, with nothing sent
+    to ``/generate`` first."""
+    with respx.mock(base_url=_BASE, assert_all_called=False) as mock:
+        _mock_version(mock, supported=("v2",))
+        generate_route = mock.post("/api/v1/generate").mock(
+            return_value=httpx.Response(200, json=_generate_document())
+        )
+        client = LoadCoachClient(httpx.Client(base_url=_BASE))
+        with pytest.raises(SchemaVersionUnsupportedError) as excinfo:
+            client.generate(GenerateRequest(task="t", prompt="p", idempotency_key="k1"))
+        assert isinstance(excinfo.value, LoadCoachError)
+        assert not generate_route.called
+
+
+def test_the_version_cache_is_honoured_within_its_ttl() -> None:
+    """A second turn inside the TTL costs no extra ``/version`` round trip (standards §12 rule 1:
+    "cache the result with a TTL" — never a round trip per turn)."""
+    ticks = iter([0.0, 10.0])
+    with respx.mock(base_url=_BASE) as mock:
+        version_route = _mock_version(mock)
+        mock.post("/api/v1/generate").mock(
+            return_value=httpx.Response(200, json=_generate_document())
+        )
+        client = LoadCoachClient(httpx.Client(base_url=_BASE), monotonic=lambda: next(ticks))
+        client.generate(GenerateRequest(task="t", prompt="p", idempotency_key="k1"))
+        client.generate(GenerateRequest(task="t", prompt="p", idempotency_key="k2"))
+        assert version_route.call_count == 1
+
+
+def test_the_version_cache_expires_after_its_ttl() -> None:
+    """A turn after the TTL re-checks compatibility rather than trusting a stale negotiation
+    forever."""
+    ticks = iter([0.0, 301.0])
+    with respx.mock(base_url=_BASE) as mock:
+        version_route = _mock_version(mock)
+        mock.post("/api/v1/generate").mock(
+            return_value=httpx.Response(200, json=_generate_document())
+        )
+        client = LoadCoachClient(httpx.Client(base_url=_BASE), monotonic=lambda: next(ticks))
+        client.generate(GenerateRequest(task="t", prompt="p", idempotency_key="k1"))
+        client.generate(GenerateRequest(task="t", prompt="p", idempotency_key="k2"))
+        assert version_route.call_count == 2
+
+
 def test_generate_returns_a_typed_response(fake: FakeLoadCoach, client: LoadCoachClient) -> None:
     fake.script(ScriptedGeneration(text="four words of answer", input_tokens=10, output_tokens=4))
     response = client.generate(

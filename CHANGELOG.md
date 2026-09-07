@@ -17,6 +17,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   every response, so the grouping now has exactly one implementation on any current server; the
   two DB-replay call sites (`_transcript`, `_pending_tool_calls`), which regroup fragments this
   application itself persisted, are unchanged.
+- **`LoadCoachClient` negotiates the API version on first contact** (ADR-0013, standards §12 rule
+  1), instead of building `version()` and never calling it. `generate()` now calls `version()`
+  before every turn; a five-minute TTL cache (`monotonic`, injectable for tests) means a
+  compatible LoadCoach costs one `/version` round trip per window, never one per turn. An
+  incompatible API major is refused as `SCHEMA_VERSION_UNSUPPORTED`, uncached (a mismatch is
+  re-checked, and re-refused, every call rather than remembered as working);
+  `SchemaVersionUnsupportedError` is now a `LoadCoachError` subclass so the refusal halts a
+  trajectory through the same handling every other LoadCoach failure already goes through, with no
+  new exception wiring at any call site. A LoadCoach that cannot be reached at all is unaffected —
+  that remains `services/loadcoach_status.py`'s health-read path.
 
 ### Fixed
 - **`test_the_running_worker_applies_a_write_within_one_reap_cadence` no longer flakes under

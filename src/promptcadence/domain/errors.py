@@ -175,12 +175,6 @@ class CompactionFailedError(SuiteError):
     code: ClassVar[str] = ErrorCode.COMPACTION_FAILED
 
 
-class SchemaVersionUnsupportedError(SuiteError):
-    """LoadCoach serves no API major this build speaks (api.md §12 rule 1)."""
-
-    code: ClassVar[str] = ErrorCode.SCHEMA_VERSION_UNSUPPORTED
-
-
 class LoadCoachError(SuiteError):
     """LoadCoach answered with an error, or with a response PromptCadence cannot read.
 
@@ -191,6 +185,22 @@ class LoadCoachError(SuiteError):
     """
 
     code: ClassVar[str] = ErrorCode.LOADCOACH_ERROR
+
+
+class SchemaVersionUnsupportedError(LoadCoachError):
+    """LoadCoach serves no API major this build speaks (ADR-0013, api.md §12 rule 1).
+
+    A :class:`LoadCoachError` subclass, deliberately: from a caller's side an unusable version
+    negotiation *is* "a response from LoadCoach this application cannot proceed on", which is what
+    ``LoadCoachError`` already means, so every place in the loop that ends or fails a turn on a
+    ``LoadCoachError`` ends or fails it on this too, with no separate wiring per call site — the
+    same shape :class:`ValidationError`'s family already uses for classes that stay catchable as
+    their parent. ``details`` carries no ``loadcoach_code``, since this is not something LoadCoach's
+    own error envelope reported; it carries ``supported`` (the API majors LoadCoach serves) and
+    ``required`` (the one this build speaks) instead.
+    """
+
+    code: ClassVar[str] = ErrorCode.SCHEMA_VERSION_UNSUPPORTED
 
 
 class UnpricedEgressRefusedError(SuiteError):

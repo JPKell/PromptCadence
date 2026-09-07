@@ -329,6 +329,20 @@ def test_loadcoach_errors_halt_with_the_mapped_code_and_the_original_in_the_caus
     )
 
 
+def test_an_incompatible_api_major_halts_where_a_loadcoach_error_halts_today(
+    harness: Harness,
+) -> None:
+    """ADR-0013: the client checks compatibility on first contact and refuses rather than
+    parsing optimistically. ``SchemaVersionUnsupportedError`` is a ``LoadCoachError`` precisely so
+    this reaches the same halt every other LoadCoach failure does, with no separate wiring here."""
+    harness.fake.api_supported = ("v2",)
+    trajectory_id, state = _claim_and_run(harness)
+    assert state is TrajectoryState.HALTED
+    view = harness.service.get(trajectory_id)
+    assert view.error_code == ErrorCode.SCHEMA_VERSION_UNSUPPORTED.value
+    assert "v2" in (view.halted_reason or "")
+
+
 def test_an_unreachable_loadcoach_fails_the_trajectory_with_the_reason(
     harness: Harness,
 ) -> None:

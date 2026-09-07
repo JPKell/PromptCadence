@@ -39,7 +39,8 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -99,6 +100,12 @@ lives here, beside the check that raises it, so the string cannot drift from its
 
 API_PREFIX: Final = "/api/v1"
 SUPPORTED_API_MAJOR: Final = "v1"
+
+_VERSION_CACHE_SECONDS: Final = 300.0
+"""How long a negotiated ``GET /version`` is trusted before the next call re-checks it (ADR-0013,
+standards §12 rule 1: "cache the result with a TTL"). The same figure IdeaPress's LoadCoach
+backend uses for the same negotiation (`_VERSION_CACHE_SECONDS`,
+``ideapress/infrastructure/backends/loadcoach.py``) — one concept, one name, one number."""
 
 NON_TERMINAL_JOB_STATES: Final[tuple[str, ...]] = (
     "queued",
@@ -849,16 +856,25 @@ class LoadCoachClient:
     socket, and the served application can hand it a real client from configuration.
     """
 
-    __slots__ = ("_http",)
+    __slots__ = ("_http", "_monotonic", "_version_cached_at", "_version_info")
 
-    def __init__(self, http: httpx.Client) -> None:
+    def __init__(
+        self, http: httpx.Client, *, monotonic: Callable[[], float] = time.monotonic
+    ) -> None:
         """Wrap an httpx client whose ``base_url`` is LoadCoach's root (no ``/api/v1``).
 
         Args:
             http: The client. Its default headers gain ``X-Client-Name`` if absent; its timeout
                 is its own — the composition root sets ``loadcoach.timeout_seconds`` there.
+            monotonic: The instant source behind :meth:`version`'s TTL cache, injected for
+                determinism in tests; the wall clock (:func:`time.monotonic`) otherwise. Never
+                the wall-clock ``datetime`` this application's other clocks use — a cache expiry
+                must not jump with a system clock adjustment.
         """
         self._http = http
+        self._monotonic = monotonic
+        self._version_info: VersionInfo | None = None
+        self._version_cached_at: float = 0.0
         if "x-client-name" not in {key.lower() for key in http.headers}:
             http.headers["X-Client-Name"] = CLIENT_NAME
 
@@ -943,16 +959,32 @@ class LoadCoachClient:
     # ----------------------------------------------------------------------------------------
 
     def version(self) -> VersionInfo:
-        """``GET /version`` (api.md §1) — never authenticated; the first call a client makes.
+        """``GET /version`` (api.md §1, ADR-0013): negotiated on first contact, cached with a TTL.
+
+        A call within :data:`_VERSION_CACHE_SECONDS` of the last **successful** negotiation
+        returns the cached result without a round trip, so checking compatibility on every turn
+        (:meth:`generate`) costs one request per TTL window, never one per turn (standards §12
+        rule 1). A negotiation that finds the major unsupported is **not** cached: it is refused
+        every time rather than remembered as a working state, and re-checking costs nothing extra
+        since the caller is about to fail anyway.
 
         Returns:
             The application version and the API majors LoadCoach serves.
 
         Raises:
-            SchemaVersionUnsupportedError: If LoadCoach does not serve API ``v1`` (api.md §12
-                rule 1: verify the API major on first contact).
-            LoadCoachUnavailableError: If LoadCoach cannot be reached.
+            SchemaVersionUnsupportedError: LoadCoach does not serve API ``v1`` (api.md §12 rule
+                1: verify the API major on first contact). A :class:`LoadCoachError`, so it
+                surfaces wherever a LoadCoach failure surfaces today.
+            LoadCoachUnavailableError: LoadCoach cannot be reached. Unchanged by this cache: an
+                unreachable LoadCoach fails every call exactly as it always has — the health-read
+                path (``services/loadcoach_status.py``) is what decides a down LoadCoach degrades
+                rather than fails startup, and this method never touches it.
         """
+        now = self._monotonic()
+        if self._version_info is not None and (now - self._version_cached_at) < (
+            _VERSION_CACHE_SECONDS
+        ):
+            return self._version_info
         body = self._call("GET", "/version")
         application = body.get("application") if isinstance(body, Mapping) else None
         api = body.get("api") if isinstance(body, Mapping) else None
@@ -973,6 +1005,8 @@ class LoadCoachClient:
             raise SchemaVersionUnsupportedError(
                 message, details={"supported": list(supported), "required": SUPPORTED_API_MAJOR}
             )
+        self._version_info = info
+        self._version_cached_at = now
         return info
 
     def system_status(self) -> Mapping[str, Any]:
@@ -1098,6 +1132,9 @@ class LoadCoachClient:
             a finished job — a replayed key may return a failed or cancelled document.
 
         Raises:
+            SchemaVersionUnsupportedError: LoadCoach does not serve the API major this build
+                speaks (ADR-0013). Checked here, on every call, at the cost of one round trip
+                per :data:`_VERSION_CACHE_SECONDS` window rather than per turn (:meth:`version`).
             TierUnavailableError: LoadCoach cannot serve the task profile (no eligible model, or
                 no such profile).
             CompactionFailedError: ``CONTEXT_LIMIT_EXCEEDED``; compaction arrives in Phase 8, so
@@ -1106,6 +1143,7 @@ class LoadCoachClient:
                 response this client cannot read.
             LoadCoachUnavailableError: LoadCoach could not be reached.
         """
+        self.version()
         body = self._call("POST", "/generate", json=request.as_body())
         if not isinstance(body, Mapping):
             message = "LoadCoach's /generate answer is not an object"

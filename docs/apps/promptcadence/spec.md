@@ -324,6 +324,16 @@ deliberate rejection, like `LoadCoachClient`.
 8. **Degradation contract.** No LoadCoach, no remote provider configured, or an exhausted budget
    each produce a documented behaviour with a reason — never a silent fallback, never a failure to
    serve the API.
+9. **Version negotiation contract.** `LoadCoachClient` checks API-major compatibility on first
+   contact — `GET /version` — and again once a five-minute cache expires, never on every turn
+   ([ADR-0013](../../adr/0013-api-versioning.md), API and Contract Standards §12 rule 1). A
+   LoadCoach that does not serve the API major this build speaks is refused as
+   `SCHEMA_VERSION_UNSUPPORTED`; `SchemaVersionUnsupportedError` is a `LoadCoachError` subclass
+   deliberately, so the refusal halts a trajectory exactly where any other LoadCoach failure does,
+   with no separate wiring per call site. A LoadCoach that cannot be reached at all is unaffected —
+   that is still the `LOADCOACH_UNAVAILABLE` path the health read decides
+   (`services/loadcoach_status.py`), which this negotiation never touches, and a mismatch is never
+   cached: it is re-checked, and re-refused, on every call rather than remembered as working.
 
 ## 12. Configuration
 

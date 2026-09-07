@@ -644,6 +644,9 @@ class FakeLoadCoach:
         self.jobs: dict[str, FakeJob] = {}
         self.requests: list[dict[str, Any]] = []
         self.version = "1.0.0"
+        self.api_supported: tuple[str, ...] = ("v1",)
+        """``GET /version``'s ``api.supported`` (and ``api.current``, its last entry) — ``v1``
+        by default; a test naming a version-negotiation defect scripts a mismatch here."""
         self._script: list[ScriptedGeneration | ScriptedError] = []
         self._default = ScriptedGeneration()
         self._lock = threading.RLock()
@@ -1161,7 +1164,11 @@ def build_fake_app(fake: FakeLoadCoach) -> FastAPI:
     def version() -> dict[str, Any]:
         return {
             "application": {"name": "loadcoach", "version": fake.version, "git_commit": None},
-            "api": {"current": "v1", "supported": ["v1"], "deprecated": []},
+            "api": {
+                "current": fake.api_supported[-1],
+                "supported": list(fake.api_supported),
+                "deprecated": [],
+            },
         }
 
     @router.get("/health")
