@@ -6,6 +6,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-06
+
+The runtime settings spec §7.1 has listed since the specification was written. Five bounded tuning
+numbers can now change while the server runs; everything that decides exposure, egress,
+credentials, containment, retention or spend is refused by name. **No migration and no schema
+change** — the `settings` table has existed since `0001` and was unused until now.
+
+### Added
+- **`GET /settings` and `PUT /settings`** (spec §7.1). `GET` is `read`-scoped and answers with, per
+  key, the effective value, its type, bounds and description, the configured value, the stored row
+  or `null`, which of the two is in force, and what shadows the row when the environment pins the
+  key — a stored value that does nothing is visible as such rather than applied or dropped in
+  silence. It also lists the config-only keys, named as configured. `PUT` is `admin`-scoped and
+  answers with the same document.
+- **A Settings page in the console**, with the registry as a form for `admin`, the effective
+  values as a table for `read`, and the config-only keys listed in both cases — the page says what
+  cannot be changed there as much as what can. The form posts through MirrorWall's double-submit
+  token (ADR-0094).
+- **The runtime-changeable registry**, one module the API, the page, the CLI and the generated
+  `docs/configuration.md` all read: `storage.content_retention_hours`, `compaction.threshold`,
+  `execution.step_retries`, `execution.max_turns_per_step`, `planning.corrective_retries`. Each is
+  re-read by the running process — membership is tested by re-reading, not by plausibility — and
+  the running worker applies a change at its next lease reap (ADR-0100).
+- **`promptcadence config show` marks database-sourced values `(database)`** and prints the stored
+  value, per configuration standards §7. With no readable database it prints exactly what it
+  printed at 1.0.
+
+### Changed
+- **The five runtime-changeable keys sit between the file and the environment in precedence**
+  (`defaults → file → database → env → CLI`), which is configuration standards §7 rather than
+  LoadCoach's implementation: a key pinned in the environment — including by a `promptcadence
+  serve` flag, which the CLI passes as one — keeps its value, and the stored row is reported as
+  shadowed. No other key's precedence moved.
+- **Spec §14's `admin` scope reads "settings changes, tokens".** Reading the effective settings is
+  `read`: seeing what the process is running on is not the privileged half.
+- The **Runtime-changeable** column of `docs/configuration.md` is rendered from the registry
+  instead of the literal `no` every row carried.
+
 ### Fixed
 - **The trajectory-explanation golden no longer pins a wall-clock measurement.** `duration_ms` on
   a tool call is `int(round(elapsed))` over a real monotonic source, so it is `0` on a machine that

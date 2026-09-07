@@ -6,7 +6,7 @@ import json
 from collections.abc import Iterator
 
 import pytest
-from baseaicore import DataClassification
+from baseaicore import DataClassification, ValidationError
 from fastapi.testclient import TestClient
 from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
@@ -241,3 +241,16 @@ def test_a_loadcoach_validation_failure_is_an_empty_attempt_within_the_budget(
     fake.script(ScriptedError("PROVIDER_TIMEOUT"))
     with pytest.raises(LoadCoachError):
         _planner(client).draft(inputs, trajectory_id="01V", on_attempt=lambda _: None)
+
+
+def test_the_retry_budget_is_settable_at_runtime_and_still_refuses_a_negative(
+    client: LoadCoachClient,
+) -> None:
+    """The worker writes the effective ``planning.corrective_retries`` here (ADR-0100)."""
+    planner = _planner(client, retries=1)
+    assert planner.max_attempts == 2
+    planner.corrective_retries = 3
+    assert planner.corrective_retries == 3 and planner.max_attempts == 4
+    with pytest.raises(ValidationError):
+        planner.corrective_retries = -1
+    assert planner.corrective_retries == 3, "a refused write changes nothing"
