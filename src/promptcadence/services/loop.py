@@ -84,15 +84,15 @@ from toolyard import (
     MAX_RECORDED_NAME_CHARS,
     StoreFailure,
     ToolCallRequest,
+    # What ToolYard itself digests to fill `tool_call_records.args_sha256`
+    # (`executor._args_digest`). The `tool.call.started` event digests the *same* value or the
+    # pair cannot be matched, which is what the event's field is for
+    # (`domain.tools.ToolCallStarted`). Borrowed rather than reimplemented: two copies of a
+    # hardening routine agree only by transcription, and that is how the two digests drifted
+    # apart to begin with. Public since toolyard 0.1.1, for this caller.
+    json_sanitize,
 )
 from toolyard import EgressClass as ToolEgressClass
-
-# `json_sanitize` is what ToolYard digests to fill `tool_call_records.args_sha256`
-# (`executor._args_digest`). The `tool.call.started` event has to digest the *same*
-# value or the pair cannot be matched, which is what the event field is for
-# (`domain.tools.ToolCallStarted`) — so this borrows the function rather than
-# reimplementing a hardening routine that has to agree byte for byte.
-from toolyard._safe import json_sanitize
 
 from promptcadence.config import ConfigurationError
 from promptcadence.domain.compaction import ContextCompacted

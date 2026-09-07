@@ -41,9 +41,12 @@ dependencies = [
     "jinja2>=3.1,<4",
     "httpx>=0.27,<1",
     # P4: the loop executes model-directed tool calls, and every rule about how lives here
-    # (ADR-0053). A normal pin -- toolyard 0.1.0 is on PyPI. Its own dependencies (baseaicore,
-    # jsonschema, httpx) are already compatible with the pins above.
-    "toolyard>=0.1,<0.2",
+    # (ADR-0053). A normal pin -- toolyard 0.1.1 is on PyPI. Its own dependencies (baseaicore,
+    # jsonschema, httpx) are already compatible with the pins above. The floor is 0.1.1 rather
+    # than 0.1 because the loop imports `json_sanitize`, which 0.1.1 exports for exactly this
+    # caller: the `tool.call.started` event must digest the value the record digests, and 0.1.0
+    # offered it only as a private name.
+    "toolyard>=0.1.1,<0.2",
     # P8: context compaction. A normal pin -- cutctx 0.1.0 is on PyPI, and its only runtime
     # dependency is baseaicore, already pinned above. CutCtx plans and applies; it never calls a
     # model, so the summarization half stays here, under an intent, on a local tier (ADR-0090).

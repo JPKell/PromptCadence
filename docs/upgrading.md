@@ -55,11 +55,18 @@ the proof (a `0.9.0b0` wheel's database upgraded by the `1.0.0` wheel in a clean
 
 ### Compatibility
 
-PromptCadence 1.0.0 is tested against LoadCoach `1.1.0` and needs LoadCoach `≥ 1.1` for the
+PromptCadence 1.0.1 is tested against LoadCoach `1.1.1` and needs LoadCoach `≥ 1.1` for the
 declared finish reason on the wire, tool definitions on `/generate`, and the registration's
-`is_remote` on responses. Suite packages: `baseaicore >=0.4.1,<0.5`, `setspec >=0.5,<0.7`,
-`weightsdb >=0.2,<0.3`, `mirrorwall >=0.2,<0.3`, `toolyard >=0.1,<0.2`, `cutctx >=0.1,<0.2`,
-`loadledger[sql] >=0.2,<0.3`, `commissioner[sql] >=0.1,<0.2`.
+`is_remote` on responses. The requirement did not move at 1.0.1; the contract tests simply vendor
+`1.1.1`'s `openapi.json` and `task_profiles.toml` rather than `1.1.0`'s. Suite packages:
+`baseaicore >=0.4.1,<0.5`, `setspec >=0.5,<0.7`, `weightsdb >=0.2,<0.3`, `mirrorwall >=0.2,<0.3`,
+`toolyard >=0.1.1,<0.2`, `cutctx >=0.1,<0.2`, `loadledger[sql] >=0.2,<0.3`,
+`commissioner[sql] >=0.1,<0.2`.
+
+The one floor that moved at 1.0.1 is `toolyard`, from `0.1` to `0.1.1`: the loop imports
+`json_sanitize`, which ToolYard made public in `0.1.1` so that the `tool.call.started` event can
+digest the same value the `tool_call_records` row does. Nothing else about the dependency changed,
+and no other package moved.
 
 ## Downgrading
 
