@@ -12,7 +12,6 @@ The whole file runs on the fake LoadCoach: no GPU, no Ollama, no network (spec �
 from __future__ import annotations
 
 import json
-import socket
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -38,11 +37,11 @@ if TYPE_CHECKING:
 _TERMINAL = {"completed", "halted", "failed", "cancelled", "rejected"}
 
 
-def _closed_port() -> int:
-    """A port nothing is listening on, so an "either"-mode command takes its local path."""
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+# The discard port: reserved, privileged, and outside the ephemeral range, so nothing on the
+# machine can be assigned it and an "either"-mode command deterministically takes its local path.
+# Binding an ephemeral port and closing it — which is what this was — leaves a window in which
+# anything may claim the number, and the command then probes a live listener.
+CLOSED_PORT = "9"
 
 
 @pytest.fixture
@@ -154,7 +153,7 @@ def test_ledger_show_prints_the_same_figures_the_api_returns(
     # binds no socket), so pointing the CLI at a closed port is what makes "no server answers"
     # true rather than merely likely — a stray PromptCadence on the default port would otherwise
     # answer from a different database and this test would fail for a reason it is not about.
-    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
+    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", CLOSED_PORT)
     result = CliRunner().invoke(cli_app, ["ledger", "show", "--scope", "project", "--json"])
     assert result.exit_code == 0, result.output
     printed = json.loads(result.stdout)
@@ -169,7 +168,7 @@ def test_ledger_show_text_output_names_the_scope_and_never_prints_a_bare_floor(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _run(client)
-    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
+    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", CLOSED_PORT)
     runner = CliRunner()
     day = runner.invoke(cli_app, ["ledger", "show"])
     assert day.exit_code == 0, day.output
@@ -228,7 +227,7 @@ def test_the_cli_and_the_api_print_the_same_tier_figure(
     """The `projects` test's pattern, for the tier half — one renderer, so they cannot disagree."""
     _run(client)
     body = client.get("/api/v1/ledger").json()
-    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
+    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", CLOSED_PORT)
     result = CliRunner().invoke(cli_app, ["ledger", "show", "--scope", "tier", "--json"])
     assert result.exit_code == 0, result.output
     printed = json.loads(result.stdout)

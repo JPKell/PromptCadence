@@ -13,7 +13,6 @@ make two reads of the same rows differ, which is exactly what the equality golde
 from __future__ import annotations
 
 import json
-import socket
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -43,11 +42,11 @@ if TYPE_CHECKING:
 _TERMINAL = {"completed", "halted", "failed", "cancelled", "rejected"}
 
 
-def _closed_port() -> int:
-    """A port nothing is listening on, so an "either"-mode command takes its local path."""
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+# The discard port: reserved, privileged, and outside the ephemeral range, so nothing on the
+# machine can be assigned it and an "either"-mode command deterministically takes its local path.
+# Binding an ephemeral port and closing it — which is what this was — leaves a window in which
+# anything may claim the number, and the command then probes a live listener.
+CLOSED_PORT = "9"
 
 
 @pytest.fixture
@@ -177,7 +176,7 @@ def test_the_cli_and_the_api_answer_the_same_document(
     _wait_materialized(client, view["trajectory_id"])
     from_api = client.get(f"/api/v1/trajectories/{view['trajectory_id']}/explanation").json()
 
-    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
+    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", CLOSED_PORT)
     target = tmp_path / "explanation.json"
     result = CliRunner().invoke(
         cli_app,
@@ -192,7 +191,7 @@ def test_the_cli_prints_the_document_with_json(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     view = _run(client)
-    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
+    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", CLOSED_PORT)
     result = CliRunner().invoke(cli_app, ["trajectory", "explain", view["trajectory_id"], "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["schema"] == SCHEMA_NAME
@@ -203,7 +202,7 @@ def test_rebuild_explanations_reports_an_intact_cache(
 ) -> None:
     """``rebuilt 0`` over an intact cache is the assertion that the cache was correct."""
     _wait_materialized(client, _run(client)["trajectory_id"])
-    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", str(_closed_port()))
+    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", CLOSED_PORT)
     runner = CliRunner()
     intact = runner.invoke(cli_app, ["db", "rebuild-explanations", "--json"])
     assert intact.exit_code == 0, intact.output

@@ -20,6 +20,7 @@ every run and on every machine (lifecycle §10).
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
 from collections.abc import Callable, Iterator
@@ -41,6 +42,36 @@ from promptcadence.services.estimates import StepEstimator
 from promptcadence.services.pricing import PricingCatalog
 
 _REAL_SOCKET_CONNECT = socket.socket.connect
+
+
+@pytest.fixture(autouse=True)
+def restored_root_logging() -> Iterator[None]:
+    """Undo any root-logger configuration a test performed.
+
+    ``configure_logging`` installs a ``StreamHandler`` bound to the ``sys.stderr`` that exists
+    *at that moment*, which is what the standard library's own handler does. Under
+    ``CliRunner`` that stream is a temporary buffer, and the buffer is closed when the
+    invocation ends — but the handler survives on the root logger, because the root logger is
+    process-global and no test owns it.
+
+    The next record emitted from *any* thread then writes to a closed file. An application
+    started by another test's ``TestClient`` runs its migrations on a portal thread, and
+    Alembic logs while it does; that record raises ``ValueError: I/O operation on closed
+    file``, and :mod:`logging` reports the failure to whatever ``sys.stderr`` is current —
+    which is the *next* CLI invocation's captured output. A command that printed a JSON
+    document is then no longer the only thing in ``result.output``, and the test that parses it
+    fails, under some orderings and not others.
+
+    Saving and restoring the handler list is the whole fix: no test inherits another's stream.
+    """
+    root = logging.getLogger()
+    handlers = list(root.handlers)
+    level = root.level
+    try:
+        yield
+    finally:
+        root.handlers[:] = handlers
+        root.setLevel(level)
 
 
 @pytest.fixture(autouse=True)

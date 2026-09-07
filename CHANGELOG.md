@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ## [Unreleased]
 
 ### Fixed
+- **The test suite no longer leaks a closed log stream between tests.** `configure_logging`
+  installs a `StreamHandler` bound to the `sys.stderr` that exists when it is called, which is
+  what the standard library does too. Under Click's `CliRunner` that stream is a temporary buffer,
+  and the buffer closes when the invocation ends — but the handler stayed on the process-global
+  root logger. The next record emitted from any thread (an application started by another test's
+  `TestClient` runs its migrations on a portal thread, and Alembic logs while it does) then wrote
+  to a closed file, and `logging` reported *that* failure to whatever `sys.stderr` was current —
+  the next CLI invocation's captured output. A command that printed a JSON document was no longer
+  the only thing in it, so `promptcadence trajectory explain --json` failed to parse under roughly
+  one full-suite ordering in five. An autouse fixture now saves and restores the root logger's
+  handlers, and the previously failing seed plus ten consecutive full runs are green. Test-only;
+  no shipped behaviour changes.
 - **`tool.call.started` digests the arguments its `tool_call_records` row digests.** The event
   digested the *canonical JSON text* of a call's arguments while ToolYard digests the *sanitized
   value* (`executor._args_digest`), so for every call whose arguments parsed the two `args_sha256`
