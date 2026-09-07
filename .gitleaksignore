@@ -1,0 +1,5 @@
+# Fingerprints gitleaks may ignore: <commit>:<path>:<rule>:<line>. One entry, and the reason.
+# tests/security/test_checklist.py's LOADCOACH_KEY was a fixture credential the no-secret-in-logs
+# sweep looks for; committed once with a secret-shaped literal (70d03f8, unpushed) before being
+# rebuilt as a repeated placeholder. Never a real key.
+70d03f82ec73c2b0f63cdb3ec800e49faef39a68:tests/security/test_checklist.py:generic-api-key:41

@@ -87,6 +87,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   honestly until LoadCoach has a registration declaring `remote = true` and the tier is priced.
   The recorded-transport journey is in CI (`tests/integration/test_remote_tier.py`); the live
   run's command sequence is in `docs/tiers.md`.
+- **`GET /settings` and `PUT /settings` (spec §7.1) are not served.** PromptCadence 1.0 has no
+  runtime-changeable setting; every key is file-or-environment with a restart. Recorded in
+  `docs/troubleshooting.md` rather than stubbed, so `docs/openapi.json` says what is served.
+- **`pytest -m isolation -rs` on a real podman host** remains unexercised (outstanding-work §4):
+  the reference machine has docker only, and `run_command`'s container rung has run through docker.
+
+### Documentation and release plumbing
+- **The operator set** in `docs/`: quickstart, the generated configuration reference (with
+  `promptcadence config reference [--check]` and a test that fails on drift), tiers, security,
+  operations, troubleshooting aligned with `doctor`'s four components, upgrading with the
+  migration table and the 1.0 behaviour changes, and an index. `README.md` and `SECURITY.md` say
+  what 1.0 is rather than what Phase 1 was.
+- **`docs/openapi.json`** committed, with a contract test that fails when the API moves.
+- **`requirements/ci.lock`** cut with hashes (pip-tools 7.6.1, Python 3.13) and adopted by every
+  CI job but the 3.14 early warning: `pip install --require-hashes -r requirements/ci.lock`,
+  then `pip install . --no-deps`. `pip-audit` runs against both locks. The clean-venv install
+  from the lock and the beta-to-1.0 migration are proved and recorded in the release handoff.
+- **A `.gitleaksignore`** for the one historical fingerprint: a fixture credential in the
+  no-secret-in-logs sweep, since rebuilt as a low-entropy placeholder.
 - **Context compaction** (P8, lifecycle §7). Before every turn the transcript is estimated against
   `threshold × context_budget_tokens`, and above it CutCtx plans a compaction over the configured
   `[compaction] policy_chain`. The threshold and the compaction target are **one figure**:

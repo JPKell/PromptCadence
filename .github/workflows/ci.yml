@@ -24,13 +24,19 @@ jobs:
       - run: pip install ruff
       - run: ruff check .
 
+  # Every job below installs from the hash-pinned lock and then the package itself with
+  # `--no-deps` (Packaging Standards §4): what CI tests is what `requirements/ci.lock` resolved,
+  # not today's resolution, and the package is installed non-editably so coverage and imports
+  # measure the installed distribution. The 3.14 early-warning job is the one deliberate
+  # exception — see its comment.
   types:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -e ".[dev]"
+      - run: pip install --require-hashes -r requirements/ci.lock
+      - run: pip install . --no-deps
       - run: mypy src tests
 
   boundaries:
@@ -39,7 +45,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -e ".[dev]"
+      - run: pip install --require-hashes -r requirements/ci.lock
+      - run: pip install . --no-deps
       - run: lint-imports
 
   tests:
@@ -51,7 +58,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "${{ matrix.python-version }}" }
-      - run: pip install -e ".[dev]"
+      - run: pip install --require-hashes -r requirements/ci.lock
+      - run: pip install . --no-deps
       - run: pytest -m "not live and not performance" --cov --cov-report=xml
 
   tests-314-early-warning:
@@ -61,6 +69,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.14" }
+      # Deliberately unpinned: ci.lock is resolved on 3.13, and pinning a version that has no
+      # 3.14 wheels would defeat the purpose of an early warning.
       - run: pip install -e ".[dev]"
       - run: pytest -m "not live and not performance"
 
@@ -88,7 +98,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -e ".[dev,postgres]"
+      - run: pip install --require-hashes -r requirements/ci.lock
+      - run: pip install . --no-deps
       # Selected by path, as every sibling does. The `integration` marker stays registered and
       # applied — it is what `-m integration` selects locally — but the job must not depend on a
       # marker to find its tests: selecting on one a repository forgets to apply collects zero and
@@ -109,7 +120,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -e ".[dev]"
+      - run: pip install --require-hashes -r requirements/ci.lock
+      - run: pip install . --no-deps
       - run: pytest -m "not live and not performance" --cov --cov-report=term-missing --cov-fail-under=85
 
   contracts:
@@ -118,7 +130,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -e ".[dev]"
+      - run: pip install --require-hashes -r requirements/ci.lock
+      - run: pip install . --no-deps
       - run: pytest -m contract
 
   security:
@@ -133,7 +146,10 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install pip-audit
-      - run: pip-audit
+      # Audit the locked sets, not the job's own environment: a bare `pip-audit` here would
+      # inspect an environment containing only pip-audit itself (Security Standards §11).
+      - run: pip-audit --require-hashes -r requirements/ci.lock
+      - run: pip-audit --require-hashes -r requirements/release.lock
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -144,8 +160,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install build twine
-      - run: python -m build
+      # The pinned build chain, byte-for-byte what `release.yml` uses, so a release is the
+      # artifact CI proved rather than a fresh resolution of `build` and `hatchling`.
+      - run: pip install --require-hashes -r requirements/release.lock
+      - run: python -m build --no-isolation
       - run: twine check dist/*
       - uses: actions/upload-artifact@v4
         with: { name: dist, path: dist/ }

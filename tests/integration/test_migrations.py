@@ -250,3 +250,36 @@ def test_a_step_written_before_0008_upgrades_to_its_first_attempt() -> None:
                 .all()
             )
         assert attempts == [1]
+
+
+def test_a_beta_database_upgrades_to_head_in_one_step_and_keeps_its_rows() -> None:
+    """The 0.9.0b0 schema is ``0007``; 1.0.0 takes it to head with every row preserved.
+
+    The wheel-to-wheel proof (a ``0.9.0b0`` install's database upgraded by the ``1.0.0`` wheel in
+    a clean venv) is in the release handoff; this is the same path inside the suite.
+    """
+    from datetime import UTC, datetime
+
+    with temporary_sqlite() as engine:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        assert runner.upgrade("0007", backup=False).to_revision == "0007"
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO trajectories (id, task, data_classification, status, "
+                    "tools_json, bypass_planning, window_days_waited, cancel_requested, "
+                    "created_at, updated_at) VALUES ('01BETA0000000000000000000A', "
+                    "'a beta task', 'confidential', 'completed', '[]', 1, 0, 0, :now, :now)"
+                ),
+                {"now": datetime(2026, 9, 4, tzinfo=UTC)},
+            )
+        outcome = runner.upgrade(backup=False)
+        assert (outcome.from_revision, outcome.to_revision) == ("0007", _head())
+        with engine.connect() as connection:
+            row = connection.execute(
+                text("SELECT task, content_scrubbed_at FROM trajectories")
+            ).one()
+        assert row == ("a beta task", None)
+        columns = {column["name"] for column in inspect(engine).get_columns("plan_steps")}
+        assert "attempt" in columns, "0008's column arrived on the way"
+        assert inspect(engine).has_table("explanation_revisions")

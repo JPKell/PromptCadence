@@ -8,8 +8,9 @@ authentication and LAN-exposure design this component follows.
 
 PromptCadence concentrates the two riskiest behaviours in the suite — executing model-directed
 tool calls, and sending data to paid remote providers — so its security posture is the strictest
-in the suite. Phase 1 ships neither behaviour yet; both arrive under the governance machinery
-specified in `docs/apps/promptcadence/spec.md` §14.
+in the suite. Both ship under the governance machinery specified in
+`docs/apps/promptcadence/spec.md` §14; `docs/security.md` is the operator's view, and
+`tests/security/` holds Security Standards §14 item by item plus the prompt-injection corpus.
 
 ## Reporting a vulnerability
 

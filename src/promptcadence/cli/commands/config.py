@@ -1,4 +1,4 @@
-"""promptcadence.cli.commands.config — show, validate, init, path.
+"""promptcadence.cli.commands.config — show, validate, init, path, reference.
 
 Only ``typer`` and ``json`` load at module level; ``promptcadence.config`` (which imports pydantic)
 is imported lazily inside each command body, per the same startup-performance discipline as
@@ -139,3 +139,47 @@ def init(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(EXAMPLE_CONFIG_TOML, encoding="utf-8")
     typer.echo(str(target))
+
+
+@app.command("reference")
+def reference(
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check", help="Exit 1 if docs/configuration.md differs from the generated text."
+        ),
+    ] = False,
+    output: Annotated[
+        str | None, typer.Option("--output", help="Write to this file instead of stdout.")
+    ] = None,
+) -> None:
+    """Generate the configuration reference from the settings model (configuration standards §8).
+
+    Mode: local. With ``--check``, compares against ``--output`` (or ``docs/configuration.md``)
+    and exits 1 on drift, which is what CI runs.
+
+    Example:
+        promptcadence config reference --output docs/configuration.md
+    """
+    from pathlib import Path
+
+    from promptcadence.services.config_reference import render_configuration_reference
+
+    rendered = render_configuration_reference()
+    target = Path(output) if output else Path("docs/configuration.md")
+    if check:
+        committed = target.read_text(encoding="utf-8") if target.is_file() else ""
+        if committed != rendered:
+            typer.echo(
+                f"{target} differs from the generated reference; run "
+                "`promptcadence config reference --output docs/configuration.md`",
+                err=True,
+            )
+            raise typer.Exit(1)
+        typer.echo(f"{target} matches the settings model")
+        return
+    if output:
+        target.write_text(rendered, encoding="utf-8")
+        typer.echo(f"wrote {target}")
+    else:
+        typer.echo(rendered)

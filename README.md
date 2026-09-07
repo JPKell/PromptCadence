@@ -5,14 +5,16 @@ the plan is approved against governance policy and remaining budget before any s
 every turn that does execute is fully reconstructable afterwards — which model ran it, on which
 tier, on what data, at what cost, under whose approval.
 
-**Status:** Phase 3 (LoadCoach client, bypass loop, events and recovery), unreleased. A
-bypassed trajectory executes end to end: `promptcadence run "…" --bypass-planning --follow`
-queues it, the worker claims it under a lease, mints its `ExecutionIntent`, runs each turn through
-LoadCoach's `/generate`, records the turn with its provenance and every deviation, streams the
-events over SSE, and survives a `kill -9` mid-turn with no duplicated turn and no orphaned
-LoadCoach job. Planning, tools, budget enforcement and egress policy arrive in the phases that
-follow; a planned trajectory is claimed and failed with that cause rather than queued forever. See
-the [development plan](docs/apps/promptcadence/development-plan.md) for what each phase adds.
+**Status:** 1.0.0 (M12). Every phase of the development plan is built and gated: planning with
+corrective retries and three approval modes, the `ExecutionIntent` every turn runs under, sandboxed
+tools under ToolYard's isolation ladder, the budget over LoadLedger with three ceilings, egress
+governance over Commissioner with a durable decision per turn, per-step retry, context compaction
+as a view, the composed and materialized explanation, the operator console, the retention sweep,
+the security checklist and the prompt-injection corpus as release gates, and every spec §15
+budget asserted. Remote tiers refuse honestly until LoadCoach has a registration declaring
+`remote = true` and the tier is priced (ADR-0098). See [docs/](docs/README.md) for the operator
+set and the [development plan](docs/apps/promptcadence/development-plan.md) for what each phase
+added.
 
 Part of the **Local AI Suite**. Reaches a model only through [LoadCoach](https://github.com/JPKell/LoadCoach)'s
 HTTP API — it never imports a model provider directly ([ADR-0045](docs/adr/0045-promptcadence-reaches-models-only-through-loadcoach.md)
@@ -37,22 +39,24 @@ surface and `PROMPTCADENCE_*` environment variables.
 pip install promptcadence
 promptcadence serve            # starts the API on 127.0.0.1:8768
 promptcadence health --json    # same health data the API reports, from the CLI
+promptcadence run "summarize the files in ./notes" --follow     # plan, approve, execute, explain
 promptcadence run "summarize the files in ./notes" --bypass-planning --follow
-promptcadence trajectory list
+promptcadence trajectory explain <id>                           # every model, tier, tool call, debit, egress verdict
 promptcadence --help
 ```
 
-A note on LoadCoach versions: PromptCadence never reads an undeclared finish as success (spec
-§11 contract 6), and it reads the provider's declared reason from `output.finish_reason`, which
-LoadCoach renders since its commit `846348b`. Against an older LoadCoach (`1.0.0`,
-`01170a7`), which recorded the reason but rendered it nowhere, a free-text tier halts on its
-first turn with that cause on the row, and only a tier whose task profile validates a JSON
-Schema completes.
+Open <http://127.0.0.1:8768/> for the console. Read [docs/quickstart.md](docs/quickstart.md) next.
+
+PromptCadence 1.0 is tested against LoadCoach `1.1.0` and needs `≥ 1.1`: the declared finish
+reason on the wire (spec §11 contract 6 — an undeclared finish is never read as success), tool
+definitions and `tool_calls` on `/generate`, and the serving registration's `is_remote` on every
+response. See [docs/upgrading.md](docs/upgrading.md) for the compatibility table.
 
 ## Documentation
 
 | Read this | For |
 |---|---|
+| [docs/README.md](docs/README.md) | The operator set: quickstart, configuration reference, tiers, security, operations, troubleshooting, upgrading, the OpenAPI snapshot |
 | [docs/apps/promptcadence/spec.md](docs/apps/promptcadence/spec.md) | Purpose, scope, non-goals, public contracts, configuration, acceptance criteria |
 | [docs/apps/promptcadence/lifecycle.md](docs/apps/promptcadence/lifecycle.md) | The trajectory state machine, deviation categories and estimator |
 | [docs/apps/promptcadence/development-plan.md](docs/apps/promptcadence/development-plan.md) | The phased build plan: goals, work, tests, acceptance criteria per phase |
