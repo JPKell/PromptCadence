@@ -151,15 +151,27 @@ def require_scope(request: Request, required: str) -> Principal:
         Forbidden: The credential does not carry ``required``.
     """
     runtime = request.app.state.runtime
-    if not isinstance(runtime, Runtime):  # pragma: no cover — only outside the lifespan
-        message = "the application is not serving"
-        raise RuntimeError(message)
-    principal = resolve_principal(
-        runtime.database,
-        authorization=request.headers.get("authorization"),
-        bind_host=request.app.state.settings.server.host,
-        now=datetime.now(UTC),
-    )
+    bind_host = request.app.state.settings.server.host
+    if not isinstance(runtime, Runtime):
+        # An application built with no runtime has no database and therefore no tokens: the
+        # open-loopback rule is the only one that can apply, and it applies by the same logic
+        # ``resolve_principal`` uses when the token table is empty.
+        if bind_host in LOOPBACK_HOSTS:
+            principal = Principal(
+                token_id=LOOPBACK_PRINCIPAL_NAME,
+                name=LOOPBACK_PRINCIPAL_NAME,
+                scopes=frozenset(SCOPES),
+                source="loopback",
+            )
+        else:
+            raise Unauthorized("This endpoint requires a bearer token.", details={})
+    else:
+        principal = resolve_principal(
+            runtime.database,
+            authorization=request.headers.get("authorization"),
+            bind_host=bind_host,
+            now=datetime.now(UTC),
+        )
     if not principal.grants(required):
         raise Forbidden(
             f"This endpoint requires the {required!r} scope; token {principal.name!r} holds "

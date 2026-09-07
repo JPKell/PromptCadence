@@ -71,9 +71,10 @@ def _document(settings: Settings, trajectory_id: str | None) -> dict[str, Any]:
     """Ask the server if one is answering, else read the database directly."""
     import httpx
 
-    from promptcadence.cli.commands.trajectories import http_client_factory
+    from promptcadence.cli.commands.trajectories import auth_headers, http_client_factory
 
     client = http_client_factory(settings)
+    client.headers.update(auth_headers())
     try:
         query = {"trajectory_id": trajectory_id} if trajectory_id else None
         response = client.get("/api/v1/ledger", params=query)

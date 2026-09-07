@@ -120,8 +120,41 @@ class ServerSettings(BaseModel):
         ),
         examples=[["promptcadence.local"]],
     )
-    rate_limit_per_minute: int = Field(default=600, ge=1, examples=[600])
-    max_body_bytes: int = Field(default=1_048_576, ge=1024, examples=[1_048_576])
+    rate_limit_per_minute: int = Field(
+        default=600,
+        ge=0,
+        description=(
+            "Requests per minute one credential may make to /api/v1, sustained (spec §14). A "
+            "token bucket: rate_limit_burst may arrive at once, then this rate. 0 disables. At "
+            "the limit a caller gets 429 RATE_LIMITED with Retry-After, never a dropped request."
+        ),
+        examples=[600],
+    )
+    rate_limit_burst: int = Field(
+        default=100,
+        ge=1,
+        description="How many requests one credential may make at once before the rate applies.",
+        examples=[100],
+    )
+    failed_auth_per_minute: int = Field(
+        default=20,
+        ge=0,
+        description=(
+            "Failed authentications one address may make per minute before it is refused with "
+            "429 for the rest of the minute (ADR-0014 §6). 0 disables."
+        ),
+        examples=[20],
+    )
+    max_body_bytes: int = Field(
+        default=1_048_576,
+        ge=1024,
+        description=(
+            "The largest request body accepted, refused with 413 before buffering (Security "
+            "Standards §14). A trajectory submission is a few kilobytes; nothing here parses a "
+            "document."
+        ),
+        examples=[1_048_576],
+    )
 
     _split_hosts = field_validator("allowed_hosts", mode="before")(_split_csv)
 
@@ -798,8 +831,10 @@ host = "127.0.0.1"
 port = 8768
 allow_lan_exposure = false
 allowed_hosts = []          # required when host is not loopback (ADR-0026)
-rate_limit_per_minute = 600
-max_body_bytes = 1048576
+rate_limit_per_minute = 600     # per credential; 0 disables; 429 + Retry-After at the limit
+rate_limit_burst = 100          # requests one credential may make at once before the rate applies
+failed_auth_per_minute = 20     # failed authentications per address before a 429 brake; 0 disables
+max_body_bytes = 1048576        # 413 before buffering
 
 [storage]
 # database_url defaults to a location under the XDG data directory.

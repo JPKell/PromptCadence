@@ -67,7 +67,7 @@ def _documents(
     """Ask the server if one is answering, else read the database directly."""
     import httpx
 
-    from promptcadence.cli.commands.trajectories import http_client_factory
+    from promptcadence.cli.commands.trajectories import auth_headers, http_client_factory
 
     query: dict[str, Any] = {"limit": limit}
     if trajectory_id:
@@ -75,6 +75,7 @@ def _documents(
     if verdict:
         query["verdict"] = verdict
     client = http_client_factory(settings)
+    client.headers.update(auth_headers())
     try:
         response = client.get("/api/v1/egress-decisions", params=query)
         if response.status_code == 200:

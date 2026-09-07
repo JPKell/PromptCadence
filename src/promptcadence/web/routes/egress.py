@@ -23,6 +23,7 @@ from mirrorwall import clamp_limit, paginated_response
 
 from promptcadence.services.egress import decision_view
 from promptcadence.services.runtime import Runtime
+from promptcadence.web.auth import require_scope
 
 if TYPE_CHECKING:
     from commissioner import EgressDecision
@@ -86,8 +87,10 @@ def get_egress_decisions(
     ``source_ref`` names the turn or tool invocation the decision gated, which is how a decision is
     matched back to what it governed.
 
-    ``400 VALIDATION_ERROR`` if ``verdict`` names something outside the vocabulary.
+    ``400 VALIDATION_ERROR`` if ``verdict`` names something outside the vocabulary. ``read``
+    scope.
     """
+    require_scope(request, "read")
     effective = clamp_limit(limit, maximum=200)
     decisions: list[EgressDecision] = list(
         _runtime(request).egress.decisions(

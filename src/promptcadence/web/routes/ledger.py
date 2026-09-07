@@ -22,6 +22,7 @@ from fastapi import APIRouter, Query, Request, Response
 from mirrorwall import clamp_limit, json_response, paginated_response
 
 from promptcadence.services.runtime import Runtime
+from promptcadence.web.auth import require_scope
 
 if TYPE_CHECKING:
     from promptcadence.services.views import TrajectoryView
@@ -53,8 +54,9 @@ def get_ledger(request: Request, trajectory_id: str | None = Query(default=None)
 
     The per-day, per-project and per-tier figures name **no run at all** — they are ledger-wide
     windows and LoadLedger answers them as such since 0.2.0. Until then this handler had to pass
-    an arbitrary known trajectory as a reference run to satisfy a signature.
+    an arbitrary known trajectory as a reference run to satisfy a signature. ``read`` scope.
     """
+    require_scope(request, "read")
     runtime = _runtime(request)
     trajectory: TrajectoryView | None = (
         runtime.trajectories.get(trajectory_id) if trajectory_id is not None else None
@@ -73,8 +75,9 @@ def get_ledger_entries(
     """Recorded debits, newest first, optionally narrowed to one trajectory or one tag.
 
     Each entry carries its four token counts, its ``pricing_hash`` and every ceiling's verdict as
-    of that debit — never a money figure as a fact of its own (ADR-0030 rule 1).
+    of that debit — never a money figure as a fact of its own (ADR-0030 rule 1). ``read`` scope.
     """
+    require_scope(request, "read")
     effective = clamp_limit(limit, maximum=200)
     entries = _runtime(request).budget.entry_views(
         trajectory_id=trajectory_id, tag=tag, limit=effective

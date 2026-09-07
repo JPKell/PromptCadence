@@ -12,11 +12,12 @@ Only ``typer`` and ``json`` load at module level (CLI standards §12).
 from __future__ import annotations
 
 import json as json_module
-import os
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
+
+from promptcadence.cli.commands.trajectories import TOKEN_ENV
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -28,8 +29,6 @@ if TYPE_CHECKING:
 __all__ = ["app", "approve", "deny"]
 
 app = typer.Typer(help="Pending approval requests.")
-
-TOKEN_ENV = "PROMPTCADENCE_API_TOKEN"  # noqa: S105 — an environment variable's *name*
 
 
 def _settings(config: str | None) -> Settings:
@@ -43,19 +42,17 @@ def _settings(config: str | None) -> Settings:
 
 
 def _headers(token: str | None) -> dict[str, str]:
-    presented = token or os.environ.get(TOKEN_ENV)
-    return {"Authorization": f"Bearer {presented}"} if presented else {}
+    from promptcadence.cli.commands.trajectories import auth_headers
+
+    return auth_headers(token)
 
 
 @contextmanager
 def _client(settings: Settings) -> Iterator[httpx.Client]:
-    from promptcadence.cli.commands.trajectories import http_client_factory
+    from promptcadence.cli.commands.trajectories import client_for
 
-    client = http_client_factory(settings)
-    try:
+    with client_for(settings) as client:
         yield client
-    finally:
-        client.close()
 
 
 def _fail(response: httpx.Response, *, json_output: bool) -> typer.Exit:

@@ -24,6 +24,7 @@ from promptcadence.__about__ import __version__
 from promptcadence.domain.errors import ToolNotFoundError
 from promptcadence.domain.trajectory import TrajectoryState
 from promptcadence.services.tools import isolation_payload
+from promptcadence.web.auth import require_scope
 
 __all__ = ["API_VERSION", "SCHEMA_VERSION", "router"]
 
@@ -55,8 +56,10 @@ def health(request: Request) -> JSONResponse:
         MirrorWall's standard health payload. ``200`` when every component is ``ok`` or
         ``degraded``, ``503`` when any is ``unavailable`` — an unreachable LoadCoach never reaches
         ``unavailable`` (see :mod:`promptcadence.services.loadcoach_status`), so only an unopenable
-        database can bring this endpoint below 200.
+        database can bring this endpoint below 200. ``read`` scope; ``/version`` is the
+        endpoint that answers without one (ADR-0026 §5).
     """
+    require_scope(request, "read")
     components = _components(request)
     payload = health_payload(
         application="promptcadence", version=__version__, components=components
@@ -89,8 +92,9 @@ def system_status(request: Request) -> JSONResponse:
     age, today's ledger position against the per-day ceiling and each configured project's
     ceiling with the per-tier balances beside it — rendered by the budget service, never
     re-derived here (a tier has a balance, not headroom; ``—`` is not ``$0.00``; money is per
-    currency) — the last recovery pass and the configured concurrency.
+    currency) — the last recovery pass and the configured concurrency. ``read`` scope.
     """
+    require_scope(request, "read")
     settings = request.app.state.settings
     runtime = getattr(request.app.state, "runtime", None)
     active: list[dict[str, Any]] = []
@@ -134,8 +138,9 @@ def tools(request: Request) -> JSONResponse:
         whether it requires isolation, whether its arguments are redacted, its argument schema, and
         — for one that is not registered — the cause. ``isolation`` is ToolYard's probe result: the
         rung ``run_command`` runs under, the runtime that provides it, and the reason naming every
-        rung the probe visited.
+        rung the probe visited. ``read`` scope.
     """
+    require_scope(request, "read")
     plant = _plant(request)
     if plant is None:
         return json_response({"tools": [], "isolation": None})
@@ -164,6 +169,7 @@ def tool(request: Request, name: str) -> JSONResponse:
             found, not missing: configuration names it, and saying "no such tool" would hide the
             very thing an operator came to look up.
     """
+    require_scope(request, "read")
     plant = _plant(request)
     entry = plant.entry(name) if plant is not None else None
     if entry is None:

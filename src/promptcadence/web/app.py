@@ -18,8 +18,15 @@ as it does on the endpoints.
 ``CsrfMiddleware`` is wired because the approvals inbox posts forms. MirrorWall exempts
 ``application/json`` on stated grounds rather than by omission: a cross-origin HTML form cannot
 send that content type, so a request arriving as JSON has already passed a CORS preflight, which
-fails while CORS is disabled. Same-origin checking, body caps and rate limits are Phase 9's, where
-the security checklist lists them together.
+fails while CORS is disabled. ``SameOriginMiddleware`` is the server-side statement of that same
+fact for a JSON write that arrives with another host's ``Origin``; ``BodySizeLimitMiddleware``
+refuses an oversize body before buffering it; ``RateLimitMiddleware`` applies ``[server]``'s
+per-credential bucket and the failed-authentication brake (Security Standards §14, Phase 9).
+
+**Every ``/api/v1`` route except ``/version`` resolves a principal** (spec §14): ``read`` for the
+reads, ``write`` for submit and cancel, ``approve`` for a grant or a denial. On an open loopback
+install the principal is ``loopback`` and nothing changes; once a token exists the routes answer
+``401`` without one and ``403`` without the scope.
 """
 
 from __future__ import annotations
@@ -45,6 +52,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from promptcadence.__about__ import __version__
 from promptcadence.config import LOOPBACK_HOSTS, Settings
+from promptcadence.web.limits import BodySizeLimitMiddleware, SameOriginMiddleware
+from promptcadence.web.rate_limit import RateLimitMiddleware
 from promptcadence.web.rendering import templates
 from promptcadence.web.routes import approvals as approval_routes
 from promptcadence.web.routes import console as console_routes
@@ -243,10 +252,24 @@ def create_app(settings: Settings, *, runtime_builder: Any | None = None) -> Fas
     app.state.runtime_builder = runtime_builder
     app.state.health_checkers = None
 
+    # Starlette wraps in reverse order of these calls, so the stack from the outside in is: the
+    # body cap, same-origin, CSRF, Host validation, the rate limiter, the request ID. Host
+    # validation therefore precedes authentication (which lives in the routes) *and* the rate
+    # limiter, so a DNS-rebinding attempt is 421 before it can spend anyone's budget (ADR-0026
+    # §1, Security Standards §14) — LoadCoach's ordering, transcribed.
     app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(
+        RateLimitMiddleware,
+        per_minute=settings.server.rate_limit_per_minute,
+        burst=settings.server.rate_limit_burst,
+        failed_auth_per_minute=settings.server.failed_auth_per_minute,
+    )
     app.add_middleware(HostValidationMiddleware, allowed_hosts=_resolve_allowed_hosts(settings))
-    # The console's forms, and every form after them (ADR-0026 §2, ADR-0094 rule 3).
+    # The console's forms, and every form after them (ADR-0026 §2, ADR-0094 rule 3); a
+    # cross-origin JSON write; an oversize body (Security Standards §14).
     app.add_middleware(CsrfMiddleware)
+    app.add_middleware(SameOriginMiddleware)
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.server.max_body_bytes)
 
     register_exception_handlers(app)
 

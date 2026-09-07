@@ -15,6 +15,7 @@ the command bodies (CLI standards §12).
 from __future__ import annotations
 
 import json as json_module
+import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 
     from promptcadence.config import Settings
 
-__all__ = ["app", "http_client_factory", "run"]
+__all__ = ["TOKEN_ENV", "app", "auth_headers", "client_for", "http_client_factory", "run"]
 
 app = typer.Typer(help="Trajectories: list, show, cancel, wait.")
 
@@ -58,9 +59,35 @@ closed, never *entered* — entering a ``TestClient`` would run the application'
 second time."""
 
 
+TOKEN_ENV = "PROMPTCADENCE_API_TOKEN"  # noqa: S105 — an environment variable's *name*
+
+
+def auth_headers(token: str | None = None) -> dict[str, str]:
+    """The bearer header a client-mode command presents: ``--token``, else the environment.
+
+    Every ``/api/v1`` route except ``/version`` resolves a principal (spec §14), so once an
+    install has a token every command that reaches the server must carry one. An empty mapping
+    is what an open loopback install sends, and is correct there.
+    """
+    presented = token or os.environ.get(TOKEN_ENV)
+    return {"Authorization": f"Bearer {presented}"} if presented else {}
+
+
+@contextmanager
+def client_for(settings: Settings) -> Iterator[httpx.Client]:
+    """A client-mode HTTP client carrying the bearer header, closed on exit."""
+    client = http_client_factory(settings)
+    client.headers.update(auth_headers())
+    try:
+        yield client
+    finally:
+        client.close()
+
+
 @contextmanager
 def _client(settings: Settings) -> Iterator[httpx.Client]:
     client = http_client_factory(settings)
+    client.headers.update(auth_headers())
     try:
         yield client
     finally:

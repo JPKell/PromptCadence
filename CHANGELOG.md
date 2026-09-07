@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ## [Unreleased]
 
 ### Added
+- **The two `[server]` limits are enforced** (P9, Security Standards §14). `rate_limit_per_minute`
+  and `max_body_bytes` were declared, shown by `config show` and the example file, and read by
+  nothing. `RateLimitMiddleware` (LoadCoach's, transcribed without the reverse-proxy half) applies
+  a per-credential token bucket to `/api/v1` — `rate_limit_burst` (new, 100) at once, then the
+  rate; `0` disables — and a failed-authentication brake per address (`failed_auth_per_minute`,
+  new, 20). At the limit a caller gets `429 RATE_LIMITED` with `Retry-After`, never a dropped
+  request; `/api/v1/version` is exempt. `BodySizeLimitMiddleware` answers `413 PAYLOAD_TOO_LARGE`
+  before a byte over the cap is buffered; `SameOriginMiddleware` refuses a JSON write whose
+  `Origin` names another host with `403 CSRF_FAILED`.
+- **Every `/api/v1` route except `/version` resolves a principal** (spec §14). Until now only the
+  explanation and the approval routes did; `POST /trajectories`, cancel, the reads, health, status,
+  tools, the ledger and the egress decisions answered anyone once a token existed. Now `read`
+  guards the reads, `write` the submit and the cancel, `approve` the grant and the denial. On an
+  open loopback install nothing changes. Client-mode CLI commands present
+  `$PROMPTCADENCE_API_TOKEN` on every call, not only `approve`/`deny`.
+- **`tests/security/`** — Security Standards §14 item by item, each a named test, with a closing
+  test that asserts every item held elsewhere still resolves to a callable.
 - **Context compaction** (P8, lifecycle §7). Before every turn the transcript is estimated against
   `threshold × context_budget_tokens`, and above it CutCtx plans a compaction over the configured
   `[compaction] policy_chain`. The threshold and the compaction target are **one figure**:

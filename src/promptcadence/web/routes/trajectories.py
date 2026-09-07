@@ -135,8 +135,9 @@ def post_trajectory(request: Request, body: TrajectoryBody) -> Response:
     """T1: validate, decide the bypass, snapshot the tiers, queue; ``202`` with the trajectory.
 
     Errors: ``VALIDATION_ERROR``, ``CLASSIFICATION_INVALID``, ``PROJECT_UNKNOWN``,
-    ``TOOL_NOT_FOUND``, ``TIER_NOT_CONFIGURED``.
+    ``TOOL_NOT_FOUND``, ``TIER_NOT_CONFIGURED``. ``write`` scope.
     """
+    require_scope(request, "write")
     runtime = _runtime(request)
     view = runtime.trajectories.submit(_submission_of(body))
     runtime.worker.wake()
@@ -153,6 +154,7 @@ def list_trajectories(
     cursor: str | None = Query(default=None),
 ) -> Response:
     """Trajectories newest first, filtered by state, cursor-paginated (API standards §6)."""
+    require_scope(request, "read")
     runtime = _runtime(request)
     effective = clamp_limit(limit, maximum=200)
     filter_state = TrajectoryState(state) if state else None
@@ -171,6 +173,7 @@ def list_trajectories(
 @router.get("/trajectories/{trajectory_id}", summary="One trajectory")
 def get_trajectory(request: Request, trajectory_id: str) -> Response:
     """The trajectory with its state, cause and lease. ``404 TRAJECTORY_NOT_FOUND``."""
+    require_scope(request, "read")
     view = _runtime(request).trajectories.get(trajectory_id)
     return json_response(view.as_json(), request_id=_request_id(request))
 
@@ -178,6 +181,7 @@ def get_trajectory(request: Request, trajectory_id: str) -> Response:
 @router.get("/trajectories/{trajectory_id}/turns", summary="The transcript")
 def get_turns(request: Request, trajectory_id: str) -> Response:
     """Every turn in order, each with its ``(intent_id, revision)`` and LoadCoach job."""
+    require_scope(request, "read")
     turns = _runtime(request).trajectories.turns(trajectory_id)
     documents: list[dict[str, Any]] = [turn.as_json() for turn in turns]
     return paginated_response(
@@ -192,6 +196,7 @@ def get_plan(request: Request, trajectory_id: str) -> Response:
     ``null`` for a bypassed trajectory or one not yet drafted; ``404`` for an unknown one. The
     composed explanation document is Phase 8's — this is the plan rows, rendered.
     """
+    require_scope(request, "read")
     document = _runtime(request).records.plan(trajectory_id)
     return json_response(document, request_id=_request_id(request))
 
@@ -199,6 +204,7 @@ def get_plan(request: Request, trajectory_id: str) -> Response:
 @router.get("/trajectories/{trajectory_id}/intents", summary="Every intent revision")
 def get_intents(request: Request, trajectory_id: str) -> Response:
     """Every ``ExecutionIntent`` revision the trajectory minted, superseded ones included."""
+    require_scope(request, "read")
     documents: list[dict[str, Any]] = _runtime(request).records.intents(trajectory_id)
     return paginated_response(
         documents, limit=max(len(documents), 1), has_more=False, request_id=_request_id(request)
@@ -241,8 +247,9 @@ def get_explanation(request: Request, trajectory_id: str) -> Response:
 def post_cancel(request: Request, trajectory_id: str) -> Response:
     """T14: at once for an unleased trajectory, at the next turn boundary for a leased one.
 
-    ``409 TRAJECTORY_NOT_CANCELLABLE`` for a terminal trajectory.
+    ``409 TRAJECTORY_NOT_CANCELLABLE`` for a terminal trajectory. ``write`` scope.
     """
+    require_scope(request, "write")
     view = _runtime(request).trajectories.cancel(trajectory_id)
     return json_response(
         view.as_json(), status=status.HTTP_202_ACCEPTED, request_id=_request_id(request)
@@ -257,6 +264,7 @@ async def stream_trajectory(request: Request, trajectory_id: str) -> StreamingRe
     frame for an unknown trajectory.
     """
     runtime = _runtime(request)
+    await anyio.to_thread.run_sync(require_scope, request, "read")
     await anyio.to_thread.run_sync(runtime.trajectories.get, trajectory_id)
     return sse_response(
         runtime.sink.source(trajectory_id),

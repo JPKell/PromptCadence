@@ -130,17 +130,19 @@ def test_the_approve_scope_is_enforced_once_a_token_exists(manual: TestClient) -
     now = datetime.now(UTC)
     reader = create_token(runtime.database, name="reader", scopes=["read", "write"], now=now)
     approver = create_token(runtime.database, name="ops", scopes=["approve"], now=now)
+    as_reader = {"Authorization": f"Bearer {reader.token}"}
+    # Once a token exists every route resolves a principal (spec §14): the submit and the reads
+    # below present the read+write token; the grant is the approver's alone.
+    manual.headers.update(as_reader)
     trajectory_id = manual.post(
         "/api/v1/trajectories", json={"task": "t", "bypass_planning": True}
     ).json()["trajectory_id"]
     _wait(manual, trajectory_id, {"awaiting_approval"})
+    manual.headers.pop("Authorization")
 
     anonymous = manual.post(f"/api/v1/trajectories/{trajectory_id}/approve")
     assert anonymous.status_code == 401 and anonymous.json()["error"]["code"] == "UNAUTHORIZED"
-    forbidden = manual.post(
-        f"/api/v1/trajectories/{trajectory_id}/approve",
-        headers={"Authorization": f"Bearer {reader.token}"},
-    )
+    forbidden = manual.post(f"/api/v1/trajectories/{trajectory_id}/approve", headers=as_reader)
     assert forbidden.status_code == 403 and forbidden.json()["error"]["code"] == "FORBIDDEN"
     assert manual.get("/api/v1/approvals").status_code == 401, "read needs a token now too"
     granted = manual.post(
@@ -148,9 +150,9 @@ def test_the_approve_scope_is_enforced_once_a_token_exists(manual: TestClient) -
         headers={"Authorization": f"Bearer {approver.token}"},
     )
     assert granted.status_code == 200
-    intents = manual.get(
-        f"/api/v1/trajectories/{trajectory_id}/intents",
-    ).json()["items"]
+    intents = manual.get(f"/api/v1/trajectories/{trajectory_id}/intents", headers=as_reader).json()[
+        "items"
+    ]
     assert intents[-1]["minted_by"] == f"approver:{approver.record.token_id}"  # noqa: S105
 
 
