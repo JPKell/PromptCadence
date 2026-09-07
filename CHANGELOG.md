@@ -34,6 +34,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   makes a second pass skip the first's work and says when. An in-flight trajectory is never swept,
   whatever its age. Runs from the worker at the lease-reap cadence; `retain_content = true`
   disables it, and its docstring no longer says the sweep "arrives later".
+- **The prompt-injection corpus is a release gate** (P9, ADR-0095; `tests/security/
+  test_injection_corpus.py`). Ten cases, each a hostile input plus a model-independent property
+  of the harness: a plan description carrying instructions is quoted as data and moves no
+  dispatch; `[tool_calls]`-shaped text executes nothing; a declared tool with hostile arguments
+  never leaves containment; an invented name is refused although the model was told which tools
+  exist; a tool result carrying instructions is replayed as a `tool` turn and changes no envelope;
+  the offered definitions are the registry's verbatim; `http_fetch` refuses a link-local address,
+  a cross-host redirect and an oversize body even on an allowlisted host; a plan that routes
+  confidential work to a remote tier never reaches it; model output shaped like the record cannot
+  change the record's structure; a compaction summary that emits a tool call executes nothing.
+  None asserts what the model said.
+- **`turn_overrun` is decided before `STEP_LIMIT_EXCEEDED` halts**, and a journey holds it
+  (spec §13; G3's open question). A step reaching the intent's `max_turns` with no declared finish
+  parks for the scoped re-approval lifecycle §5 specifies; the halt is for the bound nobody can
+  extend by approval — `max_turns_per_step` round trips spent.
 - **Context compaction** (P8, lifecycle §7). Before every turn the transcript is estimated against
   `threshold × context_budget_tokens`, and above it CutCtx plans a compaction over the configured
   `[compaction] policy_chain`. The threshold and the compaction target are **one figure**:

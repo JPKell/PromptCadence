@@ -12,6 +12,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 from fastapi.testclient import TestClient
 from tests.conftest import budget_and_estimator, egress_for
 from tests.fakes.loadcoach_app import (
@@ -93,6 +94,7 @@ class LoopHarness:
         *,
         pricing: PricingCatalog | None = None,
         remote_provider: bool = False,
+        fetch_transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.settings = settings
         self.database = database
@@ -110,7 +112,14 @@ class LoopHarness:
         self.loadcoach = LoadCoachClient(
             TestClient(build_fake_app(fake), base_url="http://loadcoach.test")
         )
-        self.tools = ToolPlant(settings, sandbox=TieredSandbox(which=lambda _name: None))
+        # A fetch transport, when given, comes with a resolver that never touches DNS: the
+        # link-local and rebinding checks are only testable against a resolution the test controls.
+        self.tools = ToolPlant(
+            settings,
+            sandbox=TieredSandbox(which=lambda _name: None),
+            resolver=(lambda host: ["203.0.113.7"]) if fetch_transport is not None else None,
+            fetch_transport=fetch_transport,
+        )
         self.approvals = ApprovalService(
             database,
             self.sink,
@@ -194,11 +203,13 @@ class open_harness:  # noqa: N801 — a context manager, used as one
         profiles: tuple[str, ...] = PLANNER_PROFILES,
         pricing: PricingCatalog | None = None,
         remote_provider: bool = False,
+        fetch_transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._settings = settings
         self._profiles = profiles
         self._pricing = pricing
         self._remote_provider = remote_provider
+        self._fetch_transport = fetch_transport
         self._engine: Any = None
 
     def __enter__(self) -> LoopHarness:
@@ -213,6 +224,7 @@ class open_harness:  # noqa: N801 — a context manager, used as one
             fake,
             pricing=self._pricing,
             remote_provider=self._remote_provider,
+            fetch_transport=self._fetch_transport,
         )
 
     def __exit__(self, *exc: object) -> None:
