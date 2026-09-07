@@ -36,6 +36,7 @@ from promptcadence.services.egress import EgressService
 from promptcadence.services.estimates import StepEstimator
 from promptcadence.services.loop import LoopController, ReconcileOutcome, RunSignals
 from promptcadence.services.pricing import PricingCatalog
+from promptcadence.services.retention import RetentionOutcome, scrub_content
 from promptcadence.services.tools import ToolPlant
 
 if TYPE_CHECKING:
@@ -292,6 +293,23 @@ class TrajectoryWorker:
             self._run_held(controller, trajectory_id)
         return summary
 
+    def sweep_retention(self, controller: LoopController, now: datetime) -> RetentionOutcome | None:
+        """Scrub finished trajectories' text past the retention (spec §14), unless retained.
+
+        Runs from the worker at the lease-reap cadence, through the controller's own plant and
+        explanation builder so the workspace root and the artifact directory are the served
+        process's. ``None`` when ``[storage] retain_content`` keeps everything.
+        """
+        if self.settings.storage.retain_content:
+            return None
+        return scrub_content(
+            self.database,
+            now=now,
+            retention_hours=self.settings.storage.content_retention_hours,
+            tools=controller.tools,
+            explanations=controller.explanations,
+        )
+
     def start(self) -> None:
         """Recover, then start the worker threads."""
         self.recover_at_startup()
@@ -331,6 +349,9 @@ class TrajectoryWorker:
                 )
                 for trajectory_id in summary.resumed:
                     self._run_held(controller, trajectory_id)
+                # Content retention rides the same cadence: finished work loses its words
+                # ``content_retention_hours`` after it finished, never before (spec §14).
+                self.sweep_retention(controller, now)
                 next_reap = now + _seconds(self.settings.execution.lease_seconds)
             # `awaiting_window` holds no lease, so recovery never sees a parked trajectory and
             # nothing else would ever look at its clock. This pass is what makes the UTC day edge

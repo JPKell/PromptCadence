@@ -659,6 +659,11 @@ class LoopController:
         self._render = prompt_renderer
 
     @property
+    def tools(self) -> ToolPlant:
+        """The plant this controller executes tools through (the sweep's workspace owner)."""
+        return self._tools
+
+    @property
     def explanations(self) -> ExplanationBuilder:
         """The explanation builder this controller materializes through."""
         return self._explanations

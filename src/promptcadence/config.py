@@ -186,7 +186,11 @@ class StorageSettings(BaseModel):
     )
     retain_content: bool = Field(
         default=False,
-        description="Config-only switch mirroring LoadCoach's; the retention sweep arrives later.",
+        description=(
+            "Keep transcript text, plan documents, tool arguments and workspaces for ever instead "
+            "of sweeping them content_retention_hours after a trajectory finishes (spec §14). "
+            "Config-only, mirroring LoadCoach's."
+        ),
     )
 
     @model_validator(mode="after")

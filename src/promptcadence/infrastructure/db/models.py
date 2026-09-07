@@ -193,6 +193,10 @@ class Trajectory(Base):
         UtcDateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
     completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    # Row I2 (migration 0011): when the retention sweep removed this trajectory's text (spec §14).
+    # ``NULL`` while the words are still here. The stamp is what makes the sweep idempotent and
+    # what lets the record say *when*, rather than a reader inferring it from a NULL column.
+    content_scrubbed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
 
     __table_args__ = (
         Index("ix_trajectories_status_created_at", "status", "created_at"),

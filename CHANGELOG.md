@@ -24,6 +24,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   `$PROMPTCADENCE_API_TOKEN` on every call, not only `approve`/`deny`.
 - **`tests/security/`** — Security Standards §14 item by item, each a named test, with a closing
   test that asserts every item held elsewhere still resolves to a callable.
+- **The retention sweep, workspaces included** (P9, spec §14; migration `0011`). A terminal
+  trajectory older than `[storage] content_retention_hours` loses its transcript text and
+  `tool_calls_json`, its plan document and every step description, its tool arguments, result
+  summaries and refusal details, its task, and its workspace directory; every digest, model
+  identity, tier, usage figure, ceiling verdict, egress decision, deviation, approval and event
+  stays, and the explanation is re-materialized from the scrubbed rows through `invalidate` so a
+  scrubbed trajectory still explains itself. `trajectories.content_scrubbed_at` is the stamp that
+  makes a second pass skip the first's work and says when. An in-flight trajectory is never swept,
+  whatever its age. Runs from the worker at the lease-reap cadence; `retain_content = true`
+  disables it, and its docstring no longer says the sweep "arrives later".
 - **Context compaction** (P8, lifecycle §7). Before every turn the transcript is estimated against
   `threshold × context_budget_tokens`, and above it CutCtx plans a compaction over the configured
   `[compaction] policy_chain`. The threshold and the compaction target are **one figure**:
