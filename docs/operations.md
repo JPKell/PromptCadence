@@ -23,7 +23,25 @@ promptcadence trajectory list         # newest first; --state to filter
 promptcadence approvals list          # what is waiting for a person, oldest first
 promptcadence ledger show --scope day # today's spend against the per-day ceiling
 promptcadence egress list --denied-only
+promptcadence settings list           # the five runtime-changeable keys, and which layer decided
 ```
+
+Those five keys can also be changed while the server runs, without editing a file or restarting:
+
+```bash
+promptcadence settings set execution.step_retries 3   # admin scope; --token, else $PROMPTCADENCE_API_TOKEN
+promptcadence settings get execution.step_retries     # read scope
+```
+
+`settings set` prints the key's **effective** value after the write, which is not always what was
+sent: a stored value is ignored while the same key is set in the environment (configuration
+standards §7 — `defaults → file → database → env → CLI`), and the command says so rather than
+reporting a success. Anything that decides exposure, egress, credentials, containment, retention
+or spend is refused by name with `FORBIDDEN`; the budget ceilings are among them deliberately —
+raising one is an approval with an approver on the record, never a form
+(ADR-0100). `promptcadence config show`
+answers the read-side question with the server stopped, marking what the settings table decides
+`(database)`.
 
 The console at `/` shows the same: the dashboard, trajectories and their timelines, the approvals
 inbox, tiers, tools, ledger, egress and system. Counts on paged tables are capped at the page

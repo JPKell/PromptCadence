@@ -6,6 +6,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-07
+
+The CLI half of the settings surface. Row I5 built the registry, the API and the console page and
+deliberately left the verb out; a setting a script or an ssh session needs to change should not
+require hand-writing `curl`. No new runtime-changeable key, no endpoint, no schema change — the
+five keys are as [ADR-0100](../docs/adr/0100-promptcadences-runtime-changeable-set.md) left them.
+
+### Added
+
+- **`promptcadence settings list | get <key> | set <key> <value>`** (spec §7.2). A **client**
+  command in the shape of `approve` and `deny`: it talks to a running server over HTTP, so the
+  scopes the API enforces are the scopes the CLI enforces — `read` to look, `admin` to change —
+  and `--token`, else `$PROMPTCADENCE_API_TOKEN`, is the identity. `--json` on all three.
+  `promptcadence config show` remains the read-side answer for a *stopped* install; this verb does
+  not fall back to it.
+- `set` prints the key's **effective** value after the write and names the variable when a stored
+  row is shadowed by the environment (configuration standards §7), so a value that cannot take
+  effect never reads as a success. A refusal prints the API's code and message — `FORBIDDEN`
+  naming a security-relevant key (exit 1), `VALIDATION_ERROR` naming an unknown one and listing
+  the changeable set from the envelope's own `details` (exit 2) — never a traceback; an
+  unreachable server is exit 4. The registry is not restated in the CLI: a key added to
+  `services/settings.py` needs no change there.
+
 ## [1.1.0] — 2026-09-06
 
 The runtime settings spec §7.1 has listed since the specification was written. Five bounded tuning

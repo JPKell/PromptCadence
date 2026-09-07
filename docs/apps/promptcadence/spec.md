@@ -183,6 +183,7 @@ promptcadence trajectory list|show|cancel|wait|explain
 promptcadence approvals list [--trajectory <id>] [--all] [--json]
 promptcadence approve <id> [--tokens N] [--money-nanos N] [--token …]   # ceiling_raise: the new budget
 promptcadence deny <id> [--reason …] [--token …]   # --token, else $PROMPTCADENCE_API_TOKEN
+promptcadence settings list|get <key>|set <key> <value> [--token …] [--json]   # client mode
 promptcadence tiers list|show|check    # check: verifies each tier's task profile exists in LoadCoach
 promptcadence tools list|show
 promptcadence ledger show [--scope day|project|tier|trajectory] [--trajectory <id>] [--json]
