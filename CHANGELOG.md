@@ -8,6 +8,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ### Added
 
+- `docs/upgrading.md` refreshed to cover every shipped version (M9 audit Group 5, item D9).
+
 - `.github/workflows/release.yml` now writes `SHA256SUMS` over `dist/*` and attaches it
   alongside the wheel and sdist on the GitHub release (M9 audit Group 5, item R4).
 

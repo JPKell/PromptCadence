@@ -23,12 +23,40 @@ the `database` component `ok`.
 
 | Version | Migrations | What they add |
 |---|---|---|
+| 1.3.0 | none | No schema change — a dependency floor move and a client-side behaviour change (below). |
+| 1.2.0 | none | No schema change — the `settings` CLI verb only; no new runtime-changeable key. |
 | 1.1.0 | none | **No migration, no schema change, and no stored value changed.** The runtime settings this release adds live in the `settings` table, which has existed since `0001` and was unused until now; upgrading from 1.0.x is `pip install --upgrade` and a restart. |
 | 1.0.0 | `0008`–`0011` | `plan_steps.attempt` (the per-step retry); `compactions`; `explanation_revisions` and a nullable `plans.raw_document`; `trajectories.content_scrubbed_at` (the retention sweep's stamp). Additive throughout; no existing value changes. |
 | 0.9.0b0 | `0001`–`0007` | The beta's schema. |
 
 Upgrading a `0.9.0b0` database is `0007 → 0011` in one `db upgrade`; the release handoff records
 the proof (a `0.9.0b0` wheel's database upgraded by the `1.0.0` wheel in a clean venv).
+
+### Behaviour changes at 1.3.0
+
+* **`LoadCoachClient` now negotiates the API version on first contact and refuses an incompatible
+  one.** `generate()` calls `GET /version` before every turn, cached for five minutes (a
+  compatible LoadCoach costs one round trip per window, not per turn); a LoadCoach that does not
+  serve this build's API major is refused as `SCHEMA_VERSION_UNSUPPORTED`, uncached — re-checked
+  and re-refused on every call rather than remembered as working. **If you run a LoadCoach that
+  predates the current API major, upgrading PromptCadence to 1.3.0 starts refusing every
+  trajectory** where it previously ran (perhaps incorrectly) against a mismatched server; a
+  LoadCoach that cannot be reached at all is unaffected — that is still the health-degrade path.
+* **The response's tool calls are read from `output.tool_calls_assembled`** (LoadCoach ≥ 1.1,
+  ADR-0078) instead of being re-grouped locally from `output.tool_calls`' streamed fragments. A
+  LoadCoach older than 1.1 that omits the field still works — local assembly is the documented
+  fallback — but the common case is now one grouping implementation, on the server.
+* **The dependency floor rises to `loadledger[sql] >= 0.3, < 0.4`.** `services/pricing.py` is now
+  a thin edge over `loadledger.pricing`; every existing pricing test and fixture hash is
+  unchanged.
+
+### Behaviour changes at 1.2.0
+
+* **`promptcadence settings list | get <key> | set <key> <value>`** is a new CLI verb — a
+  **client** command that talks to a running server over HTTP under the same scopes the API
+  enforces (`read` to look, `admin` to change). No new runtime-changeable key, no new endpoint, no
+  schema change; `promptcadence config show` is unchanged and remains the read-side answer for a
+  *stopped* install.
 
 ### Behaviour changes at 1.1.0
 
@@ -77,18 +105,20 @@ the proof (a `0.9.0b0` wheel's database upgraded by the `1.0.0` wheel in a clean
 
 ### Compatibility
 
-PromptCadence 1.0.1 is tested against LoadCoach `1.1.1` and needs LoadCoach `≥ 1.1` for the
-declared finish reason on the wire, tool definitions on `/generate`, and the registration's
-`is_remote` on responses. The requirement did not move at 1.0.1; the contract tests simply vendor
-`1.1.1`'s `openapi.json` and `task_profiles.toml` rather than `1.1.0`'s. Suite packages:
-`baseaicore >=0.4.1,<0.5`, `setspec >=0.5,<0.7`, `weightsdb >=0.2,<0.3`, `mirrorwall >=0.2,<0.3`,
-`toolyard >=0.1.1,<0.2`, `cutctx >=0.1,<0.2`, `loadledger[sql] >=0.2,<0.3`,
-`commissioner[sql] >=0.1,<0.2`.
+PromptCadence 1.3.0 needs LoadCoach `≥ 1.1` — the declared finish reason on the wire, tool
+definitions and `tool_calls`/`tool_calls_assembled` on `/generate`, and the registration's
+`is_remote` on responses — and **from 1.3.0 that requirement is enforced, not only documented**:
+`LoadCoachClient` checks `GET /version` and refuses an incompatible API major as
+`SCHEMA_VERSION_UNSUPPORTED` rather than proceeding against a server this build cannot correctly
+speak to (`## Behaviour changes at 1.3.0` above). See the README's `## Compatibility` table for
+the full, drift-checked list of suite package ranges (`tests/unit/test_readme_compatibility.py`
+asserts it against `pyproject.toml`); as of 1.3.0 the ranges are `baseaicore >=0.4.1,<0.5`,
+`setspec >=0.5,<0.7`, `weightsdb >=0.2,<0.3`, `mirrorwall >=0.2,<0.3`, `toolyard >=0.1.1,<0.2`,
+`cutctx >=0.1,<0.2`, `loadledger[sql] >=0.3,<0.4`, `commissioner[sql] >=0.1,<0.2`.
 
-The one floor that moved at 1.0.1 is `toolyard`, from `0.1` to `0.1.1`: the loop imports
-`json_sanitize`, which ToolYard made public in `0.1.1` so that the `tool.call.started` event can
-digest the same value the `tool_call_records` row does. Nothing else about the dependency changed,
-and no other package moved.
+The floor that moved at 1.3.0 is `loadledger`, from `0.2` to `0.3`: `services/pricing.py` is now a
+thin edge over `loadledger.pricing` rather than this application's own reader (row K4,
+ADR-0110).
 
 ## Downgrading
 
