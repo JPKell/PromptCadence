@@ -70,7 +70,7 @@ import base64
 import json
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -91,6 +91,7 @@ __all__ = [
     "ScriptedError",
     "ScriptedGeneration",
     "Wire",
+    "assembled_tool_calls_of",
     "build_fake_app",
     "text_profile",
     "schema_profile",
@@ -289,6 +290,52 @@ def transcript_refusal(messages: list[MessageBody] | None) -> dict[str, Any] | N
             }
         offered.update(call.id for call in calls)
     return None
+
+
+def assembled_tool_calls_of(fragments: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Group ``output.tool_calls`` fragments the way LoadCoach 1.1.2 does, for ``output``'s
+    ``tool_calls_assembled`` (ADR-0078).
+
+    Transcribed from ``loadcoach.services.execution.assemble_tool_calls`` (LoadCoach ``1.1.2``,
+    ``src/loadcoach/services/execution.py``) rather than imported — this fake speaks LoadCoach's
+    wire, never its code. The server keys strictly on ``call_index`` (default ``0`` for a
+    fragment that carries none), never on ``id``: unlike PromptCadence's own fallback grouping
+    (:func:`promptcadence.infrastructure.loadcoach.assemble_tool_calls`, kept for a LoadCoach
+    older than 1.1), there is no ``id``-or-position tie-break, because ``call_index`` is what
+    every real delta carries.
+
+    Args:
+        fragments: ``ScriptedGeneration.tool_calls``, in arrival order.
+
+    Returns:
+        One entry per call — ``call_index``, ``id``, ``name``, ``arguments`` (the concatenated
+        ``arguments_fragment`` text, parsed as JSON where it parses and left as the raw string
+        where it does not) — in ``call_index`` order.
+    """
+    grouped: dict[int, dict[str, Any]] = {}
+    for fragment in fragments:
+        index = int(fragment.get("call_index", 0))
+        call = grouped.setdefault(
+            index, {"call_index": index, "id": None, "name": None, "arguments_text": ""}
+        )
+        if fragment.get("id") and not call["id"]:
+            call["id"] = fragment["id"]
+        if fragment.get("name") and not call["name"]:
+            call["name"] = fragment["name"]
+        call["arguments_text"] += str(fragment.get("arguments_fragment") or "")
+    assembled: list[dict[str, Any]] = []
+    for index in sorted(grouped):
+        call = grouped[index]
+        text = call.pop("arguments_text")
+        if not text:
+            call["arguments"] = {}
+        else:
+            try:
+                call["arguments"] = json.loads(text)
+            except ValueError:
+                call["arguments"] = text
+        assembled.append(call)
+    return assembled
 
 
 class TaskProfileConstraints(BaseModel):
@@ -724,6 +771,7 @@ class FakeLoadCoach:
                 "finish_reason": gen.declared_finish_reason,
                 "structured": structured,
                 "tool_calls": [dict(call) for call in gen.tool_calls],
+                "tool_calls_assembled": assembled_tool_calls_of(gen.tool_calls),
             },
             "reasoning": {"available": False, "summary": None, "source": None},
             "model": self.model_for(job.task).as_response_block(omit_subject=gen.omit_subject),
@@ -795,7 +843,13 @@ class FakeLoadCoach:
             },
             "output": result.get(
                 "output",
-                {"text": "", "finish_reason": None, "structured": None, "tool_calls": []},
+                {
+                    "text": "",
+                    "finish_reason": None,
+                    "structured": None,
+                    "tool_calls": [],
+                    "tool_calls_assembled": [],
+                },
             ),
             "reasoning": result.get(
                 "reasoning", {"available": False, "summary": None, "source": None}

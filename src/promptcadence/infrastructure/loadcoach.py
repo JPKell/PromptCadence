@@ -377,7 +377,12 @@ class GenerationResponse:
             ``cancelled``. Anything but ``completed`` is not a turn that finished.
         text: The generated text; empty when the model answered only with tool calls.
         structured: The parsed structured output, when validation produced one.
-        tool_calls: Tool invocations the model requested, verbatim.
+        tool_calls: Tool invocations the model requested, verbatim fragments — kept for
+            persistence, never for replay (superseded by ``tool_calls_assembled``, ADR-0078).
+        tool_calls_assembled: The same calls, one entry per call, read straight off
+            ``output.tool_calls_assembled`` when LoadCoach sent it and assembled locally as a
+            fallback when it did not (:func:`assemble_tool_calls`, a LoadCoach older than 1.1).
+            This is the field a caller replaying or executing a call reads.
         model: Who answered.
         routing: LoadCoach's decision reference.
         usage: The four token classes, ``UNSUPPORTED`` where unreported (never ``0``).
@@ -398,6 +403,7 @@ class GenerationResponse:
     text: str
     structured: Any
     tool_calls: tuple[Mapping[str, Any], ...]
+    tool_calls_assembled: tuple[RequestedToolCall, ...]
     model: ModelInfo
     routing: RoutingInfo
     usage: TokenUsage
@@ -609,6 +615,59 @@ def _finish_reason_of(document: Mapping[str, Any]) -> tuple[FinishReason | None,
         return None, raw
 
 
+def _tool_calls_assembled_of(
+    output: Mapping[str, Any], fragments: Sequence[Mapping[str, Any]]
+) -> tuple[RequestedToolCall, ...]:
+    """Read ``output.tool_calls_assembled`` verbatim, or assemble the fragments as a fallback.
+
+    LoadCoach 1.1 groups a turn's tool-call fragments into whole calls itself and ships the
+    result at ``output.tool_calls_assembled`` — ``id``, ``name``, ``arguments`` per call, in
+    the shape a replay already sends (ADR-0078, api.md §4). Reading it is then a copy, not a
+    computation, and the grouping has exactly one implementation in the whole suite: the
+    server's.
+
+    Args:
+        output: The response's ``output`` block.
+        fragments: ``output.tool_calls``, already validated as a list.
+
+    Returns:
+        One :class:`RequestedToolCall` per entry of ``output.tool_calls_assembled`` when the
+        field is present — **even when it is present and empty**, and even when it disagrees
+        with what grouping the fragments locally would produce, because the field is never
+        re-derived once it is on the wire. Falls back to :func:`assemble_tool_calls` over
+        ``fragments`` only when the field is absent altogether: a LoadCoach older than 1.1,
+        which never sent it.
+
+    Raises:
+        LoadCoachError: ``output.tool_calls_assembled`` is present but not a list.
+    """
+    if "tool_calls_assembled" not in output:
+        return assemble_tool_calls(fragments)
+    assembled_raw = output["tool_calls_assembled"]
+    if not isinstance(assembled_raw, list):
+        message = "LoadCoach's output.tool_calls_assembled is not a list"
+        raise LoadCoachError(message, details={"field": "output.tool_calls_assembled"})
+    calls: list[RequestedToolCall] = []
+    for index, entry in enumerate(assembled_raw):
+        if not isinstance(entry, Mapping):
+            continue
+        call_id = entry.get("id")
+        name = entry.get("name")
+        raw_arguments = entry.get("arguments")
+        arguments: Any = (
+            dict(raw_arguments) if isinstance(raw_arguments, Mapping) else raw_arguments
+        )
+        calls.append(
+            RequestedToolCall(
+                call_id=call_id if isinstance(call_id, str) and call_id else f"call-{index}",
+                name=name if isinstance(name, str) else "",
+                arguments=arguments,
+                arguments_parsed=isinstance(raw_arguments, Mapping),
+            )
+        )
+    return tuple(calls)
+
+
 def parse_generation(document: Mapping[str, Any]) -> GenerationResponse:
     """Turn a ``/generate`` response, or a job document, into a :class:`GenerationResponse`.
 
@@ -639,6 +698,7 @@ def parse_generation(document: Mapping[str, Any]) -> GenerationResponse:
     if not isinstance(tool_calls_raw, list):
         message = "LoadCoach's output.tool_calls is not a list"
         raise LoadCoachError(message, details={"field": "output.tool_calls"})
+    tool_calls_assembled = _tool_calls_assembled_of(output, tool_calls_raw)
     canonical_id = _require(document, "model.canonical_id")
     if not isinstance(canonical_id, str) or not canonical_id:
         message = "LoadCoach's response names no model.canonical_id; a turn's subject is verified"
@@ -684,6 +744,7 @@ def parse_generation(document: Mapping[str, Any]) -> GenerationResponse:
         text=text,
         structured=output.get("structured"),
         tool_calls=tuple(call for call in tool_calls_raw if isinstance(call, Mapping)),
+        tool_calls_assembled=tool_calls_assembled,
         model=ModelInfo(
             canonical_id=canonical_id,
             model_ref=_optional(document, "model.model_ref"),
@@ -1211,6 +1272,18 @@ class RequestedToolCall:
 
 def assemble_tool_calls(entries: Sequence[Mapping[str, Any]]) -> tuple[RequestedToolCall, ...]:
     """Group LoadCoach's tool-call fragments into one entry per call, in first-seen order.
+
+    **This is the fallback, not the primary path.** From LoadCoach 1.1 the grouping happens once,
+    on the server, and ships as ``output.tool_calls_assembled`` (ADR-0078); :func:`parse_generation`
+    reads that field when present and calls this function only when a response omits it — a
+    LoadCoach older than 1.1. A caller of this module reads
+    :attr:`GenerationResponse.tool_calls_assembled`, never this function, directly.
+
+    It is kept, rather than deleted, for two reasons: the fallback above needs it, and
+    :meth:`~promptcadence.services.loop.LoopController._transcript` and
+    :meth:`~promptcadence.services.loop.LoopController._pending_tool_calls` still call it to
+    regroup fragments this application itself persisted to ``turns.tool_calls_json`` — a database
+    row LoadCoach never sees again, so there is no server-assembled field to read it back from.
 
     Fragments are grouped by ``call_index``, which is ModelRack's own answer to *which call is
     this a fragment of* — it counts calls from ``0`` within the turn, so two calls to the same

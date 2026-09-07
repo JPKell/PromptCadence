@@ -57,6 +57,7 @@ def _generate_document(**overrides: Any) -> dict[str, Any]:
             "text": "Local inference keeps data on the machine.",
             "structured": None,
             "tool_calls": [],
+            "tool_calls_assembled": [],
         },
         "reasoning": {"available": False, "summary": None, "source": None},
         "model": {
@@ -236,6 +237,79 @@ def test_a_job_document_without_checks_cannot_prove_schema_validation() -> None:
 def test_provider_kind_comes_from_the_canonical_id_prefix() -> None:
     parsed = parse_generation(_generate_document())
     assert parsed.model.provider_kind is ProviderKind.OLLAMA
+
+
+# --------------------------------------------------------------------------------------------
+# output.tool_calls_assembled: read verbatim, fall back only when absent (ADR-0078)
+# --------------------------------------------------------------------------------------------
+
+
+def test_tool_calls_assembled_is_read_verbatim_when_present() -> None:
+    """A LoadCoach 1.1 response's own grouping is read as-is; nothing here re-derives it."""
+    document = _generate_document(
+        output={
+            "text": "",
+            "structured": None,
+            "tool_calls": [
+                {"call_index": 0, "id": "c1", "name": "list_dir", "arguments_fragment": '{"path"'},
+                {"call_index": 0, "id": None, "name": None, "arguments_fragment": ': "."}'},
+            ],
+            "tool_calls_assembled": [{"id": "c1", "name": "list_dir", "arguments": {"path": "."}}],
+        }
+    )
+    parsed = parse_generation(document)
+    assert [call.name for call in parsed.tool_calls_assembled] == ["list_dir"]
+    assert parsed.tool_calls_assembled[0].call_id == "c1"
+    assert parsed.tool_calls_assembled[0].arguments == {"path": "."}
+    assert parsed.tool_calls_assembled[0].arguments_parsed is True
+
+
+def test_tool_calls_assembled_absent_falls_back_to_local_assembly() -> None:
+    """A LoadCoach older than 1.1 sends no ``tool_calls_assembled``, so the client groups the
+    fragments itself (:func:`assemble_tool_calls`) rather than losing the calls."""
+    document = _generate_document(
+        output={
+            "text": "",
+            "structured": None,
+            "tool_calls": [
+                {"call_index": 0, "id": "c1", "name": "list_dir", "arguments_fragment": '{"path"'},
+                {"call_index": 0, "id": None, "name": None, "arguments_fragment": ': "."}'},
+            ],
+        }
+    )
+    parsed = parse_generation(document)
+    assert [call.name for call in parsed.tool_calls_assembled] == ["list_dir"]
+    assert parsed.tool_calls_assembled[0].arguments == {"path": "."}
+
+
+def test_tool_calls_assembled_present_and_empty_is_not_the_fallback() -> None:
+    """A response carrying no calls this turn still reports the field as present-and-empty,
+    which must not be confused with an older LoadCoach that omitted it."""
+    document = _generate_document(
+        output={"text": "hi", "structured": None, "tool_calls": [], "tool_calls_assembled": []}
+    )
+    assert parse_generation(document).tool_calls_assembled == ()
+
+
+def test_tool_calls_assembled_wins_when_it_disagrees_with_the_fragments() -> None:
+    """The assembled field is never re-derived from the fragments beside it, so a caller reads
+    it even where regrouping the fragments locally would produce something else."""
+    document = _generate_document(
+        output={
+            "text": "",
+            "structured": None,
+            "tool_calls": [
+                {"call_index": 0, "id": "c1", "name": "list_dir", "arguments_fragment": "{}"},
+            ],
+            "tool_calls_assembled": [
+                {"id": "c1", "name": "read_file", "arguments": {"path": "notes.txt"}}
+            ],
+        }
+    )
+    parsed = parse_generation(document)
+    assert len(parsed.tool_calls_assembled) == 1
+    assert parsed.tool_calls_assembled[0].name == "read_file"
+    assert parsed.tool_calls_assembled[0].arguments == {"path": "notes.txt"}
     document = _generate_document()
     document["model"]["canonical_id"] = "mystery/thing@sha256:" + "a" * 64
     with pytest.raises(LoadCoachError, match="provider prefix"):
@@ -410,6 +484,31 @@ def test_generate_returns_a_typed_response(fake: FakeLoadCoach, client: LoadCoac
     assert response.finish_reason is FinishReason.STOP
     assert response.validation.schema_validated is False
     assert response.model.provider_kind is ProviderKind.OLLAMA
+
+
+def test_the_fake_emits_tool_calls_assembled_the_way_loadcoach_1_1_2_does(
+    fake: FakeLoadCoach, client: LoadCoachClient
+) -> None:
+    """A call whose arguments arrive in two fragments is one entry at ``tool_calls_assembled``,
+    which is what the client reads — never a re-grouping of the fragments beside it."""
+    fake.script(
+        ScriptedGeneration(
+            text="",
+            tool_calls=(
+                {"call_index": 0, "id": "c1", "name": "list_dir", "arguments_fragment": '{"path"'},
+                {"call_index": 0, "id": None, "name": None, "arguments_fragment": ': "."}'},
+            ),
+        )
+    )
+    response = client.generate(
+        GenerateRequest(task="tools.agent.local_fast", prompt="list", idempotency_key="k-assembled")
+    )
+    assert len(response.tool_calls) == 2  # the fragments, kept verbatim
+    assert len(response.tool_calls_assembled) == 1  # the one call they assemble into
+    call = response.tool_calls_assembled[0]
+    assert call.call_id == "c1"
+    assert call.name == "list_dir"
+    assert call.arguments == {"path": "."}
 
 
 def test_a_repeated_key_returns_the_original_job_not_a_second_execution(

@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Changed
+
+- **The LoadCoach client reads `output.tool_calls_assembled`** (LoadCoach 1.1, ADR-0078) instead of
+  re-grouping `output.tool_calls`' streamed fragments itself. `GenerationResponse` gains
+  `tool_calls_assembled`, populated from the server's own grouping when the field is present and
+  by local assembly (`assemble_tool_calls`, kept as the fallback and so documented) only when a
+  response omits it — a LoadCoach older than 1.1. The turn loop's live path
+  (`services/loop.py`) reads the new field directly rather than calling `assemble_tool_calls` on
+  every response, so the grouping now has exactly one implementation on any current server; the
+  two DB-replay call sites (`_transcript`, `_pending_tool_calls`), which regroup fragments this
+  application itself persisted, are unchanged.
+
 ### Fixed
 - **`test_the_running_worker_applies_a_write_within_one_reap_cadence` no longer flakes under
   machine load.** It polls a real background thread against a wall-clock deadline once the fake

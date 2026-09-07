@@ -2729,7 +2729,7 @@ class LoopController:
         decision = decide_finish(
             finish_reason=response.finish_reason,
             schema_validated=response.validation.schema_validated,
-            tool_calls_requested=len(response.tool_calls),
+            tool_calls_requested=len(response.tool_calls_assembled),
             undeclared_reason=response.undeclared_finish_reason,
         )
         if recovered_from_job is not None and not response.validation.checks_reported:
@@ -2751,7 +2751,11 @@ class LoopController:
             finish_reason=response.finish_reason,
             usage=response.usage,
         )
-        requested = assemble_tool_calls(response.tool_calls)
+        # LoadCoach 1.1 groups the response's own fragments and ships the result at
+        # `output.tool_calls_assembled`; `parse_generation` reads it (falling back to
+        # `assemble_tool_calls` only for a pre-1.1 server), so a live response is never
+        # re-grouped here (ADR-0078).
+        requested = response.tool_calls_assembled
         prior_assistant = [turn for turn in turns if turn.role is TurnRole.ASSISTANT]
         spent = _tokens_spent([*prior_assistant, assistant])
         facts = TurnFacts(
