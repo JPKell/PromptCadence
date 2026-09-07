@@ -606,6 +606,66 @@
         ]
       }
     },
+    "/api/v1/settings": {
+      "get": {
+        "description": "Every runtime-changeable key's effective value, its definition, and what is config-only.\n\nEach definition names the configured value, the stored row (or ``null``), which of the two is\neffective, and \u2014 when the environment pins the key \u2014 what shadows the row: a stored value that\ndoes nothing is visible as such rather than silently applied or silently dropped\n(configuration standards \u00a77). ``read`` scope.",
+        "operationId": "get_settings_api_v1_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Runtime-changeable settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "put": {
+        "description": "Set one or more runtime-changeable keys, and answer with the whole document.\n\n``403 FORBIDDEN`` names a security-relevant key and writes nothing \u2014 a request naming one is\nrefused whole. ``400 VALIDATION_ERROR`` names an unknown key and lists the runtime-changeable\nset, or names a value of the wrong type or outside its bounds. Applied by the running worker\nwithin one lease-reap cadence. ``admin`` scope.",
+        "operationId": "put_settings_api_v1_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change runtime settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
     "/api/v1/system/status": {
       "get": {
         "description": "Report the operator's dashboard (spec \u00a717).\n\nActive trajectories (``planning`` and ``executing``), every pending approval request with its\nage, today's ledger position against the per-day ceiling and each configured project's\nceiling with the per-tier balances beside it \u2014 rendered by the budget service, never\nre-derived here (a tier has a balance, not headroom; ``\u2014`` is not ``$0.00``; money is per\ncurrency) \u2014 the last recovery pass and the configured concurrency. ``read`` scope.",

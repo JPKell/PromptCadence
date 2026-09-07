@@ -32,7 +32,7 @@ def test_the_committed_snapshot_matches_the_application() -> None:
 
 
 def test_every_documented_endpoint_is_in_the_snapshot() -> None:
-    """Spec §7.1's list, minus the two this build does not serve (see docs/troubleshooting.md)."""
+    """Spec §7.1's list, whole: 1.1 serves the settings pair the 1.0 build did not."""
     paths = set(current_openapi()["paths"])
     for path in (
         "/api/v1/health",
@@ -55,9 +55,9 @@ def test_every_documented_endpoint_is_in_the_snapshot() -> None:
         "/api/v1/ledger",
         "/api/v1/ledger/entries",
         "/api/v1/egress-decisions",
+        "/api/v1/settings",
     ):
         assert path in paths, path
-    assert "/api/v1/settings" not in paths, "unbuilt in 1.0 — a spec §7.1 promise, recorded"
 
 
 def write() -> None:

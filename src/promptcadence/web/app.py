@@ -59,6 +59,7 @@ from promptcadence.web.routes import approvals as approval_routes
 from promptcadence.web.routes import console as console_routes
 from promptcadence.web.routes import egress as egress_routes
 from promptcadence.web.routes import ledger as ledger_routes
+from promptcadence.web.routes import settings as settings_routes
 from promptcadence.web.routes import system as system_routes
 from promptcadence.web.routes import trajectories as trajectory_routes
 
@@ -278,6 +279,7 @@ def create_app(settings: Settings, *, runtime_builder: Any | None = None) -> Fas
     app.include_router(egress_routes.router, prefix="/api/v1")
     app.include_router(trajectory_routes.router, prefix="/api/v1")
     app.include_router(approval_routes.router, prefix="/api/v1")
+    app.include_router(settings_routes.router, prefix="/api/v1")
     # The console last: its ``/`` and ``/trajectories/{id}`` must not shadow an API path, and
     # registering it after the API makes that ordering visible rather than incidental.
     app.include_router(console_routes.ui_router)
