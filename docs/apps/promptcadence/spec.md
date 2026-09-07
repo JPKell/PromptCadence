@@ -321,6 +321,8 @@ deliberate rejection, like `LoadCoachClient`.
 ```toml
 [server]        host = "127.0.0.1"  port = 8768  allow_lan_exposure = false
                 allowed_hosts = []  rate_limit_per_minute = 600  max_body_bytes = 1048576
+                rate_limit_burst = 100          # per-credential token bucket, as LoadCoach's;
+                failed_auth_per_minute = 20     # 0 disables the request limit, never the brake
 [storage]       database_url = "sqlite:///<data>/promptcadence.sqlite3"  auto_migrate = true
                 content_retention_hours = 24    # transcript text; records/hashes kept forever
                 retain_content = false          # config-only, mirrors LoadCoach
@@ -539,6 +541,14 @@ and it is recorded as `plan_steps.attempt` plus a `step.retried` event written i
 that starts it. When the budget is spent the trajectory halts at T12 with the last attempt's error
 code, its cause naming **every** attempt with its tier.
 
+**`STEP_LIMIT_EXCEEDED` and the `turn_overrun` deviation are two different bounds, and the
+deviation is decided first.** A step whose turn reaches the intent's `max_turns` without a
+declared finish is a `turn_overrun` drift and parks for the scoped re-approval [Lifecycle
+§5](lifecycle.md) specifies — a revision may extend `max_turns`. `STEP_LIMIT_EXCEEDED` is the halt
+for the bounds nobody can extend by approval: `[execution] max_turns_per_step` tool round trips
+spent with no declared finish, and a step resumed under an envelope whose `max_turns` is already
+spent. G3 asked which fires first; the answer is the lifecycle's, and a journey test holds it.
+
 A governance outcome is never repeated. That is structural rather than a list of exceptions: the
 repeat lives at the LoadCoach call site, and egress evaluation, pricing, availability and budget
 all run before the call while every deviation is compared after it, so an egress denial, an
@@ -578,7 +588,13 @@ calls, and sending data to paid remote providers — so its security posture is 
   asks for; arguments are schema-validated then sandbox-checked; egress policy is evaluated from
   the *trajectory's* declared classification, never from model text; no model output is ever
   interpolated into a shell command, a path outside containment, or a fetch URL that skips
-  [ADR-0026 §3](../../adr/0026-local-http-hardening.md) checks.
+  [ADR-0026 §3](../../adr/0026-local-http-hardening.md) checks. **The prompt-injection corpus
+  in `tests/security/` is a release gate on these consequences and asserts nothing about what a
+  model said** ([ADR-0095](../../adr/0095-the-injection-corpus-asserts-the-harness-never-the-model.md)).
+  What goes *back* to the model is bounded too: a replayed tool call whose arguments exceed
+  ToolYard's record bound is replayed with the record's own size-and-digest object in place of
+  the arguments, so the wire and `tool_call_records.args_json` agree by construction
+  ([ADR-0096](../../adr/0096-replayed-tool-call-arguments-are-capped-at-the-records-bound.md)).
 * **Sandbox:** all filesystem tools operate under per-trajectory workspace containment (symlinks
   resolved before checks); `run_command` executes under ToolYard's tiered isolation, reusing the
   FreeWeight precedent — container → bwrap → **refuse**
@@ -611,7 +627,16 @@ calls, and sending data to paid remote providers — so its security posture is 
 * Transcript and tool-output text follows LoadCoach's retention model: kept
   `content_retention_hours` after a trajectory finishes, then swept; hashes, usage, decisions and
   events stay, so the trajectory remains explicable. A scrubbed turn says "content removed by
-  retention".
+  retention". **What the sweep removes** from a terminal trajectory older than the retention:
+  `turns.content_text` and `turns.tool_calls_json`, `plans.raw_document` and every step
+  description (in `plan_steps` and inside `plans.validated_json`), `tool_call_records.args_json`,
+  `result_summary` and `reason_detail`, the trajectory's `task`, and the trajectory's **workspace
+  directory** — all model or caller text. A workspace is content, and it follows content: a
+  trajectory still in flight is never swept, whatever its age. The sweep stamps
+  `trajectories.content_scrubbed_at`, so it is idempotent and the record says when, and it calls
+  the explanation's `invalidate(cause="retention_scrub")` afterwards so the materialized revision
+  is bumped rather than left holding the words. `retain_content = true` disables it. The sweep
+  runs from the worker at the lease-reap cadence.
 * The LoadCoach API key is read from an environment variable or file, never config plaintext,
   never logged, never in `details`.
 * Every remote-tier selection is marked as egress in the UI, the API response and the explanation
@@ -636,6 +661,12 @@ The retrieval budget is the **materialized** path's. A terminal trajectory whose
 missing — the window between the transition and its follow-up write, or a database whose cache was
 dropped — is served live and is measured against the materialization budget instead; the surface
 says which path answered.
+
+**Every row is a test under the `performance` marker: the median over 20 measured iterations
+after 3 warm-ups must not exceed the ceiling; the median, the p95 and the target are printed and
+recorded in the release handoff** ([ADR-0097](../../adr/0097-a-performance-budget-asserts-its-ceiling-and-reports-its-target.md)).
+The ceiling is the failing bound; the target is the report. A missed ceiling is a finding for the
+operator, never a wider ceiling.
 
 LoadCoach time, tool time and PromptCadence overhead are always reported separately, per turn and per
 trajectory. Egress evaluation and the deviation comparison carry no budgets of their own: both are
@@ -668,7 +699,10 @@ executing unisolated; all other tools work everywhere.
   `trajectory.recovered`. The emitting transition for each is the
   [Lifecycle §8.2](lifecycle.md) table.
 * Health components: `database`, `loadcoach` (reachability + version), `tiers` (each configured
-  tier's task profile resolvable), `sandbox` (which isolation tier is available), `ledger`
+  tier's task profile resolvable, and for a remote tier whether LoadCoach has a registration
+  declaring `remote = true` and whether the tier is priced — a remote tier is unavailable for
+  exactly one recorded reason, `loadcoach_has_no_remote_provider` or `unpriced`
+  ([ADR-0098](../../adr/0098-promptcadence-1-0-ships-with-remote-tiers-refusing-honestly.md))), `sandbox` (which isolation tier is available), `ledger`
   (daily ceiling headroom). A missing remote provider degrades the remote tiers' component with a
   reason; it is never a failure to serve.
 * `GET /api/v1/system/status`: active trajectories, pending approvals with ages, today's ledger
@@ -686,8 +720,8 @@ executing unisolated; all other tools work everywhere.
 | Integration | Full loop against a **fake LoadCoach HTTP server** (recorded response shapes, scriptable failures); queue lease/recovery after simulated crash; mounted `loadledger.sql`/`commissioner.sql` tables on both dialects |
 | E2E | Submit → plan → approve → execute (tools + compaction + debits + egress) → explanation, over HTTP and CLI; the same journey with `bypass_planning` diffed for contract 1; manual-approval journey including deny |
 | Failure-path | LoadCoach down mid-turn; plan invalid after retries; egress denied mid-trajectory; budget exhausted mid-step under each of the halt, approval and window policies; an unknown project refused; tool sandbox refusal; deviation → re-approval → deny; approval timeout; kill −9 recovery |
-| Security | Unlisted tool requested by the model; path escape and symlink escape attempts; fetch to a non-allowlisted host; confidential data with a remote tier pin; scope enforcement (submit ≠ approve); no secret in logs |
-| Performance | Every budget in §15 |
+| Security | Security Standards §14 item by item, each a named test in `tests/security/`: rate limit and body cap enforced; Host allowlist before routing and authentication; CSRF on every form; scope enforcement (submit ≠ approve); binding refusals at startup; no secret in logs. **The prompt-injection corpus** ([ADR-0095](../../adr/0095-the-injection-corpus-asserts-the-harness-never-the-model.md)): a plan description carrying instructions; a description embedding `[tool_calls]` text; a declared tool with hostile arguments (path escape, symlink, `..`, absolute path, shell metacharacters); an invented tool name against a model that was told which tools exist; a tool result carrying instructions replayed into the next turn; tool descriptions verbatim from the registry; `http_fetch` to a non-allowlisted host, a literal IP, a redirect off the allowlist, an oversized body; a confidential trajectory whose text asks for a remote tier; model output shaped like the explanation document, a closed Markdown fence and the CLI's own lines reaching the document and the console unchanged. Every case asserts the harness; none asserts the model |
+| Performance | Every budget in §15, ceiling-asserted, target-reported ([ADR-0097](../../adr/0097-a-performance-budget-asserts-its-ceiling-and-reports-its-target.md)) |
 | Live (marked) | Real LoadCoach + Ollama: a local-tier planned trajectory with one tool call, end to end |
 
 Coverage floor: **85 %** (application). The default suite passes with no LoadCoach, no Ollama, no
@@ -720,6 +754,12 @@ GPU and no network.
 4. A trajectory declared `confidential` can never reach a remote tier: the attempt is refused
    before any HTTP request leaves, and the refusal is a queryable `EgressDecision`.
 5. A remote tier with no pricing record refuses with `UNPRICED_EGRESS_REFUSED` before any call.
+
+   The live remote run — roadmap I13's second half, a `remote_cheap` step served by a real
+   remote endpoint — is **not** among these criteria: 1.0 ships with its recorded-transport half
+   proven in CI and remote tiers refusing honestly until an operator registers a remote provider
+   in LoadCoach and prices the tier
+   ([ADR-0098](../../adr/0098-promptcadence-1-0-ships-with-remote-tiers-refusing-honestly.md)).
 
    Criteria 4 and 5 are properties of *when* a turn's pre-flights run, so the order is fixed by
    [ADR-0073](../../adr/0073-egress-is-decided-on-configuration-before-availability.md):
