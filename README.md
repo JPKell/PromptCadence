@@ -5,16 +5,17 @@ the plan is approved against governance policy and remaining budget before any s
 every turn that does execute is fully reconstructable afterwards — which model ran it, on which
 tier, on what data, at what cost, under whose approval.
 
-**Status:** 1.0.0 (M12). Every phase of the development plan is built and gated: planning with
+**Status:** `1.2.0`, on PyPI. Every phase of the development plan is built and gated: planning with
 corrective retries and three approval modes, the `ExecutionIntent` every turn runs under, sandboxed
 tools under ToolYard's isolation ladder, the budget over LoadLedger with three ceilings, egress
 governance over Commissioner with a durable decision per turn, per-step retry, context compaction
 as a view, the composed and materialized explanation, the operator console, the retention sweep,
 the security checklist and the prompt-injection corpus as release gates, and every spec §15
-budget asserted. Remote tiers refuse honestly until LoadCoach has a registration declaring
-`remote = true` and the tier is priced (ADR-0098). See [docs/](docs/README.md) for the operator
-set and the [development plan](docs/apps/promptcadence/development-plan.md) for what each phase
-added.
+budget asserted. Runtime settings (1.1) can change while the server runs, with a CLI verb (1.2) to
+read and set them over HTTP. Remote tiers refuse honestly until LoadCoach has a registration
+declaring `remote = true` and the tier is priced (ADR-0098). See [docs/](docs/README.md) for the
+operator set and the [development plan](docs/apps/promptcadence/development-plan.md) for what each
+phase added.
 
 Part of the **Local AI Suite**. Reaches a model only through [LoadCoach](https://github.com/JPKell/LoadCoach)'s
 HTTP API — it never imports a model provider directly ([ADR-0045](docs/adr/0045-promptcadence-reaches-models-only-through-loadcoach.md)
@@ -47,7 +48,7 @@ promptcadence --help
 
 Open <http://127.0.0.1:8768/> for the console. Read [docs/quickstart.md](docs/quickstart.md) next.
 
-PromptCadence 1.0 is tested against LoadCoach `1.1.0` and needs `≥ 1.1`: the declared finish
+PromptCadence 1.2 is tested against LoadCoach `1.1.1` and needs `≥ 1.1`: the declared finish
 reason on the wire (spec §11 contract 6 — an undeclared finish is never read as success), tool
 definitions and `tool_calls` on `/generate`, and the serving registration's `is_remote` on every
 response. See [docs/upgrading.md](docs/upgrading.md) for the compatibility table.
