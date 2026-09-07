@@ -6,7 +6,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-09-06
+
+**M12 — PromptCadence 1.0.** Every phase of the development plan is built, gated and demonstrated:
+P8's compaction, explanation and console, and P9's hardening — the security checklist held item by
+item, the prompt-injection corpus as a release gate, the retention sweep, every spec §15 budget
+asserted, the remote tier reading its fact from LoadCoach, the operator set, the OpenAPI snapshot,
+the generated configuration reference and a hashed CI lock. What ships known is under *Known
+limitations*; the release handoff (`docs/history/I2_HANDOFF.md`) records the independent-brief
+verification on a real LoadCoach 1.1.0 over Ollama, the ten §15 numbers, and the corpus inventory.
+
+Of the beta's three known limitations: the sandboxed-tool clause of spec §20 #2 was closed at G2
+(six declared calls on the real stack, all `ok`); the per-step retry was closed at G3; the podman
+condition stays open below.
+
 ### Added
+- **The read tools' descriptions name the configured `read_roots`** (I2's verification, finding
+  F1). ToolYard's shipped text — *"a path outside the workspace is refused"* — is true of a plant
+  with no read roots and misleading with them: on the real stack an obedient model refused to read
+  the very directory the operator configured, and a bold one guessed the path. `read_file` and
+  `list_dir` now say *"Also readable, by absolute path: …"* with each root; `write_file` does not,
+  because its containment is the workspace alone. The description is caller-written prompt content
+  and the corpus asserts the wire carries the registry's text verbatim, so the two cannot drift.
+  With the sentence in place the same brief was delivered on the real stack (the handoff's run 4).
 - **The two `[server]` limits are enforced** (P9, Security Standards §14). `rate_limit_per_minute`
   and `max_body_bytes` were declared, shown by `config show` and the example file, and read by
   nothing. `RateLimitMiddleware` (LoadCoach's, transcribed without the reverse-proxy half) applies
@@ -175,6 +197,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   stack.
 
 ### Changed
+- **The trajectory stream polls every 2 ms, not 20** (spec §15, the added latency per SSE event).
+  At 20 ms the measured added latency over a real socket was a uniform 0–20 ms, median 10 ms,
+  against a 5 ms target; at 2 ms it is median 1.4 ms, p95 2.2 ms. LoadCoach's F12 figure, adopted
+  at I2's interview.
 - **`plans.raw_document` is nullable** (migration `0010`). A plan document is model output and
   must follow the retention scrub exactly as transcript text does; the column was `NOT NULL`, so
   the sweep Phase 9 will write could not have scrubbed it. Nothing writes `NULL` — a drafting
