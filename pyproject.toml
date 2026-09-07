@@ -61,7 +61,10 @@ dependencies = [
     # neither of which exists in 0.1.0. A floor below the surface an application actually calls is
     # drift that stays invisible until somebody installs the lower version, and then fails as an
     # AttributeError at runtime rather than as a resolution error at install time.
-    "loadledger[sql]>=0.2,<0.3",
+    # K4 (2026-09-07) moves it again, to 0.3: `services/pricing.py` is now the thin edge over
+    # `loadledger.pricing`, where the ADR-0072 reader this application first wrote now lives
+    # (ADR-0110), so an earlier LoadLedger cannot satisfy this application at all.
+    "loadledger[sql]>=0.3,<0.4",
     # P6: egress governance. A normal pin -- commissioner 0.1.0 is on PyPI. The **[sql] extra**,
     # for the same reason LoadLedger's is: Commissioner keeps SQLAlchemy behind an extra so a
     # consumer wanting only the policy and the payload does not acquire an ORM (ADR-0050

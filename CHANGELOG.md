@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ### Changed
 
+- **`services/pricing.py` is now a thin edge over `loadledger.pricing`** (row K4, ADR-0110). This
+  application wrote both the ADR-0072 format and its parser, being the suite's first consumer of
+  `ModelPricing`; IdeaPress transcribed the parser at row J1, which fired ADR-0072 §8's own
+  "second consumer needs the reader itself" trigger. The reader now lives in `loadledger 0.3.0`,
+  because `pricing_hash` is only a join between a stored usage and the price it was costed under
+  if one reader produces both applications' records. What stays here is each tier's
+  `pricing_file`, the rule that a local tier's catalogue is ignored, the per-tier container with
+  its pre-flight `claiming()`, and re-raising `PricingFileError` as this application's own
+  `ConfigurationError`. Every F1/F4 test passes unchanged and the fixture hashes identically
+  before and after. The dependency floor rises to `loadledger[sql]>=0.3,<0.4`.
+
 - **The LoadCoach client reads `output.tool_calls_assembled`** (LoadCoach 1.1, ADR-0078) instead of
   re-grouping `output.tool_calls`' streamed fragments itself. `GenerationResponse` gains
   `tool_calls_assembled`, populated from the server's own grouping when the field is present and
