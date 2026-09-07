@@ -55,7 +55,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -79,7 +79,12 @@ from cutctx import (
     TranscriptTurn,
 )
 from sqlalchemy import select, true, update
-from toolyard import MAX_RECORDED_NAME_CHARS, StoreFailure, ToolCallRequest
+from toolyard import (
+    DEFAULT_MAX_ARGS_JSON_BYTES,
+    MAX_RECORDED_NAME_CHARS,
+    StoreFailure,
+    ToolCallRequest,
+)
 from toolyard import EgressClass as ToolEgressClass
 
 from promptcadence.config import ConfigurationError
@@ -2000,7 +2005,10 @@ class LoopController:
         to its result by any provider — so that call and the ``TOOL`` turn answering it are
         omitted from the wire. The rows keep both, and the refusal that was recorded for it stays
         exactly what it was. An assistant turn left with neither content nor calls is omitted with
-        them, because it is a turn no provider will accept.
+        them, because it is a turn no provider will accept. A call whose arguments exceed
+        ToolYard's record bound is replayed with the record's own size-and-digest object in place
+        of them (ADR-0096, :func:`_bounded_call`); the rows keep the arguments in full until the
+        retention sweep.
         """  # noqa: D205 — the summary line is above the Returns block, which reads better here
         assistants = [turn.turn_id for turn in turns if turn.role is TurnRole.ASSISTANT]
         calls_by_turn: dict[str, tuple[RequestedToolCall, ...]] = {}
@@ -2023,7 +2031,7 @@ class LoopController:
                 # One entry per recorded call, in execution order: the id to replay it under, or
                 # None for a call no provider can carry. The TOOL turns consume them in order.
                 pending = [call.call_id if call.name.strip() else None for call in assembled]
-                replayable = tuple(call for call in assembled if call.name.strip())
+                replayable = tuple(_bounded_call(call) for call in assembled if call.name.strip())
                 if not content.strip() and not replayable:
                     continue
                 messages.append(
@@ -4063,6 +4071,35 @@ def _args_text(call: RequestedToolCall) -> str:
     if call.arguments_parsed:
         return canonical_json(call.arguments)
     return call.arguments if isinstance(call.arguments, str) else repr(call.arguments)
+
+
+def _bounded_call(call: RequestedToolCall) -> RequestedToolCall:
+    """Cap what a replayed call carries back onto the wire (ADR-0096).
+
+    Args:
+        call: One assembled call from ``turns.tool_calls_json``.
+
+    Returns:
+        The call unchanged while its canonical arguments fit ToolYard's
+        :data:`~toolyard.DEFAULT_MAX_ARGS_JSON_BYTES`; otherwise the same call with its arguments
+        replaced by the object ToolYard wrote to ``tool_call_records.args_json`` at the same bound
+        — ``{"__toolyard_args_omitted__": "oversize", "bytes": …, "sha256": …}`` — so the record
+        and the wire agree by construction, and the digest still identifies the original. The id
+        and the name are kept, so the ``TOOL`` turn answering the call still matches it.
+
+    Refuses nothing: an oversize argument is a fact about a call that already ran, and this is
+    the bound on what goes back to the model, not a judgement on the call.
+    """
+    text = _args_text(call)
+    size = len(text.encode("utf-8"))
+    if size <= DEFAULT_MAX_ARGS_JSON_BYTES:
+        return call
+    digest = sha256_of(call.arguments) if call.arguments_parsed else sha256_of(text)
+    return replace(
+        call,
+        arguments={"__toolyard_args_omitted__": "oversize", "bytes": size, "sha256": digest},
+        arguments_parsed=True,
+    )
 
 
 def _recorded_name(name: str) -> str:

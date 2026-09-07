@@ -49,6 +49,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   (spec §13; G3's open question). A step reaching the intent's `max_turns` with no declared finish
   parks for the scoped re-approval lifecycle §5 specifies; the halt is for the bound nobody can
   extend by approval — `max_turns_per_step` round trips spent.
+- **Replayed tool-call arguments are capped at ToolYard's record bound** (P9, ADR-0096 — G2's
+  moved hazard). A call whose canonical arguments exceed `DEFAULT_MAX_ARGS_JSON_BYTES` (16 KiB)
+  is replayed with the size-and-digest object ToolYard already wrote to
+  `tool_call_records.args_json` at the same bound, id and name kept so the `tool` turn still
+  answers it; the call itself ran with its full arguments, the rows keep them until the retention
+  sweep, and nothing is truncated mid-string. One bound, one shape; the record and the wire agree
+  by construction.
 - **Context compaction** (P8, lifecycle §7). Before every turn the transcript is estimated against
   `threshold × context_budget_tokens`, and above it CutCtx plans a compaction over the configured
   `[compaction] policy_chain`. The threshold and the compaction target are **one figure**:
