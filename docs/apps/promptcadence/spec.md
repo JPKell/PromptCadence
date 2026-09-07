@@ -160,6 +160,16 @@ GET  /settings                    PUT  /settings
 * `GET /trajectories/{id}/stream` — SSE per
   [API Standards §8](../../standards/api-and-contract-standards.md): every event a persisted row,
   replay from `Last-Event-ID` ([ADR-0044](../../adr/0044-a-state-change-and-its-event-are-one-write.md)).
+* `GET /settings` — the runtime-changeable keys (§12): each key's effective value, and per key its
+  type, bounds, description, the configured value, the stored row or `null`, which of the two is
+  in force, and what shadows the row when the environment pins the key — a stored value that does
+  nothing is visible as such. The body also lists the config-only keys, named as configured.
+  `read` scope. `PUT /settings` takes `{key: value}` for one or more runtime-changeable keys and
+  answers with the same document; `admin` scope. A security-relevant key is `403 FORBIDDEN`
+  **naming the key** and the request is refused whole; an unknown key is `400 VALIDATION_ERROR`
+  naming it and listing the runtime-changeable set; a value of the wrong type or outside its
+  bounds is `400 VALIDATION_ERROR`. A change is applied by the running worker at its next
+  lease reap ([ADR-0100](../../adr/0100-promptcadences-runtime-changeable-set-is-five-tuning-numbers.md)).
 
 ### 7.2 CLI
 
@@ -453,6 +463,26 @@ deliberate rejection, like `LoadCoachClient`.
 [logging]       level = "INFO"  include_content = false
 ```
 
+**Five keys change while the server runs**; every other key is a file or environment edit and a
+restart. The runtime-changeable set is `storage.content_retention_hours`, `compaction.threshold`,
+`execution.step_retries`, `execution.max_turns_per_step` and `planning.corrective_retries` — five
+bounded tuning numbers, each re-read by the running process, changed through `PUT /settings` or
+the console's Settings page and stored in the `settings` table. Precedence for those five follows
+[Configuration Standards §7](../../standards/configuration-standards.md):
+`defaults → file → database → env → CLI`, so a key pinned in the environment (which is how
+`promptcadence serve` passes its own flags) keeps its value and the stored row is reported as
+shadowed rather than applied. `promptcadence config show` marks a value the table decides
+`(database)`. Everything that decides **exposure, egress, credentials, containment, retention or
+spend** is config-only and refused by name — the whole of `[server]`, `[loadcoach]`, `[approval]`,
+`[budget]`, `[tools]`, `[tiers]` and `[policy]`, plus `storage.database_url`,
+`storage.auto_migrate`, `storage.retain_content`, `planning.enabled`,
+`planning.allow_request_override`, `planning.reapproval_scope` and `logging.include_content`. The
+ceilings are among them deliberately: raising one is a `ceiling_raise` approval with an approver
+on the record, and a form that raised the same ceiling would be a second, unrecorded path to the
+same money ([ADR-0100](../../adr/0100-promptcadences-runtime-changeable-set-is-five-tuning-numbers.md)).
+The generated `docs/configuration.md` renders the **Runtime-changeable** column from that
+registry, so the reference and the application cannot disagree.
+
 Startup validation refuses: a remote tier without `max_data_classification`; a remote tier without
 a pricing source; an unknown classification value; a tier naming no task profile; non-loopback
 binding without authentication; `approval.mode = "manual"` with no `approve`-scoped token defined;
@@ -615,9 +645,12 @@ calls, and sending data to paid remote providers — so its security posture is 
   is refused by its POST. Model-authored text reaching a template is a **new** trust surface — the
   templates autoescape and run under `StrictUndefined`, and no template renders raw HTML from a
   record.
-* Scopes: `read` (status, trajectories, explanations), `write` (submit, cancel), `approve`
+* Scopes: `read` (status, trajectories, explanations, and reading the effective settings),
+  `write` (submit, cancel), `approve`
   (resolve approval requests — deliberately separate from `write`, so the identity that submits
-  work cannot approve its own egress), `admin` (settings, tokens). Scopes are a **set**, not a
+  work cannot approve its own egress), `admin` (settings **changes**, tokens — an operator who may
+  see the console may see what the process is running on; changing it is the privileged half,
+  [ADR-0100](../../adr/0100-promptcadences-runtime-changeable-set-is-five-tuning-numbers.md)). Scopes are a **set**, not a
   ladder: a token carries any subset, and only `admin` contains the others. **Loopback with no
   tokens is open** (the LoadCoach precedent, spec §20 AC1): the principal is `loopback`, holds
   every scope, and its grants are recorded as `approver:loopback` — the record still says who.

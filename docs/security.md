@@ -47,10 +47,10 @@ others:
 
 | Scope | Grants |
 |---|---|
-| `read` | health, status, tiers, tools, trajectories, turns, plans, intents, explanations, the stream, approvals list, ledger, egress decisions, every console page |
+| `read` | health, status, tiers, tools, trajectories, turns, plans, intents, explanations, the stream, approvals list, ledger, egress decisions, the effective runtime settings (`GET /settings`), every console page |
 | `write` | submit and cancel a trajectory |
 | `approve` | grant or deny a pending approval request — deliberately **not** part of `write`, so the identity that submits work cannot approve its own egress (ADR-0049 rule 2) |
-| `admin` | everything above; settings and tokens when a runtime-settings API exists |
+| `admin` | everything above; **changing** runtime settings (`PUT /settings`, the Settings page's form) and tokens. Reading the effective settings is `read`: seeing what the process runs on is not the privileged half (ADR-0100) |
 
 Once any token exists, or the bind is not loopback, **every `/api/v1` route except `/version`**
 resolves a principal: `401 UNAUTHORIZED` without a usable token, `403 FORBIDDEN` without the

@@ -23,11 +23,33 @@ the `database` component `ok`.
 
 | Version | Migrations | What they add |
 |---|---|---|
+| 1.1.0 | none | **No migration, no schema change, and no stored value changed.** The runtime settings this release adds live in the `settings` table, which has existed since `0001` and was unused until now; upgrading from 1.0.x is `pip install --upgrade` and a restart. |
 | 1.0.0 | `0008`–`0011` | `plan_steps.attempt` (the per-step retry); `compactions`; `explanation_revisions` and a nullable `plans.raw_document`; `trajectories.content_scrubbed_at` (the retention sweep's stamp). Additive throughout; no existing value changes. |
 | 0.9.0b0 | `0001`–`0007` | The beta's schema. |
 
 Upgrading a `0.9.0b0` database is `0007 → 0011` in one `db upgrade`; the release handoff records
 the proof (a `0.9.0b0` wheel's database upgraded by the `1.0.0` wheel in a clean venv).
+
+### Behaviour changes at 1.1.0
+
+* **`GET /settings` and `PUT /settings` are served**, and the console has a Settings page. Five
+  keys change while the server runs — `storage.content_retention_hours`, `compaction.threshold`,
+  `execution.step_retries`, `execution.max_turns_per_step`, `planning.corrective_retries` — and
+  the running worker applies a change at its next lease reap. Nothing changes for an install that
+  never calls them: with no stored row, every key is exactly what the file and the environment
+  said.
+* **Those five keys now sit between the file and the environment in precedence**
+  (`defaults → file → database → env → CLI`). A key you pin in the environment still wins, and
+  `GET /settings` reports the stored row as shadowed rather than dropping it.
+* **Every other key is refused by name.** `PUT /settings` answers `403 FORBIDDEN` naming a
+  security-relevant key — the whole of `[server]`, `[loadcoach]`, `[approval]`, `[budget]`,
+  `[tools]`, `[tiers]` and `[policy]`, plus the database URL, `auto_migrate`, `retain_content`,
+  the planning switches and `logging.include_content` — and `400 VALIDATION_ERROR` naming an
+  unknown one. Raising a budget ceiling stays what it was: a `ceiling_raise` approval with an
+  approver on the record (ADR-0100).
+* **`promptcadence config show` marks database-sourced values `(database)`** and prints the stored
+  value. With no database — absent, unmigrated, on another host — it prints exactly what it
+  printed at 1.0.
 
 ### Behaviour changes at 1.0.0
 

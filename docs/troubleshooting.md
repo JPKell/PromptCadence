@@ -62,12 +62,22 @@ with it. Every halt names its cause verbatim: `promptcadence trajectory show <id
 | 421 | `MISDIRECTED_REQUEST` | The `Host` header is not in the allowlist; DNS rebinding defence. |
 | 429 with `Retry-After` | `RATE_LIMITED` | Past the per-credential limit or the failed-authentication brake. Wait the named seconds. |
 | The console answers 401 | `UNAUTHORIZED` | A token exists or the bind is not loopback; the console is loopback-first by decision (ADR-0094). |
+| 403 from `PUT /settings` | `FORBIDDEN` | Either the key is security-relevant and config-only (`details.key` names it — change it in `config.toml` or the environment and restart), or the token lacks `admin`. |
 
-## Spec §7.1 endpoints this build does not serve
+## A setting was saved and nothing changed
 
-`GET /settings` and `PUT /settings` are listed in the spec and unbuilt: PromptCadence 1.0 has no
-runtime-changeable setting, so every key is file-or-environment with a restart. They are recorded
-here rather than stubbed, so the snapshot in `docs/openapi.json` says what is actually served.
+Two causes, in this order.
+
+* **The environment pins that key.** Runtime settings sit between the file and the environment
+  (configuration standards §7), so `PROMPTCADENCE_EXECUTION__STEP_RETRIES` beats a stored row.
+  `GET /settings` says so per key — `shadowed_by` names the variable, and `stored` shows the row
+  that is doing nothing — and the Settings page prints the same beneath the field. Unset the
+  variable (`promptcadence serve` passes its own flags as environment variables, so a flag counts)
+  and the stored value takes effect at the next lease reap.
+* **The reap has not come round.** A change is applied by the running worker at its next
+  lease-reap cadence, which is `execution.lease_seconds` (60 by default), not on the next turn.
+  `promptcadence config show` reads the database directly and marks the value `(database)`
+  immediately, whatever the worker has done so far.
 
 ## Storage
 

@@ -458,3 +458,63 @@ honestly (documented), because the refusal *is* specified behaviour — the road
 release-scope decision explicitly.
 **Gold standards:** all of them; this is the phase that proves the list.
 **Deferred:** IdeaPress adoptions (M13), trajectory templates, `native.plan`.
+
+---
+
+## 1.1 — Runtime settings (row I5)
+
+**Goal:** the `GET`/`PUT /settings` pair spec §7.1 has always listed, on one registry that the API,
+the console, the CLI and the generated reference all read.
+
+**Prerequisites:** 1.0.1 released (the version edge). No migration: the `settings` table is
+Phase 1's, created by `0001` and unused until now.
+
+**Work**
+* `services/settings.py`: `RuntimeSetting` (key, kind, description, bounds, `coerce`),
+  `RUNTIME_SETTINGS` (the five keys), the config-only set and section prefixes,
+  `read_runtime_settings`, `write_runtime_settings`, `runtime_settings_document`,
+  `apply_runtime_settings`.
+* The worker refreshes at the lease-reap cadence and writes the effective values onto the settings
+  object the controllers, the approval service and the trajectory service share; the composition
+  root keeps the configured settings pristine beside it.
+* `GET /settings` (`read`) and `PUT /settings` (`admin`); the console's Settings page and its form;
+  `config show` marking `(database)`.
+* Documentation: spec §7.1, §12 and §14; the generated reference's **Runtime-changeable** column
+  driven by the registry; `security.md`, `troubleshooting.md`, `upgrading.md`;
+  [ADR-0100](../../adr/0100-promptcadences-runtime-changeable-set-is-five-tuning-numbers.md).
+
+**Tests**
+* Every key coerces and refuses at its bounds; a security-relevant key is `FORBIDDEN` naming it
+  and the request writes nothing; an unknown key is `VALIDATION_ERROR` naming it and listing the
+  set; a stored row this build cannot read falls back to configuration.
+* Precedence both directions: the environment beats a stored row and the row is reported as
+  shadowed; the row takes effect again once the variable is unset.
+* A running worker applies a `PUT` within one reap cadence, with the clock injected.
+* The page renders the form for `admin`, the values without it for `read`, and its POST refuses
+  below `admin`; a post without the CSRF token never reaches the handler.
+* `config show` marks `(database)` with a database, and prints its 1.0 output without one.
+
+**Acceptance criteria** — demonstrable, not merely covered:
+
+1. `promptcadence serve`, then
+   `curl -X PUT localhost:8768/api/v1/settings -d '{"execution.step_retries": 3}'` answers `200`
+   with `definitions["execution.step_retries"].source == "database"`, and
+   `curl localhost:8768/api/v1/settings` says the same afterwards.
+2. The same `PUT` with `{"server.host": "0.0.0.0"}` answers `403` and the body names
+   `server.host`; with `{"execution.max_steps": 40}` it answers `400`, names the key and lists the
+   five that can change.
+3. `PROMPTCADENCE_EXECUTION__STEP_RETRIES=7 promptcadence serve` then the same `PUT`: the answer's
+   effective value is `7`, `stored` is what was sent, and `shadowed_by` names the variable.
+4. `promptcadence config show | grep execution.step_retries` prints the stored value and
+   `(database)`; deleting the database file and re-running prints the configured value and its own
+   source, with no error.
+5. `http://127.0.0.1:8768/settings` shows the five fields with their ranges and the configured
+   values, and lists the config-only keys — `tiers.local_fast.remote` among them, named as
+   configured — below them.
+
+**Known risks:** a key that looks runtime-changeable but is read once at construction. The rule
+that closed it: membership is tested by re-reading, and the planner's cached retry budget became
+settable rather than the key being admitted on a promise the process does not keep.
+**Gold standards:** one registry, no second definition; refusals name what they refused.
+**Deferred:** a `promptcadence settings` CLI verb — the API and the console cover the surface;
+LoadCoach's precedence divergence, which is a finding against LoadCoach, not a fix in this row.

@@ -6,11 +6,12 @@ implications, and an example — and a test fails when the generated document di
 committed one. Generated from :class:`~promptcadence.config.Settings`'s own field metadata, so it
 cannot drift from what the application reads.
 
-LoadCoach's ``services/config_reference.py``, transcribed, with two differences that are facts
-about this application rather than choices: PromptCadence 1.0 has **no runtime-settings API**
-(spec §7.1 lists ``GET/PUT /settings``; it is unbuilt, and every key below is file-or-environment
-with a restart), and two of its sections are **keyed tables** — ``[tiers.<name>]`` and
-``[budget.projects.<name>]`` — rendered once each with the placeholder in the key path.
+LoadCoach's ``services/config_reference.py``, transcribed. The **Runtime-changeable** column is
+rendered from :data:`~promptcadence.services.settings.RUNTIME_SETTINGS`, never from a literal, so
+a key that moves at runtime cannot be documented here as one that does not (ADR-0100). Two of
+this application's sections are **keyed tables** — ``[tiers.<name>]`` and
+``[budget.projects.<name>]`` — rendered once each with the placeholder in the key path; neither
+holds a runtime-changeable key.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
 from promptcadence.config import ENV_PREFIX, Settings
+from promptcadence.services.settings import RUNTIME_SETTINGS
 
 __all__ = ["render_configuration_reference"]
 
@@ -40,10 +42,17 @@ is `PROMPTCADENCE_SERVER__PORT`. Lists are comma-separated in the environment. A
 `PROMPTCADENCE_TIERS__LOCAL_FAST__CONTEXT_BUDGET_TOKENS`. Setting any `TIERS__<name>__*` key
 replaces the shipped default tier map rather than extending it.
 
-**Runtime-changeable** is `no` for every key: PromptCadence 1.0 has no runtime-settings API, so a
-change is a file or environment edit and a restart. **Security-relevant** keys decide exposure,
-egress, credentials, containment or retention (spec §14); read `docs/security.md` before changing
-one on a non-loopback bind.
+**Runtime-changeable** is `yes` for the five keys `PUT /settings` and the console's Settings page
+can change while the server runs; the running worker applies them at its next lease reap. Those
+five sit between the file and the environment in precedence (configuration standards §7):
+`defaults → file → database → env → CLI`, so a key pinned in the environment keeps its value and
+the stored row is reported as shadowed. `promptcadence config show` marks a value the database
+decides `(database)`. Every other key is `no` — a file or environment edit and a restart — and
+those that decide exposure, egress, credentials, containment, retention or spend are refused by
+name with `FORBIDDEN` if they are sent to the API at all (spec §14, ADR-0100); read
+`docs/security.md` before changing one on a non-loopback bind. The **Range** column is the field's
+own: the API and the page bound the five runtime-changeable keys more narrowly than the file does,
+and `GET /settings` reports each one's minimum and maximum.
 """
 
 _SECURITY_NOTES: dict[str, str] = {
@@ -158,7 +167,8 @@ def _rows(prefix: str, env_prefix: str, model: type[BaseModel]) -> list[str]:
         description = _escape(info.description or "")
         lines.append(
             f"| `{key}` | {env} | `{_escape(_type_name(info.annotation))}` | "
-            f"{_escape(_default(info))} | {_escape(_range(info))} | no | "
+            f"{_escape(_default(info))} | {_escape(_range(info))} | "
+            f"{'yes' if key in RUNTIME_SETTINGS else 'no'} | "
             f"{_escape(_SECURITY_NOTES.get(key, '—'))} | {_escape(_example(info))} | "
             f"{description} |"
         )

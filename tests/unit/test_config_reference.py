@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from promptcadence.cli.main import app
 from promptcadence.config import Settings
 from promptcadence.services.config_reference import render_configuration_reference
+from promptcadence.services.settings import RUNTIME_SETTINGS
 
 REFERENCE = Path(__file__).resolve().parents[2] / "docs" / "configuration.md"
 
@@ -41,9 +42,13 @@ def test_every_field_appears_with_its_columns() -> None:
             assert f"`PROMPTCADENCE_{section_name.upper()}__{field_name.upper()}`" in line
             cells = [cell.strip() for cell in re.split(r"(?<!\\)\|", line)[1:-1]]
             assert len(cells) == 9, line
-            assert cells[5] == "no", "1.0 has no runtime-settings API"
+            expected = "yes" if key in RUNTIME_SETTINGS else "no"
+            assert cells[5] == expected, f"{key}: the column is the registry's, not a literal"
     assert "## `[budget.projects.<name>]`" in rendered
     assert "| `budget.projects.<name>.money_ceiling` |" in rendered
+    assert sum(1 for line in lines if line.startswith("| `") and "| yes |" in line) == len(
+        RUNTIME_SETTINGS
+    ), "exactly the registry's keys are documented as runtime-changeable"
 
 
 def test_the_security_relevant_keys_carry_a_note() -> None:
