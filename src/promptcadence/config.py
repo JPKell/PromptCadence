@@ -299,7 +299,15 @@ class ExecutionSettings(BaseModel):
     max_concurrent_trajectories: int = Field(default=1, ge=1)
     max_concurrent_steps: int = Field(default=1, ge=1)
     max_concurrent_remote_steps: int = Field(default=2, ge=1)
-    max_turns_per_step: int = Field(default=8, ge=1)
+    max_turns_per_step: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "How many model round trips one step may take before it halts with no declared "
+            "finish (STEP_LIMIT_EXCEEDED). Retries share this envelope, so step_retries binds "
+            "inside it; a step that parks on turn_overrun has not spent it."
+        ),
+    )
     step_retries: int = Field(
         default=1,
         ge=0,

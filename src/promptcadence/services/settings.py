@@ -158,14 +158,14 @@ RUNTIME_SETTINGS: Final[dict[str, RuntimeSetting]] = {
             int,
             "Repeats of a step's failed turn under the same intent revision (ADR-0076).",
             minimum=0,
-            maximum=10,
+            maximum=25,
         ),
         RuntimeSetting(
             "execution.max_turns_per_step",
             int,
             "Round trips one step may take before it halts with no declared finish.",
             minimum=1,
-            maximum=64,
+            maximum=200,
         ),
         RuntimeSetting(
             "planning.corrective_retries",

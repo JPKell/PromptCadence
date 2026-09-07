@@ -93,7 +93,7 @@ and `GET /settings` reports each one's minimum and maximum.
 | `execution.max_concurrent_trajectories` | `PROMPTCADENCE_EXECUTION__MAX_CONCURRENT_TRAJECTORIES` | `int` | `1` | ≥ 1 | no | — | — |  |
 | `execution.max_concurrent_steps` | `PROMPTCADENCE_EXECUTION__MAX_CONCURRENT_STEPS` | `int` | `1` | ≥ 1 | no | — | — |  |
 | `execution.max_concurrent_remote_steps` | `PROMPTCADENCE_EXECUTION__MAX_CONCURRENT_REMOTE_STEPS` | `int` | `2` | ≥ 1 | no | — | — |  |
-| `execution.max_turns_per_step` | `PROMPTCADENCE_EXECUTION__MAX_TURNS_PER_STEP` | `int` | `8` | ≥ 1 | yes | — | — |  |
+| `execution.max_turns_per_step` | `PROMPTCADENCE_EXECUTION__MAX_TURNS_PER_STEP` | `int` | `8` | ≥ 1 | yes | — | — | How many model round trips one step may take before it halts with no declared finish (STEP_LIMIT_EXCEEDED). Retries share this envelope, so step_retries binds inside it; a step that parks on turn_overrun has not spent it. |
 | `execution.step_retries` | `PROMPTCADENCE_EXECUTION__STEP_RETRIES` | `int` | `1` | ≥ 0 | yes | — | — | How many times a step's failed turn is repeated under the same ExecutionIntent revision (ADR-0076). 0 means one attempt and no repeat; the trajectory then halts naming the last cause and every attempt. Only a LoadCoach service failure that could plausibly answer differently is repeated — a governance outcome never is. There is no backoff, and attempts share the envelope with turns, so max_turns_per_step binds too. |
 | `execution.max_steps` | `PROMPTCADENCE_EXECUTION__MAX_STEPS` | `int` | `20` | ≥ 1 | no | — | — |  |
 | `execution.lease_seconds` | `PROMPTCADENCE_EXECUTION__LEASE_SECONDS` | `int` | `60` | ≥ 1 | no | — | — |  |

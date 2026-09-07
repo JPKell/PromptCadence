@@ -53,7 +53,7 @@ def test_the_document_names_the_effective_value_its_definition_and_the_config_on
     assert document["settings"]["execution.step_retries"] == 1
     definition = document["definitions"]["execution.step_retries"]
     assert definition["type"] == "int"
-    assert (definition["minimum"], definition["maximum"]) == (0, 10)
+    assert (definition["minimum"], definition["maximum"]) == (0, 25)
     assert definition["source"] == "configuration" and definition["stored"] is None
     assert "server.host" in document["config_only"]
     assert "execution.step_retries" not in document["config_only"]
