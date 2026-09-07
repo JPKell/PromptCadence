@@ -87,6 +87,67 @@ def test_config_show_redacts_secret_looking_fields(monkeypatch: pytest.MonkeyPat
     assert "********" in result.stdout
 
 
+def test_config_show_marks_a_database_sourced_value_and_prints_the_stored_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Configuration standards §7: a stored value is marked ``(database)``, not ``default``."""
+    from datetime import UTC, datetime
+
+    from weightsdb import MigrationRunner
+
+    from promptcadence.config import load_settings
+    from promptcadence.services.database import MIGRATIONS_LOCATION, Database
+    from promptcadence.services.settings import write_runtime_settings
+
+    database_path = tmp_path / "promptcadence.sqlite3"
+    monkeypatch.setenv("PROMPTCADENCE_STORAGE__DATABASE_URL", f"sqlite:///{database_path}")
+    with Database.from_url(f"sqlite:///{database_path}") as database:
+        MigrationRunner(database.engine, script_location=MIGRATIONS_LOCATION).upgrade(backup=False)
+        write_runtime_settings(
+            database,
+            {"execution.step_retries": 7},
+            settings=load_settings().settings,
+            now=datetime.now(UTC),
+        )
+    result = runner.invoke(app, ["config", "show"])
+    assert result.exit_code == 0
+    line = next(
+        row for row in result.stdout.splitlines() if row.startswith("execution.step_retries")
+    )
+    assert "7" in line and "(database)" in line
+    payload = json.loads(runner.invoke(app, ["config", "show", "--json"]).stdout)
+    assert payload["values"]["execution"]["step_retries"] == 7
+    assert payload["sources"]["execution.step_retries"] == "database"
+
+
+def test_config_show_prints_its_normal_output_when_there_is_no_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh install has no database yet, and inspecting configuration must not need one."""
+    missing = tmp_path / "absent.sqlite3"
+    monkeypatch.setenv("PROMPTCADENCE_STORAGE__DATABASE_URL", f"sqlite:///{missing}")
+    result = runner.invoke(app, ["config", "show"])
+    assert result.exit_code == 0
+    assert "(database)" not in result.stdout
+    line = next(
+        row for row in result.stdout.splitlines() if row.startswith("execution.step_retries")
+    )
+    assert line.endswith("(default)") and " 1 " in line
+    assert not missing.exists(), "an inspection command leaves no database behind"
+
+
+def test_config_show_prints_its_normal_output_when_the_database_is_unmigrated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unmigrated = tmp_path / "empty.sqlite3"
+    unmigrated.touch()
+    monkeypatch.setenv("PROMPTCADENCE_STORAGE__DATABASE_URL", f"sqlite:///{unmigrated}")
+    result = runner.invoke(app, ["config", "show"])
+    assert result.exit_code == 0
+    assert "(database)" not in result.stdout
+    assert "execution.step_retries" in result.stdout
+
+
 def test_config_path_prints_a_path() -> None:
     result = runner.invoke(app, ["config", "path"])
     assert result.exit_code == 0
