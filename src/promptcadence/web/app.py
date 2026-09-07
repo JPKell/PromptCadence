@@ -283,6 +283,7 @@ def create_app(settings: Settings, *, runtime_builder: Any | None = None) -> Fas
     # The console last: its ``/`` and ``/trajectories/{id}`` must not shadow an API path, and
     # registering it after the API makes that ordering visible rather than incidental.
     app.include_router(console_routes.ui_router)
+    app.include_router(settings_routes.ui_router)
     mount_static(app, environment=templates())
 
     return app

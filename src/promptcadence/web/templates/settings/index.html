@@ -1,0 +1,64 @@
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import table %}
+{% block title %}Settings — PromptCadence{% endblock %}
+{% block content %}
+<h2>Settings</h2>
+<p class="muted">Only what can change while the server runs. Everything else — the bind, the
+LoadCoach credential, the approval gates, the ceilings, the tool roots and the tiers — lives in
+<span class="mono">config.toml</span> or the environment and is refused here by name. A change is
+applied by the running worker at its next lease reap, and reaches every process sharing this
+database.</p>
+<p class="muted">A key set in the environment beats a stored value (configuration standards §7):
+<span class="mono">defaults → file → database → env → CLI</span>. A stored value that cannot take
+effect is shown below as shadowed rather than quietly dropped.</p>
+
+{% if saved %}<p class="notice" role="status">Saved. The running worker applies the change at its next lease reap.</p>{% endif %}
+
+{% if not may_change %}
+<p class="muted" role="status">This session holds the <code>read</code> scope and not
+<code>admin</code>, so the form is not shown. Looking at the effective configuration and changing
+it are deliberately separate scopes.</p>
+{% set columns = [{"label": "Key"}, {"label": "Effective"}, {"label": "Configured"}, {"label": "Source"}] %}
+{% set rows = [] %}
+{% for key in keys %}
+{% set _ = rows.append([
+  key,
+  document.settings[key],
+  document.definitions[key].configured,
+  document.definitions[key].shadowed_by or document.definitions[key].source
+]) %}
+{% endfor %}
+{{ table(columns, rows, caption="Runtime-changeable settings", complete=true, row_count=keys | length) }}
+{% else %}
+<form method="post" action="/settings">
+  <input type="hidden" name="{{ csrf_field_name }}" value="{{ csrf_token }}">
+  {% for key in keys %}
+  {% set definition = document.definitions[key] %}
+  <div class="field">
+    <label for="setting-{{ key }}">{{ key }}</label>
+    <input type="number" id="setting-{{ key }}" name="{{ key }}" value="{{ document.settings[key] }}"
+           {% if definition.type == "int" %}step="1"{% else %}step="0.01"{% endif %}
+           min="{{ definition.minimum }}" max="{{ definition.maximum }}"
+           aria-describedby="setting-{{ key }}-hint">
+    <p class="field-hint" id="setting-{{ key }}-hint">{{ definition.description }}
+      Configured: <span class="mono">{{ definition.configured }}</span> ·
+      range {{ definition.minimum }}–{{ definition.maximum }}.
+      {% if definition.shadowed_by %}Stored value <span class="mono">{{ definition.stored }}</span>
+      is shadowed by <span class="mono">{{ definition.shadowed_by }}</span> and does nothing until
+      that variable is unset.{% elif definition.source == "database" %}Stored here, and effective.{% endif %}
+    </p>
+  </div>
+  {% endfor %}
+  <button type="submit" data-variant="primary">Save settings</button>
+</form>
+{% endif %}
+
+<h3>Config-only keys</h3>
+<p class="muted">Refused with <span class="mono">FORBIDDEN</span> naming the key when sent to
+<span class="mono">PUT /api/v1/settings</span>: exposure, egress, credentials, containment,
+retention and spend. The ceilings are among them deliberately — raising one is an approval with an
+approver on the record, never a form.</p>
+<ul class="mono">
+{% for key in document.config_only %}<li>{{ key }}</li>{% endfor %}
+</ul>
+{% endblock %}

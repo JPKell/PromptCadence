@@ -44,7 +44,17 @@ if TYPE_CHECKING:
 _TERMINAL = {"completed", "halted", "failed", "cancelled", "rejected"}
 _LONG = "The meeting covered the migration plan in considerable detail. " * 6
 
-PAGES = ("/", "/trajectories", "/approvals", "/tiers", "/tools", "/ledger", "/egress", "/system")
+PAGES = (
+    "/",
+    "/trajectories",
+    "/approvals",
+    "/tiers",
+    "/tools",
+    "/ledger",
+    "/egress",
+    "/system",
+    "/settings",
+)
 
 
 def _call(name: str, arguments: str) -> dict[str, object]:

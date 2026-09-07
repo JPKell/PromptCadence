@@ -8,6 +8,7 @@ without ``admin`` is ``403`` — three different answers, none of them a silent 
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -15,6 +16,7 @@ from typing import Any, cast
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from mirrorwall import CSRF_COOKIE_NAME, CSRF_FIELD_NAME
 from tests.fakes.loadcoach_app import FakeLoadCoach, build_fake_app, shipped_profiles
 
 from promptcadence.config import load_settings
@@ -146,3 +148,98 @@ def test_the_scopes_are_read_to_look_and_admin_to_change(client: TestClient) -> 
         headers={"Authorization": f"Bearer {administrator.token}"},
     )
     assert allowed.status_code == 200
+
+
+# --------------------------------------------------------------------------------------------
+# The console page (ADR-0094: the page enforces what the API enforces)
+# --------------------------------------------------------------------------------------------
+
+
+def _csrf(client: TestClient) -> str:
+    """The token the Settings page rendered, with the cookie half planted on the client.
+
+    The cookie carries ``Secure`` — the ``__Host-`` prefix requires it — and the test client talks
+    plain ``http``, so httpx declines to store it. A browser does store it on loopback, which is
+    the bind this console is reachable on; planting it reproduces that rather than weakening the
+    cookie to suit the transport.
+    """
+    page = client.get("/settings")
+    assert page.status_code == 200
+    match = re.search(rf'name="{CSRF_FIELD_NAME}" value="([^"]+)"', page.text)
+    assert match is not None, "the Settings page rendered no CSRF token"
+    client.cookies.set(CSRF_COOKIE_NAME, match.group(1))
+    return match.group(1)
+
+
+def test_the_page_renders_the_form_the_navigation_and_the_config_only_list(
+    client: TestClient,
+) -> None:
+    page = client.get("/settings")
+    assert page.status_code == 200
+    assert 'href="/settings" aria-current="page"' in page.text
+    assert 'name="execution.step_retries"' in page.text
+    assert "Save settings" in page.text
+    assert "server.host" in page.text, "what cannot be changed here is named, not omitted"
+    assert "budget.daily_money_ceiling" in page.text
+
+
+def test_the_form_saves_and_redirects_to_the_page_saying_so(client: TestClient) -> None:
+    token = _csrf(client)
+    saved = client.post(
+        "/settings",
+        data={CSRF_FIELD_NAME: token, "execution.step_retries": "3", "compaction.threshold": ""},
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    assert saved.headers["location"] == "/settings?saved=1"
+    document = _document(client)
+    assert document["settings"]["execution.step_retries"] == 3
+    assert document["definitions"]["compaction.threshold"]["stored"] is None, "empty is no change"
+    assert "Saved." in client.get("/settings?saved=1").text
+
+
+def test_a_post_without_the_token_never_reaches_the_handler(client: TestClient) -> None:
+    refused = client.post(
+        "/settings",
+        data={"execution.step_retries": "3"},
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert refused.status_code == 403
+    assert refused.json()["error"]["code"] == "CSRF_FAILED"
+    assert _document(client)["settings"]["execution.step_retries"] == 1
+
+
+def test_a_number_field_holding_something_else_is_refused_by_name(client: TestClient) -> None:
+    token = _csrf(client)
+    refused = client.post(
+        "/settings",
+        data={CSRF_FIELD_NAME: token, "execution.step_retries": "soon"},
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert refused.status_code == 400
+    assert "execution.step_retries" in refused.json()["error"]["message"]
+
+
+def test_a_read_scoped_principal_sees_the_values_but_no_form_and_its_post_is_refused(
+    client: TestClient,
+) -> None:
+    """ADR-0094 rule 4: the page enforces what the API enforces, and shows no button it would."""
+    runtime = cast("FastAPI", client.app).state.runtime
+    reader = create_token(runtime.database, name="reader", scopes=["read"], now=datetime.now(UTC))
+    headers = {"Authorization": f"Bearer {reader.token}"}
+    page = client.get("/settings", headers=headers)
+    assert page.status_code == 200
+    assert "Save settings" not in page.text
+    assert "holds the <code>read</code> scope" in page.text
+    assert "execution.step_retries" in page.text, "a reader still sees what is effective"
+    assert re.search(rf'name="{CSRF_FIELD_NAME}" value="([^"]+)"', page.text) is None
+
+    client.cookies.set(CSRF_COOKIE_NAME, "planted")
+    refused = client.post(
+        "/settings",
+        data={CSRF_FIELD_NAME: "planted", "execution.step_retries": "3"},
+        headers={**headers, "content-type": "application/x-www-form-urlencoded"},
+    )
+    assert refused.status_code == 403
+    assert refused.json()["error"]["details"]["required"] == "admin"

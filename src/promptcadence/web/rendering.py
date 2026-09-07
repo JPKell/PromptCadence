@@ -50,6 +50,7 @@ NAV_ITEMS: tuple[dict[str, str], ...] = (
     {"key": "ledger", "href": "/ledger", "label": "Ledger"},
     {"key": "egress", "href": "/egress", "label": "Egress"},
     {"key": "system", "href": "/system", "label": "System"},
+    {"key": "settings", "href": "/settings", "label": "Settings"},
 )
 """The information architecture UI standards §12 names for this application.
 
