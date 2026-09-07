@@ -96,6 +96,12 @@ workspaces are files beside the database; back them up with it if the explanatio
 to you — the rows are authoritative and `promptcadence db rebuild-explanations --drop` rebuilds
 every explanation from them.
 
+A database ahead of the installed code refuses at startup with `SchemaAhead`, naming both
+revisions and the backup directory; the downgrade path is: stop the application, restore that
+backup, install the older version — proved end to end by
+`tests/integration/test_downgrade_and_schema_ahead.py`, with the backup/restore round trip itself
+proved on both dialects by `tests/integration/test_migrations.py`.
+
 ## Budgets
 
 Three ceilings are active on a labelled trajectory: its own (`--budget`/`--tokens` or the

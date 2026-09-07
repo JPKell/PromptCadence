@@ -22,6 +22,7 @@ from weightsdb import (
     DatabaseError,
     MigrationRequired,
     MigrationRunner,
+    SchemaAhead,
     create_engine_for,
     database_health,
     database_size_bytes,
@@ -31,6 +32,8 @@ from weightsdb import (
 )
 from weightsdb import backup as weightsdb_backup
 from weightsdb.backup import sqlite_path
+
+from promptcadence.config import data_dir
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -148,6 +151,18 @@ def migration_runner(engine: Engine, *, backup_retention: int = 5) -> MigrationR
     )
 
 
+def _backup_directory(engine: Engine) -> Path:
+    """Where a manual or automatic backup of ``engine``'s database is written.
+
+    Mirrors :func:`backup_database`'s own default path (SQLite: beside the database file;
+    PostgreSQL: under the configured data directory), so a :class:`~weightsdb.errors.SchemaAhead`
+    refusal can name the directory an operator finds their pre-migration backup in.
+    """
+    if engine.dialect.name == "sqlite":
+        return sqlite_path(engine).parent / "backups"
+    return data_dir() / "backups"
+
+
 def upgrade(
     database: Database, *, revision: str = "head", backup_retention: int = 5
 ) -> MigrationOutcome:
@@ -176,6 +191,23 @@ def ensure_ready(database: Database, *, auto_migrate: bool) -> None:
     runner = migration_runner(database.engine)
     if runner.is_at_head():
         return
+    current = runner.current()
+    if current is not None and current not in runner.known_revisions():
+        heads = runner.heads()
+        head = heads[0] if heads else None
+        backup_directory = _backup_directory(database.engine)
+        raise SchemaAhead(
+            f"The database is at revision {current!r}, which this build's migrations do not "
+            f"produce (known head: {head!r}). It was likely written by a newer application "
+            f"version. Downgrading: stop the application, restore the pre-migration backup "
+            f"under {backup_directory}, then install the older version (see "
+            "docs/upgrading.md).",
+            details={
+                "current": current,
+                "head": head,
+                "backup_directory": str(backup_directory),
+            },
+        )
     if auto_migrate:
         runner.upgrade()
         return
