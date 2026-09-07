@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Changed
+- **The two vendored LoadCoach snapshots are LoadCoach 1.1.1's**, re-copied from `2a7ac58`
+  (`tests/contract/loadcoach_openapi.json`, `tests/contract/loadcoach_task_profiles.toml`) with
+  their digests and `SNAPSHOT_SOURCE` strings re-pinned. Three things differ from the copies these
+  replace. `docs/openapi.json` moves by `info.version` alone, `1.1.0` to `1.1.1` — no path, no
+  schema and no request body changed. `task_profiles.toml` gains the `adapters.measured` profile
+  (LoadCoach's H5/LA3 work) and a rewritten explanatory comment on `tools.plan` recording I3's
+  `think` measurement (ADR-0099). No assertion in either contract test moved, and no profile this
+  application's tiers name changed a value: `adapters.measured` is a profile no PromptCadence tier
+  references, and the comment is inert to `tomllib`.
+
 ## [1.0.0] — 2026-09-06
 
 **M12 — PromptCadence 1.0.** Every phase of the development plan is built, gated and demonstrated:

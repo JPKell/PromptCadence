@@ -1,8 +1,9 @@
 """E4: the shipped tier defaults, against LoadCoach's committed task profiles.
 
 ``loadcoach_task_profiles.toml`` is a byte copy of LoadCoach
-``src/loadcoach/config/task_profiles.toml`` (LoadCoach ``5c5aa1f``, the commit that added the five
-harness profiles), recorded with its digest below — the idiom I10 uses for the OpenAPI snapshot,
+``src/loadcoach/config/task_profiles.toml`` (LoadCoach ``2a7ac58``, the 1.1.1 release commit; the
+file last moved at ``cb1cfac`` — refreshed at I4 from the E4-era ``5c5aa1f`` copy, which added the
+five harness profiles), recorded with its digest below — the idiom I10 uses for the OpenAPI snapshot,
 for the same reason: a vendored copy nobody pins is a copy that has already drifted.
 
 **Why this file exists at all.** A PromptCadence tier is configuration over exactly one LoadCoach
@@ -34,8 +35,11 @@ from promptcadence.config import load_settings
 pytestmark = pytest.mark.contract
 
 SNAPSHOT = Path(__file__).resolve().parent / "loadcoach_task_profiles.toml"
-SNAPSHOT_SHA256 = "33c3dff72f861b7481a52c9e735fccf7116bd85dec58e0273204cb325581d7a5"
-SNAPSHOT_SOURCE = "LoadCoach src/loadcoach/config/task_profiles.toml at 5c5aa1f"
+SNAPSHOT_SHA256 = "3edb1f7ddc2c3c7b848e070a12f7da0efdf55d82140accc5683f42a3b542f457"
+SNAPSHOT_SOURCE = (
+    "LoadCoach src/loadcoach/config/task_profiles.toml at 2a7ac58 "
+    "(LoadCoach 1.1.1; last changed at cb1cfac)"
+)
 
 
 def shipped_profiles() -> dict[str, dict[str, Any]]:

@@ -1,9 +1,9 @@
 """I10: the fake LoadCoach and the client, against LoadCoach's committed OpenAPI snapshot.
 
 ``loadcoach_openapi.json`` is a byte copy of LoadCoach ``docs/openapi.json`` (LoadCoach
-``93063bd``, the 1.1 line after LA2/LA3; the file last moved at ``cbe1ef9``, which added the
-optional ``data_classification`` and ``adapter`` fields — refreshed at I2 from the G2-era
-``f5f3b81`` copy), recorded with its digest below. This is what
+``2a7ac58``, the 1.1.1 release commit, which is also where the file last moved — refreshed at
+I4 from the I2-era ``93063bd`` copy, and the only difference is ``info.version``, ``1.1.0`` to
+``1.1.1``), recorded with its digest below. This is what
 keeps the fake honest: every request body the client can send validates against the snapshot's
 schemas, every path the client and the fake use exists in the snapshot with that method, and the
 fake's own request models are the snapshot's, shape for shape. LoadCoach ``846348b``
@@ -42,9 +42,9 @@ from promptcadence.infrastructure.loadcoach import (
 pytestmark = pytest.mark.contract
 
 SNAPSHOT = Path(__file__).resolve().parent / "loadcoach_openapi.json"
-SNAPSHOT_SHA256 = "d8f4f6e2f44a02484ce195dc8d04bf3ca1b4a9598de7dccdb17f5d613c37b92d"
+SNAPSHOT_SHA256 = "ca407d7ff689fcf275767a6aceb891de77d67b0a33219f244da35bd867e63848"
 SNAPSHOT_SOURCE = (
-    "LoadCoach docs/openapi.json at 93063bd (LoadCoach 1.1, LA2/LA3; last changed at cbe1ef9)"
+    "LoadCoach docs/openapi.json at 2a7ac58 (LoadCoach 1.1.1; last changed at 2a7ac58)"
 )
 
 

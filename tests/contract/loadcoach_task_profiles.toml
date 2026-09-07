@@ -557,6 +557,35 @@ allow_remote_providers = false
 
 [task_profiles."tools.plan".execution]
 temperature = 0.1
+# max_output_tokens stays at 4096, measured rather than assumed (G2 gate E). A reasoning model
+# under `response_format = "json"` spends this budget thinking and can return an empty document:
+# gpt-oss:20b on the reference machine, given PromptCadence's planner.draft 1.1.0 prompt, answered
+# nothing 1 time in 6 at 4096 and 3 times in 6 at 8192 — every empty answer `done_reason=length`
+# with eval_count exactly equal to the budget, and median latency tripling from 58 s to 171 s.
+# Raising the budget therefore buys a longer wait and *more* empty answers, not fewer: the model
+# fills whatever it is given.
+#
+# `think` is unset here, and that is a measured decision, not an omission (I3 gate D, ADR-0099).
+# The lever G2 named exists now: ModelRack 0.7 sends Ollama's top-level `think`, and this profile
+# could ask for `think = false`. Six runs per cell through a real LoadCoach against Ollama 0.32.13,
+# same prompt, same 4096 budget, gpt-oss:20b pinned:
+#
+#   profile                | think   | delivered | attempt 1 hit the budget | median
+#   tools.plan             | unset   |  3 / 6    |  2 / 6                   |  12.9 s
+#   tools.plan             | false   |  0 / 6    |  1 / 6                   |   1.3 s
+#   tools.agent.local_fast | unset   |  6 / 6    |  0 / 6                   |   0.9 s
+#   tools.agent.local_fast | false   |  6 / 6    |  0 / 6                   |   1.0 s
+#
+# `think = false` made this profile strictly worse: gpt-oss:20b under Ollama does not honour the
+# control — it emits its reasoning as *content* instead of on the thinking channel, which then
+# fails `require_valid_json` — so four runs died with a provider protocol error in 1.3 s and two
+# exhausted all three attempts on invalid JSON. On the agent profile it changed nothing at all.
+# The remaining `tools.plan` failure mode is unchanged, and "delivered" is generous: 3 of the 6
+# unset runs answered with a real plan document, and the other 3 needed the structured-output
+# corrective, which returned `{}` — valid JSON and an empty plan. Two of those three had spent
+# the whole 4096-token budget on attempt 1. So the corrective retry is still what absorbs an
+# empty draft, and an operator whose model *does* honour the control can set `think` here
+# without a code change.
 max_output_tokens = 4096
 response_format = "json"
 max_attempts = 3
@@ -564,4 +593,42 @@ fallback_depth = 1
 
 [task_profiles."tools.plan".validation]
 require_valid_json = true
+max_output_chars = 50000
+
+# `adapters.measured` is the profile an operator reaches for after importing FreeWeight adapter
+# evidence, and it is shaped by two facts about how that evidence is produced and read.
+#
+# **Its weights are the A-2 regression panel's two fixed suites.** FreeWeight measures
+# `instruction_following` and `structured_output` on *every* adapter subject it measures, by
+# construction (catalogue §8.2) — a subject's declared capabilities vary, these two do not. So this
+# is the one weighting guaranteed to find a measurement on any measured adapter subject, whatever
+# the adapter was trained for.
+#
+# **It sets no `min_context_tokens`, deliberately.** A minimum makes LoadCoach configure a served
+# context where the provider allows one, which puts `context_size` in the runtime profile and
+# therefore in `runtime_profile_hash`. Evidence measured under a different profile is excluded by
+# name (ADR-0023), so a profile that pins a context can only score evidence measured under that
+# same context. Leaving it unset matches FreeWeight's own default and is what makes an imported
+# bundle scoreable without the two applications' configurations being tuned against each other.
+# A deployment that does pin a context here must pin the same one in FreeWeight's `[runtime]`.
+[task_profiles."adapters.measured"]
+version = "1.0.0"
+description = "Select among a base and its measured adapter subjects, on what the regression panel measures for all of them."
+
+[task_profiles."adapters.measured".weights]
+instruction_following = 0.50
+structured_output = 0.50
+
+[task_profiles."adapters.measured".constraints]
+max_latency_p95_seconds = 60
+allow_remote_providers = false
+
+[task_profiles."adapters.measured".execution]
+temperature = 0.2
+max_output_tokens = 2048
+response_format = "text"
+max_attempts = 2
+fallback_depth = 1
+
+[task_profiles."adapters.measured".validation]
 max_output_chars = 50000
