@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ## [Unreleased]
 
 ### Fixed
+- **`tool.call.started` digests the arguments its `tool_call_records` row digests.** The event
+  digested the *canonical JSON text* of a call's arguments while ToolYard digests the *sanitized
+  value* (`executor._args_digest`), so for every call whose arguments parsed the two `args_sha256`
+  values differed and the pair could not be matched — which is the field's entire purpose, stated
+  on `domain.tools.ToolCallStarted`: *"so an event and its row can be matched without either
+  holding plaintext"*. The event now takes ToolYard's own `json_sanitize`, so the two agree by
+  construction rather than by transcription, and ADR-0096's replay stub already carried the same
+  value. **This is a patch, not a minor:** the event's digest matched no row, no record and no
+  stub, so it identified nothing any consumer could look up; the field's name, presence and shape
+  are unchanged, and a digest over a raw non-JSON fragment is unchanged too. A new integration
+  assertion pins the equality in both cases.
 - **A turn that completed with no text says so in the console** rather than rendering a blank
   cell. `content_cell` already separated a scrubbed body from a retained one; a genuinely empty
   body fell through to the retained branch and rendered as nothing, which beside `Finish: stop`

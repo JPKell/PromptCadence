@@ -3,8 +3,8 @@
 ``loadcoach_task_profiles.toml`` is a byte copy of LoadCoach
 ``src/loadcoach/config/task_profiles.toml`` (LoadCoach ``2a7ac58``, the 1.1.1 release commit; the
 file last moved at ``cb1cfac`` — refreshed at I4 from the E4-era ``5c5aa1f`` copy, which added the
-five harness profiles), recorded with its digest below — the idiom I10 uses for the OpenAPI snapshot,
-for the same reason: a vendored copy nobody pins is a copy that has already drifted.
+five harness profiles), recorded with its digest below — the idiom I10 uses for the OpenAPI
+snapshot, for the same reason: a vendored copy nobody pins is a copy that has already drifted.
 
 **Why this file exists at all.** A PromptCadence tier is configuration over exactly one LoadCoach
 task profile (ADR-0047 §1), and PromptCadence performs no routing maths — so a tier naming a

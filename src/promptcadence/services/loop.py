@@ -87,6 +87,13 @@ from toolyard import (
 )
 from toolyard import EgressClass as ToolEgressClass
 
+# `json_sanitize` is what ToolYard digests to fill `tool_call_records.args_sha256`
+# (`executor._args_digest`). The `tool.call.started` event has to digest the *same*
+# value or the pair cannot be matched, which is what the event field is for
+# (`domain.tools.ToolCallStarted`) — so this borrows the function rather than
+# reimplementing a hardening routine that has to agree byte for byte.
+from toolyard._safe import json_sanitize
+
 from promptcadence.config import ConfigurationError
 from promptcadence.domain.compaction import ContextCompacted
 from promptcadence.domain.deviation import (
@@ -3503,7 +3510,7 @@ class LoopController:
         )
         request = ToolCallRequest(name=call.name, args=call.arguments)
         store = CollectingToolCallStore()
-        args_digest = sha256_of(_args_text(call))
+        args_digest = sha256_of(json_sanitize(call.arguments))
         with self._sink.write() as (session, events):
             self._owned_cas(session, trajectory_id, values={"updated_at": self._clock()})
             events.append(
@@ -4098,7 +4105,11 @@ def _ordered_names(calls: Sequence[RequestedToolCall]) -> tuple[str, ...]:
 
 
 def _args_text(call: RequestedToolCall) -> str:
-    """The text whose digest identifies one call's arguments in the ``tool.call.started`` event."""
+    """The text of one call's arguments, for measuring their size against the replay cap.
+
+    Not a digest input: ``tool.call.started`` and ``tool_call_records`` both digest the sanitized
+    *value* (``json_sanitize``), not this rendering of it.
+    """
     if call.arguments_parsed:
         return canonical_json(call.arguments)
     return call.arguments if isinstance(call.arguments, str) else repr(call.arguments)

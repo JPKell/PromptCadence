@@ -8,12 +8,17 @@ finding F2, kept by contract 6). Rendering the second as a blank cell reports it
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any, cast
+
 from promptcadence.domain.explanation import content_or_removed
 from promptcadence.web.rendering import templates
 
 
 def _cell(text: str | None) -> str:
-    macro = templates().get_template("_macros.html").module.content_cell
+    """Render the macro alone — Jinja types a module's exported macros as ``Any`` by name."""
+    module = templates().get_template("_macros.html").module
+    macro = cast("Callable[[dict[str, Any]], object]", vars(module)["content_cell"])
     return str(macro(content_or_removed(text, "sha256:d")))
 
 

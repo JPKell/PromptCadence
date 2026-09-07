@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from baseaicore import sha256_of
@@ -136,6 +137,14 @@ class Harness:
 
     def events(self, trajectory_id: str) -> list[str]:
         return [event.event_type for event in self.service.events(trajectory_id)]
+
+    def started_events(self, trajectory_id: str) -> list[dict[str, Any]]:
+        """The ``tool.call.started`` payloads, in order — the half of the pair the row answers."""
+        return [
+            event.data
+            for event in self.service.events(trajectory_id)
+            if event.event_type == "tool.call.started"
+        ]
 
 
 @pytest.fixture
@@ -427,6 +436,37 @@ def test_a_hostile_model_halts_or_completes_cleanly_with_every_call_recorded(
     assert len(harness.tool_turns(trajectory_id)) == len(hostile)
     assert harness.events(trajectory_id).count("tool.call.completed") == len(hostile)
     assert all(record.args_sha256 for record in records)
+
+
+def test_the_started_events_digest_is_the_digest_the_record_carries(harness: Harness) -> None:
+    """The event and its row name one call, and `args_sha256` is how they are matched.
+
+    `domain.tools.ToolCallStarted` says what the field is for: *"so an event and its row can be
+    matched without either holding plaintext"*. That only works if both sides digest the same
+    value — the sanitized arguments (ToolYard's `executor._args_digest`, and ADR-0096's replay
+    stub). The event digested the canonical JSON *text* instead until 1.0.1, so the pair disagreed
+    on every call with parsed arguments and the field identified nothing anyone could look up.
+    """
+    harness.fake.script(
+        ScriptedGeneration(
+            text="",
+            tool_calls=(
+                # Parsed arguments, which is the case that disagreed, and a fragment that is not
+                # JSON at all, which is the case that already agreed and must keep agreeing.
+                call("list_dir", '{"path": "."}', index=0),
+                call("list_dir", "{not json", index=1),
+            ),
+        ),
+        ScriptedGeneration(text="Done."),
+    )
+    trajectory_id, state = harness.run()
+    assert state is TrajectoryState.COMPLETED
+    records = harness.records(trajectory_id)
+    events = harness.started_events(trajectory_id)
+    assert len(events) == len(records) == 2
+    for event, record in zip(events, records, strict=True):
+        assert event["tool_name"] == record.tool_name
+        assert event["args_sha256"] == record.args_sha256, event["tool_name"]
 
 
 def test_redact_args_stores_the_hash_and_never_the_plaintext(
