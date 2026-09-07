@@ -19,6 +19,7 @@ from promptcadence.cli.commands import config as config_commands
 from promptcadence.cli.commands import db as db_commands
 from promptcadence.cli.commands import egress as egress_commands
 from promptcadence.cli.commands import ledger as ledger_commands
+from promptcadence.cli.commands import settings as settings_commands
 from promptcadence.cli.commands import system as system_commands
 from promptcadence.cli.commands import tiers as tier_commands
 from promptcadence.cli.commands import token as token_commands
@@ -90,3 +91,8 @@ app.command(name="deny", help="Deny a trajectory's pending approval request.")(
 )
 app.add_typer(tier_commands.app, name="tiers", help="Configured tiers; check them in LoadCoach.")
 app.add_typer(token_commands.app, name="token", help="API tokens and their scopes.")
+app.add_typer(
+    settings_commands.app,
+    name="settings",
+    help="Runtime-changeable settings on a running server.",
+)

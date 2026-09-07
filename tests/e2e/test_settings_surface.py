@@ -8,6 +8,7 @@ without ``admin`` is ``403`` — three different answers, none of them a silent 
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -18,7 +19,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from mirrorwall import CSRF_COOKIE_NAME, CSRF_FIELD_NAME
 from tests.fakes.loadcoach_app import FakeLoadCoach, build_fake_app, shipped_profiles
+from typer.testing import CliRunner
 
+from promptcadence.cli import main as cli_main
+from promptcadence.cli.commands import trajectories as trajectory_commands
 from promptcadence.config import load_settings
 from promptcadence.services.runtime import build_runtime
 from promptcadence.services.tokens import create_token
@@ -243,3 +247,108 @@ def test_a_read_scoped_principal_sees_the_values_but_no_form_and_its_post_is_ref
     )
     assert refused.status_code == 403
     assert refused.json()["error"]["details"]["required"] == "admin"
+
+
+# --------------------------------------------------------------------------------------------
+# The CLI half (spec §7.2): a client-mode verb over the same endpoints and the same refusals.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cli(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> CliRunner:
+    """A runner whose client-mode commands reach ``client`` instead of a socket."""
+    monkeypatch.setattr(
+        trajectory_commands,
+        "http_client_factory",
+        lambda settings: TestClient(cast("FastAPI", client.app), base_url="http://127.0.0.1"),
+    )
+    return CliRunner()
+
+
+def test_settings_list_and_get_render_every_key_and_its_source(
+    client: TestClient, cli: CliRunner
+) -> None:
+    listed = cli.invoke(cli_main.app, ["settings", "list"])
+    assert listed.exit_code == 0, listed.output
+    assert "execution.step_retries" in listed.stdout and "(configuration)" in listed.stdout
+
+    assert client.put("/api/v1/settings", json={"execution.step_retries": 3}).status_code == 200
+    got = cli.invoke(cli_main.app, ["settings", "get", "execution.step_retries"])
+    assert got.exit_code == 0
+    assert got.stdout.strip() == "execution.step_retries = 3 (database)"
+    payload = json.loads(
+        cli.invoke(cli_main.app, ["settings", "get", "execution.step_retries", "--json"]).stdout
+    )
+    assert payload["execution.step_retries"] == 3 and payload["source"] == "database"
+
+
+def test_settings_set_writes_and_get_reads_it_back(cli: CliRunner) -> None:
+    written = cli.invoke(cli_main.app, ["settings", "set", "execution.step_retries", "3"])
+    assert written.exit_code == 0, written.output
+    assert written.stdout.strip() == "execution.step_retries = 3 (database)"
+    read_back = cli.invoke(cli_main.app, ["settings", "get", "execution.step_retries"])
+    assert read_back.stdout.strip() == "execution.step_retries = 3 (database)"
+
+
+def test_settings_set_reports_a_shadowed_row_rather_than_a_success(
+    cli: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Configuration standards §7: a value the environment pins is not changed by a write."""
+    monkeypatch.setenv("PROMPTCADENCE_EXECUTION__STEP_RETRIES", "5")
+    result = cli.invoke(cli_main.app, ["settings", "set", "execution.step_retries", "3"])
+    assert result.exit_code == 0, result.output
+    assert "execution.step_retries = 1" in result.stdout, "the configured value, not the row"
+    assert "stored 3, but env PROMPTCADENCE_EXECUTION__STEP_RETRIES beats it" in result.stdout
+
+
+def test_settings_set_refuses_a_security_relevant_key_by_name(cli: CliRunner) -> None:
+    result = cli.invoke(cli_main.app, ["settings", "set", "server.host", '"10.0.0.5"'])
+    assert result.exit_code == 1
+    assert "FORBIDDEN" in result.stderr and "server.host" in result.stderr
+
+
+def test_settings_set_refuses_an_unknown_key_and_lists_what_may_change(cli: CliRunner) -> None:
+    result = cli.invoke(cli_main.app, ["settings", "set", "execution.nonsense", "1"])
+    assert result.exit_code == 2
+    assert "VALIDATION_ERROR" in result.stderr
+    assert "compaction.threshold" in result.stderr, "the changeable set is listed"
+
+
+def test_settings_get_refuses_an_unknown_key_without_asking_the_server_to(cli: CliRunner) -> None:
+    result = cli.invoke(cli_main.app, ["settings", "get", "server.host"])
+    assert result.exit_code == 2
+    assert "not runtime-changeable" in result.stderr and "compaction.threshold" in result.stderr
+
+
+def test_settings_needs_the_token_once_the_install_has_one(
+    client: TestClient, cli: CliRunner
+) -> None:
+    """A tokened install refuses an unauthenticated read, and ``--token`` is how the CLI passes."""
+    runtime = cast("FastAPI", client.app).state.runtime
+    administrator = create_token(
+        runtime.database, name="ops", scopes=["admin", "read"], now=datetime.now(UTC)
+    )
+    missing = cli.invoke(cli_main.app, ["settings", "list"])
+    assert missing.exit_code == 1 and "UNAUTHORIZED" in missing.stderr
+    with_token = cli.invoke(
+        cli_main.app,
+        ["settings", "set", "execution.step_retries", "3", "--token", administrator.token],
+    )
+    assert with_token.exit_code == 0, with_token.output
+
+
+def test_settings_reports_an_unreachable_server_rather_than_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Refusing:
+        def request(self, *args: object, **kwargs: object) -> None:
+            message = "connection refused"
+            raise RuntimeError(message)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(trajectory_commands, "http_client_factory", lambda settings: _Refusing())
+    result = CliRunner().invoke(cli_main.app, ["settings", "list"])
+    assert result.exit_code == 4
+    assert "not reachable" in result.stderr
