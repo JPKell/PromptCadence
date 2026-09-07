@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-09-07
+
 ### Changed
 
 - **`services/pricing.py` is now a thin edge over `loadledger.pricing`** (row K4, ADR-0110). This
