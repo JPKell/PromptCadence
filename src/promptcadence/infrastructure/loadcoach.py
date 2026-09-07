@@ -285,7 +285,12 @@ class GenerateRequest:
 
 @dataclass(frozen=True, slots=True)
 class ModelInfo:
-    """The ``model`` block: who answered (api.md §4)."""
+    """The ``model`` block: who answered (api.md §4).
+
+    ``provider_name`` and ``is_remote`` are LoadCoach 1.1's (LC-E1): the registration that served
+    the turn, by name, and its **declared** egress class (ADR-0055 rule 4). ``None`` on an older
+    LoadCoach's response, which is a fact this side reads as *absent*, never as local.
+    """
 
     canonical_id: str
     model_ref: str | None
@@ -293,6 +298,8 @@ class ModelInfo:
     served_context: int | None
     served_context_source: str | None
     target_gpu_index: int | None
+    provider_name: str | None = None
+    is_remote: bool | None = None
 
     @property
     def provider_kind(self) -> ProviderKind:
@@ -445,11 +452,20 @@ class TaskProfileInfo:
 
 @dataclass(frozen=True, slots=True)
 class ModelEntry:
-    """One registry entry from ``GET /models`` (api.md §2): identity, kind, availability."""
+    """One registry entry from ``GET /models`` (api.md §2): identity, kind, availability.
+
+    ``provider_name`` and ``is_remote`` are read when the entry carries them and are ``None``
+    otherwise. LoadCoach 1.1.0 records both on its ``models`` table and renders neither in this
+    listing (only the generate response's ``model`` block carries them — found at I2), so on that
+    version every entry reads ``None`` here and a remote registration is invisible before its
+    first turn. The safe reading of ``None`` is *not known to be remote*.
+    """
 
     canonical_id: str
     provider_kind: str
     available: bool
+    provider_name: str | None = None
+    is_remote: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,6 +547,12 @@ def _optional(document: Mapping[str, Any], path: str) -> Any:
             return None
         node = node[part]
     return node
+
+
+def _optional_bool(document: Mapping[str, Any], path: str) -> bool | None:
+    """Return a boolean at ``path``, or ``None`` when absent or not a boolean."""
+    value = _optional(document, path)
+    return value if isinstance(value, bool) else None
 
 
 def _optional_int(document: Mapping[str, Any], path: str) -> int | None:
@@ -669,6 +691,8 @@ def parse_generation(document: Mapping[str, Any]) -> GenerationResponse:
             served_context=_optional_int(document, "model.served_context"),
             served_context_source=_optional(document, "model.served_context_source"),
             target_gpu_index=_optional_int(document, "model.target_gpu_index"),
+            provider_name=_optional(document, "model.provider_name"),
+            is_remote=_optional_bool(document, "model.is_remote"),
         ),
         routing=RoutingInfo(
             decision_id=_optional(document, "routing.decision_id"),
@@ -922,11 +946,15 @@ class LoadCoachClient:
         for entry in entries:
             if not isinstance(entry, Mapping):
                 continue
+            remote = entry.get("is_remote")
+            name = entry.get("provider_name")
             result.append(
                 ModelEntry(
                     canonical_id=str(entry.get("canonical_id", "")),
                     provider_kind=str(entry.get("provider_kind", "")),
                     available=bool(entry.get("available", False)),
+                    provider_name=name if isinstance(name, str) and name else None,
+                    is_remote=remote if isinstance(remote, bool) else None,
                 )
             )
         return tuple(result)

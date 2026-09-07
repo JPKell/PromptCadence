@@ -31,6 +31,7 @@ from promptcadence.services.estimates import StepEstimator
 from promptcadence.services.events import TrajectoryEventSink
 from promptcadence.services.explanation import ExplanationBuilder, explanation_store
 from promptcadence.services.loadcoach_status import loadcoach_health_component
+from promptcadence.services.loadcoach_surface import remote_provider_registered
 from promptcadence.services.pricing import PricingCatalog
 from promptcadence.services.records import RecordReader
 from promptcadence.services.tiers import tiers_health_component
@@ -121,6 +122,7 @@ class Runtime:
             estimator=StepEstimator(self.budget, settings, clock=utc_now),
             budget=self.budget,
             clock=utc_now,
+            remote_provider_fact=lambda: remote_provider_registered(self.loadcoach),
         )
         self.records = RecordReader(database)
         # One plant per process (below) owns the tool artifact directory; the explanation's
@@ -162,7 +164,9 @@ class Runtime:
         )
 
     def _tiers_health(self) -> ComponentHealth:
-        return tiers_health_component(self.settings, self.loadcoach)
+        return tiers_health_component(
+            self.settings, self.loadcoach, pricing=self.pricing, now=utc_now()
+        )
 
     def start(self) -> None:
         """Run startup recovery and start the worker threads. Idempotent."""

@@ -212,6 +212,9 @@ class OverridesBody(BaseModel):
     runtime_profile: RuntimeProfileOverrideBody | None = Field(default=None)
     disallow_fallback: bool = Field(default=False)
     require_evidence: bool = Field(default=False)
+    # LoadCoach 1.1 (LA2/LA3): pin an adapter subject; ignore residency in ranking.
+    adapter: str | None = Field(default=None)
+    ignore_residency: bool = Field(default=False)
 
 
 class GenerateBody(BaseModel):
@@ -228,6 +231,9 @@ class GenerateBody(BaseModel):
     overrides: OverridesBody | None = Field(default=None)
     tools: list[ToolDefinitionBody] | None = Field(default=None)
     idempotency_key: str | None = Field(default=None, max_length=128)
+    # LoadCoach 1.1 (ADR-0065 rule 2): the caller's own classification, joined with a serving
+    # adapter's by max(). Optional; absent contributes nothing, which is what PromptCadence sends.
+    data_classification: str | None = Field(default=None)
 
     @model_validator(mode="after")
     def _exactly_one_form(self) -> GenerateBody:
@@ -317,13 +323,20 @@ class RouteBody(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class FakeModel:
-    """The one model the fake serves every generation from."""
+    """A model the fake serves generations from, with LoadCoach 1.1's registration facts.
+
+    ``provider_name`` and ``is_remote`` are the registration's (LC-E1, ADR-0055): carried on the
+    generate response's ``model`` block as the real LoadCoach carries them, and on the ``/models``
+    entry as ADR-0098 asks LoadCoach to render them (1.1.0 does not yet — I2's finding).
+    """
 
     canonical_id: str = "ollama/qwen3:8b@sha256:" + "a" * 64
     provider_kind: str = "ollama"
     model_ref: str = "01FAKEMODEL000000000000000"
     runtime_profile_hash: str = "8f2c" + "0" * 60
     served_context: int = 32768
+    provider_name: str = "ollama"
+    is_remote: bool = False
 
     def as_registry_entry(self) -> dict[str, Any]:
         """The ``GET /models`` entry (api.md §2, LoadCoach ``_model_to_json``)."""
@@ -345,6 +358,21 @@ class FakeModel:
             "declared_capabilities": ["tool_use", "agentic"],
             "first_seen_at": "2026-09-01T00:00:00+00:00",
             "last_seen_at": "2026-09-03T00:00:00+00:00",
+            "provider_name": self.provider_name,
+            "is_remote": self.is_remote,
+        }
+
+    def as_response_block(self, *, omit_subject: bool = False) -> dict[str, Any]:
+        """The generate response's ``model`` block (api.md §4)."""
+        return {
+            "canonical_id": None if omit_subject else self.canonical_id,
+            "model_ref": self.model_ref,
+            "runtime_profile_hash": self.runtime_profile_hash,
+            "served_context": self.served_context,
+            "served_context_source": "configured",
+            "target_gpu_index": 0,
+            "provider_name": self.provider_name,
+            "is_remote": self.is_remote,
         }
 
 
@@ -544,7 +572,13 @@ class FakeLoadCoach:
     uvicorn alike), and a test inspects it from another thread while a generation is held.
     """
 
-    def __init__(self, *, wire: Wire = Wire.INTERIM, model: FakeModel | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        wire: Wire = Wire.INTERIM,
+        model: FakeModel | None = None,
+        remote_model: FakeModel | None = None,
+    ) -> None:
         """Create an empty fake: no profiles, one model, nothing scripted.
 
         Args:
@@ -552,9 +586,13 @@ class FakeLoadCoach:
                 real LoadCoach produces until row H2 — a test that needs the post-0.7.0 shape
                 says so.
             model: The model every generation is attributed to.
+            remote_model: A second registration declaring ``remote = true`` (LC-E1). When given,
+                a generation whose task profile allows remote providers is served by it — the
+                mixed pool roadmap I13 describes — and ``/models`` lists both.
         """
         self.wire = wire
         self.model = model if model is not None else FakeModel()
+        self.remote_model = remote_model
         self.profiles: dict[str, dict[str, Any]] = {}
         self.jobs: dict[str, FakeJob] = {}
         self.requests: list[dict[str, Any]] = []
@@ -688,14 +726,7 @@ class FakeLoadCoach:
                 "tool_calls": [dict(call) for call in gen.tool_calls],
             },
             "reasoning": {"available": False, "summary": None, "source": None},
-            "model": {
-                "canonical_id": None if gen.omit_subject else self.model.canonical_id,
-                "model_ref": self.model.model_ref,
-                "runtime_profile_hash": self.model.runtime_profile_hash,
-                "served_context": self.model.served_context,
-                "served_context_source": "configured",
-                "target_gpu_index": 0,
-            },
+            "model": self.model_for(job.task).as_response_block(omit_subject=gen.omit_subject),
             "routing": {
                 "decision_id": f"01DECISION{job.job_id[-16:]}",
                 "rank": 1,
@@ -715,8 +746,8 @@ class FakeLoadCoach:
             "attempts": [
                 {
                     "attempt": index + 1,
-                    "model": self.model.canonical_id,
-                    "runtime_profile_hash": self.model.runtime_profile_hash,
+                    "model": self.model_for(job.task).canonical_id,
+                    "runtime_profile_hash": self.model_for(job.task).runtime_profile_hash,
                     "rank": 1,
                     "outcome": "completed",
                     "provider_ms": gen.provider_ms,
@@ -772,8 +803,8 @@ class FakeLoadCoach:
             "model": result.get(
                 "model",
                 {
-                    "canonical_id": self.model.canonical_id if result else None,
-                    "model_ref": self.model.model_ref if result else None,
+                    "canonical_id": self.model_for(job.task).canonical_id if result else None,
+                    "model_ref": self.model_for(job.task).model_ref if result else None,
                     "runtime_profile_hash": None,
                     "served_context": None,
                     "served_context_source": None,
@@ -823,6 +854,14 @@ class FakeLoadCoach:
         }
 
     # ---- the generate call ------------------------------------------------------------
+
+    def model_for(self, task: str) -> FakeModel:
+        """The registration a task profile routes to: the remote one when the profile allows it."""
+        profile = self.profiles.get(task, {})
+        constraints = profile.get("constraints", {}) if isinstance(profile, dict) else {}
+        if self.remote_model is not None and bool(constraints.get("allow_remote_providers")):
+            return self.remote_model
+        return self.model
 
     def _next_script(self) -> ScriptedGeneration | ScriptedError:
         with self._lock:
@@ -1090,7 +1129,10 @@ def build_fake_app(fake: FakeLoadCoach) -> FastAPI:
 
     @router.get("/models")
     def models() -> dict[str, Any]:
-        return {"models": [fake.model.as_registry_entry()]}
+        registered = [fake.model.as_registry_entry()]
+        if fake.remote_model is not None:
+            registered.append(fake.remote_model.as_registry_entry())
+        return {"models": registered}
 
     @router.get("/task-profiles")
     def task_profiles() -> dict[str, Any]:

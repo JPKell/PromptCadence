@@ -23,6 +23,10 @@ from starlette.responses import JSONResponse
 from promptcadence.__about__ import __version__
 from promptcadence.domain.errors import ToolNotFoundError
 from promptcadence.domain.trajectory import TrajectoryState
+from promptcadence.services.console import tiers_report
+from promptcadence.services.loadcoach_surface import remote_provider_registered
+from promptcadence.services.runtime import Runtime
+from promptcadence.services.tiers import unpriced_remote_tiers
 from promptcadence.services.tools import isolation_payload
 from promptcadence.web.auth import require_scope
 
@@ -127,6 +131,27 @@ def system_status(request: Request) -> JSONResponse:
         "last_recovery": last_recovery,
     }
     return json_response(payload)
+
+
+@router.get("/tiers", summary="Every configured tier, and whether it can serve right now")
+def tiers(request: Request) -> JSONResponse:
+    """Report the configured tiers with their ceilings and availability (spec §7.1).
+
+    The same report the console's Tiers page renders: a remote tier is available only when
+    LoadCoach has a registration declaring ``remote = true`` and the tier is priced, and an
+    unavailable one names which of the two is unmet (ADR-0098 rule 3). ``read`` scope.
+    """
+    require_scope(request, "read")
+    runtime = request.app.state.runtime
+    if not isinstance(runtime, Runtime):  # pragma: no cover — only outside the lifespan
+        message = "the application is not serving"
+        raise RuntimeError(message)
+    report = tiers_report(
+        runtime.settings,
+        loadcoach_has_remote_provider=remote_provider_registered(runtime.loadcoach),
+        unpriced=unpriced_remote_tiers(runtime.settings, runtime.pricing, at=datetime.now(UTC)),
+    )
+    return json_response(report)
 
 
 @router.get("/tools", summary="List the tool registry, including what was withheld")

@@ -492,15 +492,16 @@ def test_a_budget_overrun_parks_for_scoped_reapproval_under_any_deviation(
 
 
 def test_a_remote_answer_on_a_local_tier_is_a_violation_that_halts(harness: Harness) -> None:
-    """Contract 4: the subject is verified; a foreign provider kind is read as remote."""
+    """Contract 4: the subject is verified against the registration's declared egress class."""
     from tests.fakes.loadcoach_app import FakeModel
 
+    # LoadCoach 1.1: the one registration declares itself remote and every response says so;
+    # the tier that asked was local, so the verified answer is a violation.
     harness.fake.model = FakeModel(
-        canonical_id="openai_compatible/gpt@sha256:" + "b" * 64, provider_kind="openai_compatible"
-    )
-    # The registry still says one kind, so the surface is verifiable; the *answer* names it.
-    harness.fake.model = FakeModel(
-        canonical_id="openai_compatible/gpt@sha256:" + "b" * 64, provider_kind="ollama"
+        canonical_id="openai_compatible/gpt@sha256:" + "b" * 64,
+        provider_kind="openai_compatible",
+        provider_name="openrouter",
+        is_remote=True,
     )
     trajectory_id, state = _claim_and_run(harness)
     assert state is TrajectoryState.HALTED

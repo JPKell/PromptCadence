@@ -39,7 +39,9 @@ from promptcadence.services.console import (
     tools_report,
     trajectories_report,
 )
+from promptcadence.services.loadcoach_surface import remote_provider_registered
 from promptcadence.services.runtime import Runtime
+from promptcadence.services.tiers import unpriced_remote_tiers
 from promptcadence.web.auth import require_scope
 from promptcadence.web.csrf import render_form_page
 from promptcadence.web.rendering import render
@@ -158,10 +160,13 @@ def tiers_page(request: Request) -> HTMLResponse:
     """Every configured tier, its ceiling, and whether it can serve right now."""
     require_scope(request, "read")
     runtime = _runtime(request)
-    # ``False`` until LC-E1 registers a remote provider with LoadCoach (lifecycle §3). Read from
-    # the same place every other reader reads it, so the page cannot disagree with the router
-    # about whether a remote tier can serve.
-    report = tiers_report(runtime.settings, loadcoach_has_remote_provider=False)
+    # Read from LoadCoach, as the loop reads it, so the page cannot disagree with the router
+    # about whether a remote tier can serve (ADR-0098 rule 1).
+    report = tiers_report(
+        runtime.settings,
+        loadcoach_has_remote_provider=remote_provider_registered(runtime.loadcoach),
+        unpriced=unpriced_remote_tiers(runtime.settings, runtime.pricing, at=_now()),
+    )
     return _page("tiers/index.html", page="tiers", report=report)
 
 

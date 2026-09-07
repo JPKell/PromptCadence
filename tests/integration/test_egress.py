@@ -323,8 +323,14 @@ def test_a_remote_provider_answering_a_local_tier_is_a_violation_and_halts() -> 
     the only way to notice is to check the response's subject against the configured provider
     rather than to trust the tier.
     """
+    # LoadCoach 1.1's shape: the registration declares itself remote and every response says so
+    # (ADR-0055 rule 4); the tier that asked was local. Before 1.1 the same halt came from the
+    # foreign-kind reading; a kind the registry never named is now ``subject_unverifiable``.
     remote_answer = FakeModel(
-        canonical_id="openai_compatible/gpt-4o@sha256:" + "b" * 64, provider_kind="ollama"
+        canonical_id="openai_compatible/gpt-4o@sha256:" + "b" * 64,
+        provider_kind="openai_compatible",
+        provider_name="openrouter",
+        is_remote=True,
     )
     for harness in _harness(load_settings().settings, _fake(remote_answer)):
         trajectory_id, state = harness.run()

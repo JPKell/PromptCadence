@@ -34,6 +34,7 @@ from promptcadence.infrastructure.db import models
 from promptcadence.services.budget import BudgetService
 from promptcadence.services.egress import EgressService
 from promptcadence.services.estimates import StepEstimator
+from promptcadence.services.loadcoach_surface import remote_provider_registered
 from promptcadence.services.loop import LoopController, ReconcileOutcome, RunSignals
 from promptcadence.services.pricing import PricingCatalog
 from promptcadence.services.retention import RetentionOutcome, scrub_content
@@ -266,6 +267,7 @@ class TrajectoryWorker:
             egress=self.egress if self.egress is not None else self._default_egress(),
             clock=self.clock,
             tools=self.tools,
+            remote_provider_fact=lambda: remote_provider_registered(self.loadcoach),
         )
 
     def _default_egress(self) -> EgressService:

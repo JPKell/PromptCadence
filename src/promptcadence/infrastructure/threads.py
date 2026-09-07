@@ -197,6 +197,7 @@ def turn_row(
     overhead_ms: float | None = None,
     prompt: tuple[str, str, str] | None = None,
     tool_calls: Sequence[Mapping[str, Any]] | None = None,
+    provider_name: str | None = None,
 ) -> models.Turn:
     """Map a domain turn onto the ``turns`` row, with the host-only columns the row carries.
 
@@ -220,6 +221,7 @@ def turn_row(
     row.loadcoach_job_id = loadcoach_job_id
     row.loadcoach_ms = loadcoach_ms
     row.overhead_ms = overhead_ms
+    row.model_provider_name = provider_name
     if prompt is not None:
         row.prompt_id, row.prompt_version, row.prompt_sha256 = prompt
     if tool_calls:

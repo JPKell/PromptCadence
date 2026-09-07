@@ -369,6 +369,7 @@ class ApprovalService:
         "_database",
         "_estimator",
         "_ids",
+        "_remote_fact",
         "_remote_provider",
         "_settings",
         "_sink",
@@ -385,6 +386,7 @@ class ApprovalService:
         clock: Callable[[], datetime],
         id_factory: Callable[[], str] = new_id,
         loadcoach_has_remote_provider: bool = False,
+        remote_provider_fact: Callable[[], bool] | None = None,
     ) -> None:
         """Bind the service to the process's handles.
 
@@ -407,6 +409,7 @@ class ApprovalService:
         self._clock = clock
         self._ids = id_factory
         self._remote_provider = loadcoach_has_remote_provider
+        self._remote_fact = remote_provider_fact
 
     # ---- the plan verdict, on the loop's session ---------------------------------------------
 
@@ -1007,7 +1010,9 @@ class ApprovalService:
             session,
             view,
             self._settings,
-            loadcoach_has_remote_provider=self._remote_provider,
+            loadcoach_has_remote_provider=(
+                self._remote_provider if self._remote_fact is None else self._remote_fact()
+            ),
         )
 
     def _latest_request(

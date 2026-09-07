@@ -63,6 +63,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   transport boundary and solving two runs for two unknowns; the SSE row is measured over a real
   loopback socket, where the poll quantisation is visible; the 500-turn materialization and the
   100-trajectory recovery are built synthetically from rows. Excluded from the default gate.
+- **The remote-provider fact is read from LoadCoach, never assumed** (P9, ADR-0098 — I13's
+  recorded-transport half). `ModelEntry` and `ModelInfo` carry LoadCoach 1.1's `provider_name`
+  and `is_remote`; the response's declared egress class is now the verification of the execution
+  subject on a mixed registry (a kind the registry never named is `subject_unverifiable`), and
+  the single-provider rule stays for a response that declares nothing. The loop and the approval
+  service read the fact through `remote_provider_registered` — once per trajectory — instead of a
+  constructor constant; the turn row records `model_provider_name`. **Found:** LoadCoach 1.1.0
+  renders `is_remote` on the generate response but not in `GET /models`, so on that version a
+  remote registration is invisible before its first turn and remote tiers stay
+  `loadcoach_has_no_remote_provider`; the render is LoadCoach's to add.
+- **`GET /tiers`** (spec §7.1, absent until now): every configured tier with its ceiling and
+  availability — the report the console's Tiers page renders. A remote tier is unavailable for
+  exactly one recorded reason, `loadcoach_has_no_remote_provider` or `unpriced`; the `tiers`
+  health component, `doctor` and `tiers check` say the same in the same words.
+- **The fake LoadCoach can play a mixed registry** (`remote_model=`): a task profile that allows
+  remote providers is served by the remote registration, `/models` lists both, and the response's
+  `model` block carries the registration's name and declared egress class. The vendored LoadCoach
+  OpenAPI snapshot is refreshed to `93063bd` (1.1: optional `data_classification` and `adapter`).
+
+### Known limitations
+- **The live remote run (roadmap I13's second half) is deferred by ADR-0098.** Remote tiers refuse
+  honestly until LoadCoach has a registration declaring `remote = true` and the tier is priced.
+  The recorded-transport journey is in CI (`tests/integration/test_remote_tier.py`); the live
+  run's command sequence is in `docs/tiers.md`.
 - **Context compaction** (P8, lifecycle §7). Before every turn the transcript is estimated against
   `threshold × context_budget_tokens`, and above it CutCtx plans a compaction over the configured
   `[compaction] policy_chain`. The threshold and the compaction target are **one figure**:

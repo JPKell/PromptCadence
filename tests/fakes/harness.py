@@ -9,6 +9,7 @@ approval-timeout tests move it by hand through :meth:`LoopHarness.advance`.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,7 +18,9 @@ from fastapi.testclient import TestClient
 from tests.conftest import budget_and_estimator, egress_for
 from tests.fakes.loadcoach_app import (
     FakeLoadCoach,
+    FakeModel,
     ScriptedGeneration,
+    Wire,
     build_fake_app,
     shipped_profiles,
 )
@@ -31,6 +34,7 @@ from promptcadence.infrastructure.loadcoach import LoadCoachClient
 from promptcadence.services.approvals import ApprovalService
 from promptcadence.services.database import MIGRATIONS_LOCATION, Database
 from promptcadence.services.events import TrajectoryEventSink
+from promptcadence.services.loadcoach_surface import remote_provider_registered
 from promptcadence.services.loop import LoopController, RunSignals
 from promptcadence.services.pricing import PricingCatalog
 from promptcadence.services.tools import ToolPlant
@@ -93,7 +97,7 @@ class LoopHarness:
         fake: FakeLoadCoach,
         *,
         pricing: PricingCatalog | None = None,
-        remote_provider: bool = False,
+        remote_provider: bool | None = None,
         fetch_transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.settings = settings
@@ -127,8 +131,15 @@ class LoopHarness:
             estimator=self.estimator,
             budget=self.budget,
             clock=self.clock,
-            loadcoach_has_remote_provider=remote_provider,
+            loadcoach_has_remote_provider=bool(remote_provider),
+            remote_provider_fact=self._remote_fact(),
         )
+
+    def _remote_fact(self) -> Callable[[], bool] | None:
+        """``None`` pins the fact to the constructor's value; otherwise it is read from the fake."""
+        if self.remote_provider is not None:
+            return None
+        return lambda: remote_provider_registered(self.loadcoach)
 
     def controller(self, owner: str = "host:1/0") -> LoopController:
         return LoopController(
@@ -143,7 +154,8 @@ class LoopHarness:
             clock=self.clock,
             tools=self.tools,
             approvals=self.approvals,
-            loadcoach_has_remote_provider=self.remote_provider,
+            loadcoach_has_remote_provider=bool(self.remote_provider),
+            remote_provider_fact=self._remote_fact(),
         )
 
     def submit(self, **overrides: object) -> str:
@@ -202,18 +214,22 @@ class open_harness:  # noqa: N801 — a context manager, used as one
         *,
         profiles: tuple[str, ...] = PLANNER_PROFILES,
         pricing: PricingCatalog | None = None,
-        remote_provider: bool = False,
+        remote_provider: bool | None = None,
         fetch_transport: httpx.BaseTransport | None = None,
+        remote_model: FakeModel | None = None,
+        wire: Wire = Wire.INTERIM,
     ) -> None:
         self._settings = settings
         self._profiles = profiles
         self._pricing = pricing
         self._remote_provider = remote_provider
         self._fetch_transport = fetch_transport
+        self._remote_model = remote_model
+        self._wire = wire
         self._engine: Any = None
 
     def __enter__(self) -> LoopHarness:
-        fake = FakeLoadCoach()
+        fake = FakeLoadCoach(wire=self._wire, remote_model=self._remote_model)
         fake.register_profile(*shipped_profiles(*self._profiles))
         self._engine = temporary_sqlite()
         engine = self._engine.__enter__()

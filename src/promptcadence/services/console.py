@@ -167,12 +167,19 @@ def approvals_report(
     }
 
 
-def tiers_report(settings: Settings, *, loadcoach_has_remote_provider: bool) -> dict[str, Any]:
+def tiers_report(
+    settings: Settings,
+    *,
+    loadcoach_has_remote_provider: bool,
+    unpriced: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     """Every configured tier, its ceiling and whether it can serve right now.
 
     Availability is a fact about the deployment rather than about the configuration: a remote tier
-    is unavailable until LoadCoach has a remote provider registered (lifecycle §3), and saying so
-    beside the tier is the difference between "misconfigured" and "not wired up yet".
+    is unavailable until LoadCoach has a remote provider registered (lifecycle §3) and its price
+    list holds a record claiming now (spec §11 contract 5) — one recorded reason, in that order
+    (ADR-0098 rule 3) — and saying so beside the tier is the difference between "misconfigured"
+    and "not wired up yet".
     """
     snapshot = tier_snapshot_from_settings(settings)
     return {
@@ -185,11 +192,16 @@ def tiers_report(settings: Settings, *, loadcoach_has_remote_provider: bool) -> 
                 **tier.as_canonical(),
                 "is_remote": tier.is_remote,
                 "effective_max_classification": tier.effective_max_classification.value,
-                "available": (not tier.is_remote) or loadcoach_has_remote_provider,
+                "available": (not tier.is_remote)
+                or (loadcoach_has_remote_provider and tier.name not in unpriced),
                 "unavailable_reason": (
                     None
-                    if (not tier.is_remote) or loadcoach_has_remote_provider
+                    if not tier.is_remote
                     else "loadcoach_has_no_remote_provider"
+                    if not loadcoach_has_remote_provider
+                    else "unpriced"
+                    if tier.name in unpriced
+                    else None
                 ),
             }
             for tier in snapshot.tiers

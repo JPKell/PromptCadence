@@ -10,6 +10,7 @@ explain has failed at its one job.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from mirrorwall import ComponentHealth, ComponentStatus, health_payload
@@ -19,6 +20,7 @@ from promptcadence.config import ConfigurationError, load_settings
 from promptcadence.infrastructure.loadcoach import LoadCoachClient
 from promptcadence.services.database import Database, database_health_component
 from promptcadence.services.loadcoach_status import loadcoach_health_component
+from promptcadence.services.pricing import PricingCatalog
 from promptcadence.services.tiers import tiers_health_component
 from promptcadence.services.tools import ToolPlant, tools_health_component
 
@@ -67,7 +69,13 @@ def _components() -> list[ComponentHealth]:
         api_key_file=settings.loadcoach.api_key_file,
     )
     try:
-        tiers_component = tiers_health_component(settings, client)
+        pricing: PricingCatalog | None = PricingCatalog.from_settings(settings)
+    except ConfigurationError:
+        pricing = None  # the unpriced half stays unknown; the tier's pricing_file is the finding
+    try:
+        tiers_component = tiers_health_component(
+            settings, client, pricing=pricing, now=datetime.now(UTC)
+        )
     finally:
         client.close()
     try:

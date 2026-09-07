@@ -95,6 +95,18 @@
         "additionalProperties": false,
         "description": "``POST /generate``'s request body.\n\nExactly one of ``prompt`` (with an optional ``system``) or ``messages`` is supplied; supplying\nboth is a ``VALIDATION_ERROR``, because a request that says two different things about what\nthe model should see has no correct interpretation.",
         "properties": {
+          "data_classification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The caller's own data classification. Joined with any serving adapter's by max() (ADR-0065 rule 2). Optional: absent contributes nothing, which is what every 1.0 caller sends.",
+            "title": "Data Classification"
+          },
           "idempotency_key": {
             "anyOf": [
               {
@@ -217,6 +229,18 @@
             "pattern": "^(interactive|normal|background|batch)$",
             "title": "Class",
             "type": "string"
+          },
+          "data_classification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The caller's own data classification. Joined with any serving adapter's by max() (ADR-0065 rule 2). Optional: absent contributes nothing, which is what every 1.0 caller sends.",
+            "title": "Data Classification"
           },
           "idempotency_key": {
             "anyOf": [
@@ -403,9 +427,27 @@
         "additionalProperties": false,
         "description": "Routing \u00a710's overrides, as far as this phase implements them.",
         "properties": {
+          "adapter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An adapter's manifest name. Selects, like `model`: hard constraints still apply and a pin that cannot be honoured is refused by name (ADR-0064 rule 4).",
+            "title": "Adapter"
+          },
           "disallow_fallback": {
             "default": false,
             "title": "Disallow Fallback",
+            "type": "boolean"
+          },
+          "ignore_residency": {
+            "default": false,
+            "description": "Zero both residency terms for this call (routing \u00a76.1); recorded.",
+            "title": "Ignore Residency",
             "type": "boolean"
           },
           "model": {
@@ -744,7 +786,7 @@
   },
   "info": {
     "title": "LoadCoach",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "openapi": "3.1.0",
   "paths": {

@@ -552,6 +552,8 @@ class LoopController:
         "_ids",
         "_loadcoach",
         "_planner",
+        "_remote_by_trajectory",
+        "_remote_fact",
         "_remote_provider",
         "_render",
         "_settings",
@@ -582,6 +584,7 @@ class LoopController:
         explanations: ExplanationBuilder | None = None,
         prompt_renderer: Callable[..., RenderedPrompt] = render,
         loadcoach_has_remote_provider: bool = False,
+        remote_provider_fact: Callable[[], bool] | None = None,
     ) -> None:
         """Bind the controller to one worker's identity and the process's handles.
 
@@ -609,9 +612,14 @@ class LoopController:
                 after the transition (ADR-0093).
             prompt_renderer: How prompt records are rendered; injected so a test can watch the
                 step framing without a pack on disk.
-            loadcoach_has_remote_provider: Whether LoadCoach has a remote provider registered —
-                ``False`` until LC-E1 (lifecycle §3). See
-                :func:`promptcadence.services.governance.tier_policy_of`.
+            loadcoach_has_remote_provider: Whether LoadCoach has a remote provider registered,
+                when a test wants to pin the fact. Ignored when ``remote_provider_fact`` is given.
+            remote_provider_fact: How the fact is read from LoadCoach (ADR-0098 rule 1) — the
+                served process passes ``remote_provider_registered`` over its own client
+                (:mod:`promptcadence.services.loadcoach_surface`). Read once per trajectory
+                this controller governs, so a
+                registration made while a trajectory runs is seen at the next one, and a
+                re-minted intent cannot disagree with its row mid-run.
         """
         self._database = database
         self._sink = sink
@@ -624,6 +632,8 @@ class LoopController:
         self._clock = clock if clock is not None else _utc_now
         self._ids = id_factory
         self._remote_provider = loadcoach_has_remote_provider
+        self._remote_fact = remote_provider_fact
+        self._remote_by_trajectory: dict[str, bool] = {}
         self._surface_loader = surface_loader
         self._threads = SqlThreadStore(database.sessions)
         self._tools = tools if tools is not None else ToolPlant(settings)
@@ -639,6 +649,7 @@ class LoopController:
                 clock=self._clock,
                 id_factory=id_factory,
                 loadcoach_has_remote_provider=loadcoach_has_remote_provider,
+                remote_provider_fact=remote_provider_fact,
             )
         )
         self._planner = (
@@ -927,9 +938,28 @@ class LoopController:
     # Governance reconstruction
     # ----------------------------------------------------------------------------------------
 
+    def _remote_provider_for(self, trajectory_id: str) -> bool:
+        """The remote-provider fact this trajectory is governed by (ADR-0098 rule 1).
+
+        Read from LoadCoach on the trajectory's first governance load under this controller and
+        held for its life here, so every intent re-minted during the run sees the same fact its
+        row was minted under. A pinned value (a test's) is returned as given.
+        """
+        if self._remote_fact is None:
+            return self._remote_provider
+        known = self._remote_by_trajectory.get(trajectory_id)
+        if known is None:
+            if len(self._remote_by_trajectory) >= 1_000:
+                self._remote_by_trajectory.clear()
+            known = self._remote_by_trajectory[trajectory_id] = self._remote_fact()
+        return known
+
     def _context(self, session: Session, view: TrajectoryView) -> GovernanceContext:
         return load_context(
-            session, view, self._settings, loadcoach_has_remote_provider=self._remote_provider
+            session,
+            view,
+            self._settings,
+            loadcoach_has_remote_provider=self._remote_provider_for(view.trajectory_id),
         )
 
     def _load(self, trajectory_id: str, *, expected: TrajectoryState) -> _Loaded:
@@ -2724,6 +2754,7 @@ class LoopController:
                     loadcoach_ms=response.timing.total_ms,
                     overhead_ms=overhead_ms,
                     tool_calls=response.tool_calls,
+                    provider_name=subject.provider_name,
                 )
             )
             events.append(

@@ -219,7 +219,10 @@ def test_a_deterministic_refusal_is_never_repeated(
 def test_a_deviation_halt_is_never_repeated(harness: LoopHarness) -> None:
     """A violation is a statement about what executed; repeating it would launder the finding."""
     harness.fake.model = FakeModel(
-        canonical_id="openai_compatible/gpt@sha256:" + "b" * 64, provider_kind="ollama"
+        canonical_id="openai_compatible/gpt@sha256:" + "b" * 64,
+        provider_kind="openai_compatible",
+        provider_name="openrouter",
+        is_remote=True,
     )
     trajectory_id = harness.submit_bypass()
     assert harness.claim_and_run(trajectory_id) is TrajectoryState.HALTED
