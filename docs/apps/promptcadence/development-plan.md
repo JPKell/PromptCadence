@@ -4,6 +4,8 @@
 P1–P2 need only `baseaicore>=0.4.1` and the published foundation packages; P4–P8 consume the four
 new packages as each publishes 0.1.0.
 **Target:** `promptcadence 0.9-beta` at the end of P7 (M11), `promptcadence 1.0.0` at the end of P9 (M12).
+**Reached:** `0.9.0b0` at row G1 (2026-09-04) and `1.0.0` at row I2 (2026-09-06). `1.1.0`
+(runtime settings) is published; `1.2.0` (the `settings` CLI verb) is committed and prepared.
 
 The build order enforces two principles. First, **governance grows inward-out**: the bypass loop —
 the simplest thing that executes a turn — is built first, and every subsequent phase adds a
