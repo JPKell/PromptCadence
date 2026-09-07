@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Changed
+
+- `mirrorwall` floor raised from `0.2` to `0.2.2`: the two earlier releases pin `setspec<0.5`,
+  below this application's own floor, so the declared lowest range could never resolve (found by
+  the cross-repository compatibility matrix, row L6).
+
 ## [1.3.1] — 2026-09-07
 
 ### Added
