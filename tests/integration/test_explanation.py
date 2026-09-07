@@ -39,15 +39,24 @@ _ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 _ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 _SHA = re.compile(r"^(sha256:)?[0-9a-f]{64}$")
 
+# `duration_ms` is a real wall-clock measurement — `int(round(elapsed))` over ToolYard's monotonic
+# source — so it is 0 on a machine that runs a tool call in under a millisecond and 1 on one that
+# does not. It is masked by *name* because it is an `int`, where the sibling timings
+# (`loadcoach_ms`, `overhead_ms`) are floats and the branch below already catches them by type.
+# Pinning it made this golden a benchmark of the runner rather than a check on the document.
+_TIMING_KEYS = frozenset({"duration_ms"})
+
 
 def _call(name: str, arguments: str) -> dict[str, object]:
     return {"call_index": 0, "id": "c0", "name": name, "arguments_fragment": arguments}
 
 
 def _mask(value: Any) -> Any:
-    """Identifiers, instants and digests become placeholders; structure and everything else stay."""
+    """Identifiers, instants, digests and timings become placeholders; structure stays."""
     if isinstance(value, dict):
-        return {key: _mask(item) for key, item in value.items()}
+        return {
+            key: ("<ms>" if key in _TIMING_KEYS else _mask(item)) for key, item in value.items()
+        }
     if isinstance(value, list):
         return [_mask(item) for item in value]
     if isinstance(value, str):

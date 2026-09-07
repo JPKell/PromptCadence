@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Fixed
+- **The trajectory-explanation golden no longer pins a wall-clock measurement.** `duration_ms` on
+  a tool call is `int(round(elapsed))` over a real monotonic source, so it is `0` on a machine that
+  completes the call in under a millisecond and `1` on one that does not. The golden's mask turns
+  timings into `<ms>` by *type*, which catches the float siblings (`loadcoach_ms`, `overhead_ms`)
+  and missed this one because it is an `int` — so the document's shape check was also a benchmark
+  of whatever ran it. It failed for the first time on CI's Python 3.12 job at 1.0.1, where the
+  runner was simply slower; the version was incidental. `duration_ms` is now masked by name and the
+  golden regenerated, and the file is otherwise byte-identical. Test-only; no shipped behaviour
+  changes, and the six masked values are the only difference.
+
 ## [1.0.1] — 2026-09-06
 
 A maintenance release: the two vendored LoadCoach snapshots move to LoadCoach 1.1.1, and I2's two
