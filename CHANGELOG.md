@@ -6,6 +6,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Fixed
+- **A turn that completed with no text says so in the console** rather than rendering a blank
+  cell. `content_cell` already separated a scrubbed body from a retained one; a genuinely empty
+  body fell through to the retained branch and rendered as nothing, which beside `Finish: stop`
+  and `Output: 12` reads as a broken render rather than as the fact it is. It now renders *no
+  text*, muted, with the reason on hover. `domain.explanation.content_or_removed` already held the
+  principle — an empty string is content, not an absence — and the explanation document was always
+  honest; only the HTML was silent. This is the operator-visible half of the F2 decision below.
+
+### Known limitations
+- **An empty declared `stop` completes a step, and that is contract 6 working** (I2's verification,
+  finding F2). A provider that declares `finish_reason=stop` and returns no text completes the
+  step, because contract 6 is a *wire* contract — the declared reason decides, and nothing else
+  does. Named here rather than changed, and deliberately so. Making the answer's text an input to
+  the decision would let the model's output decide the harness's control flow, which is the one
+  thing this suite refuses everywhere; "empty" has no single meaning across a text step and a
+  structured one (`{}` is valid JSON and an empty plan, which I3 measured on `tools.plan`); and
+  the retryable set at G3 excludes declared finishes on purpose. The honest surface is the
+  explanation, not a halt — see the console fix above, which is what this row shipped instead.
+
 ### Changed
 - **The two vendored LoadCoach snapshots are LoadCoach 1.1.1's**, re-copied from `2a7ac58`
   (`tests/contract/loadcoach_openapi.json`, `tests/contract/loadcoach_task_profiles.toml`) with

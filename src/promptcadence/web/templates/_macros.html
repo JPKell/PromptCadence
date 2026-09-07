@@ -35,9 +35,13 @@
 
 {% macro content_cell(content) -%}
 {# Model output. Rendered as text, always escaped, never as markup, and a scrubbed body says so
-   rather than looking like an empty turn. #}
+   rather than looking like an empty turn. A turn that genuinely said nothing says *that*: an
+   empty string is content, not an absence (`domain.explanation.content_or_removed`), and a blank
+   cell beside `finish_reason=stop` reads as a broken render rather than as the fact it is. #}
 {%- if content.removed -%}
 <span class="muted">content removed by retention</span>
+{%- elif not content.text -%}
+<span class="muted" title="the provider declared a finish and returned no text">no text</span>
 {%- else -%}
 {{ content.text }}
 {%- endif -%}
