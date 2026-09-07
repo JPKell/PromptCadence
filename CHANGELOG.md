@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-09-07
+
 ### Added
 
 - `tests/unit/test_every_command_has_help.py`, walking `typer.main.get_command(app)`
