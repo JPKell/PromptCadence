@@ -38,6 +38,7 @@ from promptcadence.services.loadcoach_surface import remote_provider_registered
 from promptcadence.services.loop import LoopController, ReconcileOutcome, RunSignals
 from promptcadence.services.pricing import PricingCatalog
 from promptcadence.services.retention import RetentionOutcome, scrub_content
+from promptcadence.services.settings import apply_runtime_settings, read_runtime_settings
 from promptcadence.services.tools import ToolPlant
 
 if TYPE_CHECKING:
@@ -246,10 +247,44 @@ class TrajectoryWorker:
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     poll_interval_seconds: float = 0.5
     controller_factory: Callable[[str], LoopController] | None = None
+    _configured: Settings = field(init=False)
     _threads: list[threading.Thread] = field(default_factory=list, init=False)
     _stop: threading.Event = field(default_factory=threading.Event, init=False)
     _wake: threading.Event = field(default_factory=threading.Event, init=False)
     last_recovery: RecoverySummary | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        """Snapshot the configured settings before anything can apply a stored value over them.
+
+        :attr:`settings` is the process's *mutable* settings object — the served process shares
+        one between this worker's controllers, the approval service and the trajectory service,
+        and :meth:`refresh_runtime_settings` writes the effective values onto it in place. The
+        fallback for a key with no usable stored row is therefore taken from this copy, never
+        from the object that has already been written to.
+        """
+        self._configured = self.settings.model_copy(deep=True)
+
+    def refresh_runtime_settings(self, controller: LoopController | None = None) -> dict[str, Any]:
+        """Re-read the runtime-changeable settings and apply them to this process (spec §12).
+
+        Called at the lease-reap cadence, which is this application's analogue of LoadCoach's
+        flags cadence: a ``PUT /settings`` from the web layer reaches the running loop within one
+        ``lease_seconds``. The values are written onto the shared settings object, so the
+        controllers, the approval service and the retention sweep all see the same change.
+
+        Args:
+            controller: The calling thread's controller, whose planner caches its own retry
+                budget; ``None`` applies the settings-object half only.
+
+        Returns:
+            The effective values, as :func:`~promptcadence.services.settings.read_runtime_settings`
+            reports them.
+        """
+        effective = read_runtime_settings(self.database, settings=self._configured)
+        apply_runtime_settings(self.settings, effective)
+        if controller is not None:
+            controller.apply_runtime_settings(effective)
+        return effective
 
     def controller(self, owner: str) -> LoopController:
         """The controller a thread runs with."""
@@ -351,6 +386,10 @@ class TrajectoryWorker:
                 )
                 for trajectory_id in summary.resumed:
                     self._run_held(controller, trajectory_id)
+                # The runtime-changeable settings ride the same cadence (spec §12): a
+                # ``PUT /settings`` reaches this thread within one ``lease_seconds``, and the
+                # sweep below therefore runs on the retention the operator just set.
+                self.refresh_runtime_settings(controller)
                 # Content retention rides the same cadence: finished work loses its words
                 # ``content_retention_hours`` after it finished, never before (spec §14).
                 self.sweep_retention(controller, now)

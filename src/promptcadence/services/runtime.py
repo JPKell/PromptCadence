@@ -50,7 +50,13 @@ __all__ = ["Runtime", "build_runtime"]
 
 
 class Runtime:
-    """The handles this process owns: storage, events, the LoadCoach client and the worker."""
+    """The handles this process owns: storage, events, the LoadCoach client and the worker.
+
+    :attr:`settings` is the **configured** settings — the file, environment and CLI layers as
+    :func:`~promptcadence.config.load_settings` resolved them. The handles below it run on a copy
+    that the worker writes the runtime-changeable values onto (spec §12); keeping the two apart is
+    what lets ``GET /settings`` report what was configured beside what is effective.
+    """
 
     __slots__ = (
         "_database",
@@ -73,7 +79,8 @@ class Runtime:
         """Open storage and build the handles. Never raises for an unreachable LoadCoach.
 
         Args:
-            settings: The validated configuration.
+            settings: The validated configuration. Kept as-is on :attr:`settings`; the handles
+                built here take a copy, for the reason the class docstring gives.
             loadcoach_http: An httpx client to reach LoadCoach through, or ``None`` to build one
                 from ``[loadcoach]``. Injected so a test hands over Starlette's ``TestClient``
                 on the fake LoadCoach and the whole loop runs in-process, without a socket.
@@ -85,6 +92,13 @@ class Runtime:
                 missing, unreadable, or holds a record that is not a usable price observation.
         """
         self.settings = settings
+        # Everything below runs on a **copy**: the worker writes the runtime-changeable values
+        # onto it in place at the lease-reap cadence (spec §12), so the controllers, the approval
+        # service and the trajectory service all read one object and cannot disagree about a key
+        # the operator just changed. :attr:`settings` stays the configured layers as loaded, which
+        # is what ``GET /settings`` reports as ``configured`` beside what the process is running
+        # on — a document generated from an already-applied object could not tell the two apart.
+        settings = settings.model_copy(deep=True)
         database_url = settings.storage.database_url
         if database_url is None:  # pragma: no cover — StorageSettings always fills this in
             message = "no database_url configured"

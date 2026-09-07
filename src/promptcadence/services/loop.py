@@ -692,9 +692,32 @@ class LoopController:
         return self._explanations
 
     @property
+    def planner(self) -> Planner:
+        """The planner this controller drafts through, whose retry budget is runtime-changeable."""
+        return self._planner
+
+    @property
     def approvals(self) -> ApprovalService:
         """The approval service this controller parks through and the worker expires through."""
         return self._approvals
+
+    def apply_runtime_settings(self, effective: Mapping[str, Any]) -> None:
+        """Take the runtime-changeable values the worker just read (spec §12).
+
+        Only the planner is touched. Everything else this controller reads — the step retry
+        budget, the round-trip cap, the compaction threshold, and the approval service's own
+        ``max_turns`` — is read from the shared ``Settings`` object each time it is needed, and
+        the worker has already written the effective values onto that object
+        (:func:`promptcadence.services.settings.apply_runtime_settings`). The planner is the one
+        holder that cached its number at construction.
+
+        Args:
+            effective: What :func:`~promptcadence.services.settings.read_runtime_settings`
+                returned. A key the planner does not hold is ignored.
+        """
+        retries = effective.get("planning.corrective_retries")
+        if isinstance(retries, int):
+            self._planner.corrective_retries = retries
 
     # ----------------------------------------------------------------------------------------
     # Claiming

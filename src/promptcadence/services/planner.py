@@ -193,6 +193,29 @@ class Planner:
         self._render = prompt_renderer
 
     @property
+    def corrective_retries(self) -> int:
+        """The retry budget, which is runtime-changeable (spec §12).
+
+        Settable because the planner caches the number rather than reading it per draft: the
+        worker writes the effective value here at the lease-reap cadence, so a
+        ``PUT /settings`` reaches the *next* draft rather than the next restart. A draft already
+        under way keeps the budget it started with.
+        """
+        return self._corrective_retries
+
+    @corrective_retries.setter
+    def corrective_retries(self, value: int) -> None:
+        """Set the retry budget.
+
+        Raises:
+            ValidationError: The budget is negative.
+        """
+        if value < 0:
+            message = "corrective_retries must not be negative"
+            raise ValidationError(message, details={"field": "corrective_retries"})
+        self._corrective_retries = value
+
+    @property
     def max_attempts(self) -> int:
         """One draft plus the corrective retries."""
         return 1 + self._corrective_retries
