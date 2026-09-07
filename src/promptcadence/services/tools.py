@@ -522,6 +522,9 @@ class ToolPlant:
             )
         else:
             return None
+        if name in _READ_TOOLS and self._read_roots:
+            spec, handler = pair
+            pair = (_naming_read_roots(spec, self._read_roots), handler)
         if name in self._redact_args:
             spec, handler = pair
             pair = (_redacting(spec), handler)
@@ -715,6 +718,45 @@ def _withheld(name: str, cause: str, description: str) -> ToolCatalogEntry:
     """Build the catalog entry for a configured tool that was not registered."""
     return ToolCatalogEntry(
         name=name, description=description, registered=False, withheld_cause=cause
+    )
+
+
+_READ_TOOLS: Final[frozenset[str]] = frozenset({"read_file", "list_dir"})
+"""The tools whose containment admits ``[tools] read_roots`` — the ones whose description must
+say so. A write tool's containment is the workspace alone, and its description already says that."""
+
+
+def _naming_read_roots(spec: ToolSpec, roots: Sequence[Path]) -> ToolSpec:
+    """Return the same declaration with the configured read roots named in its description.
+
+    ToolYard's shipped description says a path outside the workspace is refused, which is true of
+    a plant with no read roots and misleading with them: an obedient model then refuses to read
+    what the operator configured it to read, and a bold one guesses the path (I2's verification,
+    finding F1). The description is caller-written prompt content (G2 §10); the plant knows its
+    roots; so the plant says them. Rebuilt from the spec's own fields, as :func:`_redacting` is.
+
+    Args:
+        spec: The shipped declaration.
+        roots: The absolute read-only roots, as validated at startup.
+
+    Returns:
+        The declaration with one sentence appended naming each root, in configuration order.
+    """
+    listed = ", ".join(str(root) for root in roots)
+    sentence = (
+        f" Also readable, by absolute path: {listed} (read-only roots the operator configured; "
+        "nothing else outside the workspace is)."
+    )
+    return ToolSpec(
+        spec.name,
+        spec.description + sentence,
+        spec.args_schema,
+        spec.result_schema,
+        spec.risk_class,
+        spec.egress,
+        redact_args=spec.redact_args,
+        path_args=spec.path_args,
+        requires_isolation=spec.requires_isolation,
     )
 
 

@@ -272,6 +272,8 @@ async def stream_trajectory(request: Request, trajectory_id: str) -> StreamingRe
         last_event_id=request.headers.get("last-event-id"),
         generator=GENERATOR,
         heartbeat_seconds=15.0,
-        poll_interval_seconds=0.02,
+        # 2 ms, LoadCoach's F12 figure: at 20 ms the added latency per event was a uniform
+        # 0–20 ms (median 10 ms) against spec §15's 5 ms target; the poll is the whole cost.
+        poll_interval_seconds=0.002,
         terminal_events=TERMINAL_EVENTS,
     )

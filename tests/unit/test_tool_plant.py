@@ -363,3 +363,25 @@ def test_health_never_reports_unavailable() -> None:
     for enabled in ("read_file", "run_command", "read_file,run_command,http_fetch"):
         component = tools_health_component(plant(PROMPTCADENCE_TOOLS__ENABLED=enabled))
         assert component.status.value in {"ok", "degraded"}
+
+
+def test_the_read_tools_name_the_configured_read_roots_and_the_write_tool_does_not(
+    tmp_path: Path,
+) -> None:
+    """I2's verification finding F1: a model told "outside the workspace is refused" refuses
+    the very directory the operator configured it to read. The plant knows its roots; it says so.
+    """
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    without = plant()
+    with_roots = plant(PROMPTCADENCE_TOOLS__READ_ROOTS=str(notes))
+    for name in ("read_file", "list_dir"):
+        plain = without.entry(name)
+        named = with_roots.entry(name)
+        assert plain is not None and named is not None
+        assert str(notes) not in plain.description
+        assert named.description.startswith(plain.description), "ToolYard's text stays first"
+        assert f"Also readable, by absolute path: {notes}" in named.description
+        assert named.parameters == plain.parameters, "the schema is not what changed"
+    writer = with_roots.entry("write_file")
+    assert writer is not None and str(notes) not in writer.description
