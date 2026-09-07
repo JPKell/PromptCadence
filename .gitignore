@@ -84,6 +84,10 @@ Thumbs.db
 /artifacts/
 /exports/
 
+# Test fixtures are committed assets, not a data root (they must exist on a fresh CI checkout).
+!tests/fixtures/databases/
+!tests/fixtures/databases/*.sqlite3
+
 # ---- Secrets ----
 # Per Security Standards §8: secrets are never committed. Config files may
 # only name where a secret comes from (*_env / *_file), never the value.

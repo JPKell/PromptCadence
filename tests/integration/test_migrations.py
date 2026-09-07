@@ -6,13 +6,15 @@ phase does not require editing an assertion that was never about the revision nu
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
 from commissioner.sql import DEFAULT_TABLE_PREFIX as EGRESS_TABLE_PREFIX
 from loadledger.sql import DEFAULT_TABLE_PREFIX
 from sqlalchemy import inspect, text
-from weightsdb import MigrationRunner, restore
+from weightsdb import DatabaseError, MigrationRunner, create_engine_for, restore
+from weightsdb.backup import backup as take_backup
 from weightsdb.testing import temporary_postgres, temporary_sqlite
 
 from promptcadence.infrastructure.db.models import EGRESS_TABLES, LEDGER_TABLES, Base
@@ -146,6 +148,50 @@ def test_backup_then_restore_round_trips_the_schema(tmp_path: Path) -> None:
         assert runner.is_at_head()
     finally:
         verify.close()
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql"])
+def test_backup_round_trips_or_refuses_restore_on_both_dialects(
+    dialect: str, tmp_path: Path
+) -> None:
+    """Database standards §7 on ``weightsdb.testing`` directly (M9_AUDIT.md Group 3, item O4).
+
+    The round trip above builds its engines through this file's own ``Database.from_url``, which
+    predates ``weightsdb.testing`` shipping ``temporary_sqlite``/``temporary_postgres`` as
+    supported test API. This is the one test in the file built on those fixtures directly.
+    PostgreSQL skips honestly with no server configured, the same as the ``db-matrix`` CI job's
+    own gate.
+    """
+    context = temporary_sqlite() if dialect == "sqlite" else temporary_postgres()
+    with context as engine:
+        MigrationRunner(engine, script_location=MIGRATIONS_LOCATION).upgrade(backup=False)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO settings (key, value_json, updated_at) "
+                    "VALUES ('dialect-row', '1', '2026-08-26 00:00:00')"
+                )
+            )
+        destination = tmp_path / ("backup.sqlite3" if dialect == "sqlite" else "backup.dump")
+        if dialect == "postgresql" and shutil.which("pg_dump") is None:
+            pytest.skip("pg_dump is not on PATH")
+        result = take_backup(engine, destination)
+        assert result.size_bytes > 0
+
+        if dialect == "sqlite":
+            with engine.begin() as connection:
+                connection.execute(text("DELETE FROM settings WHERE key = 'dialect-row'"))
+            restore(engine, destination, confirm=True)
+            with engine.connect() as connection:
+                assert (
+                    connection.execute(
+                        text("SELECT value_json FROM settings WHERE key = 'dialect-row'")
+                    ).scalar_one()
+                    == 1
+                )
+        else:
+            with pytest.raises(DatabaseError, match="pg_restore"):
+                restore(engine, destination, confirm=True)
 
 
 def test_upgrade_from_empty_creates_exactly_the_mounted_egress_schema() -> None:
@@ -283,3 +329,37 @@ def test_a_beta_database_upgrades_to_head_in_one_step_and_keeps_its_rows() -> No
         columns = {column["name"] for column in inspect(engine).get_columns("plan_steps")}
         assert "attempt" in columns, "0008's column arrived on the way"
         assert inspect(engine).has_table("explanation_revisions")
+
+
+def test_1_2_0_database_migrates_to_head_and_keeps_its_rows(tmp_path: Path) -> None:
+    """A real released-version database, not one this test created (M9_AUDIT.md Group 3, O1).
+
+    The fixture is a real ``promptcadence==1.2.0`` install (from PyPI, in a scratch venv) migrated
+    by its own ``promptcadence db upgrade`` and seeded with two tokens through ``promptcadence
+    token create`` — a real CLI write. 1.2.0's head is this build's head too (``0011`` — no
+    revision has landed since that release), so today this asserts the upgrade is the documented
+    no-op and both rows survive; it starts asserting a real migration the day ``0012`` lands.
+    """
+    fixture = (
+        Path(__file__).parent.parent / "fixtures" / "databases" / "promptcadence-1.2.0.sqlite3"
+    )
+    working_copy = tmp_path / "promptcadence-1.2.0.sqlite3"
+    shutil.copyfile(fixture, working_copy)
+
+    engine = create_engine_for(f"sqlite:///{working_copy}")
+    try:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        current_before = runner.current()
+        assert current_before is not None, "the 1.2.0 fixture must carry a recorded revision"
+
+        database = Database(engine)
+        ensure_ready(database, auto_migrate=True)
+
+        assert runner.is_at_head()
+        with engine.connect() as connection:
+            names = {
+                row[0] for row in connection.execute(text("SELECT name FROM api_tokens")).fetchall()
+            }
+        assert names == {"fixture-token-one", "fixture-token-two"}
+    finally:
+        engine.dispose()
