@@ -56,6 +56,7 @@ __all__ = [
     "ToolsSettings",
     "config_dir",
     "data_dir",
+    "env_var_for",
     "load_settings",
     "resolve_config_path",
     "state_dir",
@@ -744,6 +745,26 @@ def _validate_project_budgets(settings: Settings) -> None:
             raise ConfigurationError(message, details={"field": f"budget.projects.{name}"})
 
 
+def env_var_for(path: str) -> str:
+    """The environment variable that sets the leaf at dotted ``path``.
+
+    Args:
+        path: A dotted ``section.field`` path, as ``LoadedSettings.sources`` keys them.
+
+    Returns:
+        The full variable name, prefix included — ``execution.step_retries`` is
+        ``PROMPTCADENCE_EXECUTION__STEP_RETRIES``.
+
+    Raises:
+        ValueError: ``path`` names no field (no ``.`` in it).
+    """
+    section, _, field_name = path.partition(".")
+    if not field_name:
+        message = f"{path!r} is not a section.field path"
+        raise ValueError(message)
+    return f"{ENV_PREFIX}{section.upper()}__{field_name.upper().replace('.', '__')}"
+
+
 def _track_sources(
     file_data: dict[str, Any], env_data: dict[str, Any], cli_data: dict[str, Any]
 ) -> dict[str, str]:
@@ -758,7 +779,7 @@ def _track_sources(
             if field_name in cli_data.get(section_name, {}):
                 sources[path] = "cli"
             elif field_name in env_data.get(section_name, {}):
-                sources[path] = f"env {ENV_PREFIX}{section_name.upper()}__{field_name.upper()}"
+                sources[path] = f"env {env_var_for(path)}"
             elif field_name in file_data.get(section_name, {}):
                 sources[path] = "file"
             else:
