@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-09-07
+
 ### Changed
 
 - `mirrorwall` floor raised from `0.2` to `0.2.2`: the two earlier releases pin `setspec<0.5`,
