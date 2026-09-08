@@ -363,3 +363,37 @@ def test_1_2_0_database_migrates_to_head_and_keeps_its_rows(tmp_path: Path) -> N
         assert names == {"fixture-token-one", "fixture-token-two"}
     finally:
         engine.dispose()
+
+
+def test_1_1_0_database_migrates_to_head_and_keeps_its_rows(tmp_path: Path) -> None:
+    """The earliest-published-release companion to the ``1.2.0`` fixture above (row L8, O1).
+
+    ``promptcadence==1.1.0``'s own head is ``0011`` too — the same revision as this build and as
+    the ``1.2.0`` fixture above, so this is also today's documented no-op (no migration has
+    landed since PromptCadence's earliest published release); it starts asserting a real
+    migration the day ``0012`` lands, on rows an independent ``1.1.0`` install wrote through its
+    own ``promptcadence token create``.
+    """
+    fixture = (
+        Path(__file__).parent.parent / "fixtures" / "databases" / "promptcadence-1.1.0.sqlite3"
+    )
+    working_copy = tmp_path / "promptcadence-1.1.0.sqlite3"
+    shutil.copyfile(fixture, working_copy)
+
+    engine = create_engine_for(f"sqlite:///{working_copy}")
+    try:
+        runner = MigrationRunner(engine, script_location=MIGRATIONS_LOCATION)
+        current_before = runner.current()
+        assert current_before is not None, "the 1.1.0 fixture must carry a recorded revision"
+
+        database = Database(engine)
+        ensure_ready(database, auto_migrate=True)
+
+        assert runner.is_at_head()
+        with engine.connect() as connection:
+            names = {
+                row[0] for row in connection.execute(text("SELECT name FROM api_tokens")).fetchall()
+            }
+        assert names == {"fixture-token-one", "fixture-token-two"}
+    finally:
+        engine.dispose()
