@@ -12,6 +12,8 @@ Operator documents, written for this release:
 * [troubleshooting.md](troubleshooting.md) — every error code and `doctor`'s four components.
 * [upgrading.md](upgrading.md) — migrations, behaviour changes at 1.0, the downgrade path.
 * [openapi.json](openapi.json) — the API, as a committed snapshot.
+* [LLAMACPP_SETUP.md](LLAMACPP_SETUP.md) — running llama.cpp behind the suite: install, the model
+  directory, adapters, residency and swapping, router mode, model suggestions (mirrored).
 
 The specification set — `apps/promptcadence/{spec,lifecycle,development-plan}.md` and the
 standards and ADRs it cites — is **mirrored** from the suite's `docs/` repository, which is the
