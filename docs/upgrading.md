@@ -23,6 +23,8 @@ the `database` component `ok`.
 
 | Version | Migrations | What they add |
 |---|---|---|
+| 1.3.2 | none | No schema change — a `mirrorwall` dependency-floor fix (so the declared lowest range resolves) only; nothing behaves differently for an operator. |
+| 1.3.1 | none | No schema change — test and documentation additions only; nothing behaves differently for an operator. |
 | 1.3.0 | none | No schema change — a dependency floor move and a client-side behaviour change (below). |
 | 1.2.0 | none | No schema change — the `settings` CLI verb only; no new runtime-changeable key. |
 | 1.1.0 | none | **No migration, no schema change, and no stored value changed.** The runtime settings this release adds live in the `settings` table, which has existed since `0001` and was unused until now; upgrading from 1.0.x is `pip install --upgrade` and a restart. |

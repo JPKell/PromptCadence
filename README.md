@@ -5,7 +5,8 @@ the plan is approved against governance policy and remaining budget before any s
 every turn that does execute is fully reconstructable afterwards — which model ran it, on which
 tier, on what data, at what cost, under whose approval.
 
-**Status:** `1.2.0`, on PyPI. Every phase of the development plan is built and gated: planning with
+**Status:** `1.3.2` in the repository — `v1.3.2` tagged locally (not yet pushed); **PyPI still
+serves `1.3.1`**. Every phase of the development plan is built and gated: planning with
 corrective retries and three approval modes, the `ExecutionIntent` every turn runs under, sandboxed
 tools under ToolYard's isolation ladder, the budget over LoadLedger with three ceilings, egress
 governance over Commissioner with a durable decision per turn, per-step retry, context compaction
