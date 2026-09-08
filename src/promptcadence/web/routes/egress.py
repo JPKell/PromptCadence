@@ -22,8 +22,8 @@ from fastapi import APIRouter, Query, Request, Response
 from mirrorwall import clamp_limit, paginated_response
 
 from promptcadence.services.egress import decision_view
-from promptcadence.services.runtime import Runtime
 from promptcadence.web.auth import require_scope
+from promptcadence.web.state import request_id_of, runtime_of
 
 if TYPE_CHECKING:
     from commissioner import EgressDecision
@@ -31,19 +31,6 @@ if TYPE_CHECKING:
 __all__ = ["router"]
 
 router = APIRouter(tags=["egress"])
-
-
-def _runtime(request: Request) -> Runtime:
-    runtime = request.app.state.runtime
-    if not isinstance(runtime, Runtime):  # pragma: no cover — only outside the lifespan
-        message = "the application is not serving"
-        raise RuntimeError(message)
-    return runtime
-
-
-def _request_id(request: Request) -> str | None:
-    value = getattr(request.state, "request_id", None)
-    return value if isinstance(value, str) else None
 
 
 def _verdict(raw: str | None) -> Verdict | None:
@@ -93,7 +80,7 @@ def get_egress_decisions(
     require_scope(request, "read")
     effective = clamp_limit(limit, maximum=200)
     decisions: list[EgressDecision] = list(
-        _runtime(request).egress.decisions(
+        runtime_of(request).egress.decisions(
             run_id=trajectory_id, verdict=_verdict(verdict), target=target
         )
     )[:effective]
@@ -101,5 +88,5 @@ def get_egress_decisions(
         [decision_view(decision) for decision in decisions],
         limit=effective,
         has_more=len(decisions) == effective,
-        request_id=_request_id(request),
+        request_id=request_id_of(request),
     )

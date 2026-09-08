@@ -1137,8 +1137,8 @@ class LoadCoachClient:
                 per :data:`_VERSION_CACHE_SECONDS` window rather than per turn (:meth:`version`).
             TierUnavailableError: LoadCoach cannot serve the task profile (no eligible model, or
                 no such profile).
-            CompactionFailedError: ``CONTEXT_LIMIT_EXCEEDED``; compaction arrives in Phase 8, so
-                today nothing can fit it.
+            CompactionFailedError: ``CONTEXT_LIMIT_EXCEEDED``; the loop's compaction trigger
+                (:mod:`promptcadence.services.compaction`) decides whether to retry smaller.
             LoadCoachError: Any other LoadCoach failure, with its code in ``details``, or a
                 response this client cannot read.
             LoadCoachUnavailableError: LoadCoach could not be reached.

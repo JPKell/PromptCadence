@@ -430,16 +430,16 @@ def _parse_document(raw_document: str, issues: list[PlanIssue]) -> dict[str, Any
             )
         )
         return None
-    for key in parsed:
-        if key != "steps":
-            issues.append(
-                PlanIssue(
-                    reason=PlanIssueReason.UNKNOWN_FIELD,
-                    field_name=str(key),
-                    step_id=None,
-                    message=f"the plan document has no field {key!r}",
-                )
-            )
+    issues.extend(
+        PlanIssue(
+            reason=PlanIssueReason.UNKNOWN_FIELD,
+            field_name=str(key),
+            step_id=None,
+            message=f"the plan document has no field {key!r}",
+        )
+        for key in parsed
+        if key != "steps"
+    )
     return parsed
 
 
@@ -515,15 +515,15 @@ def _validate_step(  # noqa: C901 — one branch per schema field; splitting it 
     label = step_id or position
     before = len(issues)
 
-    for name in sorted(_STEP_FIELDS - set(raw_step)):
-        issues.append(
-            PlanIssue(
-                reason=PlanIssueReason.MISSING_FIELD,
-                field_name=name,
-                step_id=step_id,
-                message=f"step {label} has no {name!r} field",
-            )
+    issues.extend(
+        PlanIssue(
+            reason=PlanIssueReason.MISSING_FIELD,
+            field_name=name,
+            step_id=step_id,
+            message=f"step {label} has no {name!r} field",
         )
+        for name in sorted(_STEP_FIELDS - set(raw_step))
+    )
     for name in sorted(set(raw_step) - _STEP_FIELDS):
         issues.append(
             PlanIssue(

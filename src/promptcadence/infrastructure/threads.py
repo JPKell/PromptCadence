@@ -46,8 +46,8 @@ class SqlThreadStore:
     """A :class:`~promptcadence.domain.threads.ThreadStore` over PromptCadence's own tables.
 
     Satisfies ``ThreadStore[TurnProvenance]`` structurally; no inheritance, because the port is a
-    ``Protocol`` and a second implementation (an in-memory one for Phase 3's tests) must be able to
-    satisfy it without importing anything from here.
+    ``Protocol`` and a second implementation (the in-memory one the loop's tests use) must be
+    able to satisfy it without importing anything from here.
 
     Reads and appends only. There is no update and no delete: a transcript that can be rewritten
     cannot be the authoritative record the explanation is composed from (spec §11 contract 2), and

@@ -2,7 +2,7 @@
 
 Spec §17 lists the event types PromptCadence emits; :class:`EventType` is that list and nothing
 else. A state change and its event are **one write** (ADR-0044), so the emitting transition for
-each type is lifecycle §8.2's table, and this phase owns the *shapes* while Phase 3 owns the
+each type is lifecycle §8.2's table; this module owns the *shapes* and the services own the
 write.
 
 One rule governs every body, and it is the reason bodies are typed value objects rather than free

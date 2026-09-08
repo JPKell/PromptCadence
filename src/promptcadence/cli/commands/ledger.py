@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
+from promptcadence.cli._backend import load_settings_or_exit
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -30,16 +32,6 @@ __all__ = ["app"]
 app = typer.Typer(help="The budget ledger: today's position and the recorded debits.")
 
 _SCOPES = ("day", "project", "tier", "trajectory")
-
-
-def _settings(config: str | None) -> Settings:
-    from promptcadence.config import ConfigurationError, load_settings
-
-    try:
-        return load_settings(config_path=config).settings
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
 
 
 @contextmanager
@@ -144,7 +136,7 @@ def show(
     if scope == "trajectory" and not trajectory_id:
         typer.echo("Error: --scope trajectory needs --trajectory <id> (VALIDATION_ERROR)", err=True)
         raise typer.Exit(2)
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     document = _document(settings, trajectory_id)
     if json_output:
         typer.echo(json_module.dumps(document, indent=2, sort_keys=True))

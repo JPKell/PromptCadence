@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
+from baseaicore import utc_now
+
+from promptcadence.cli._backend import load_settings_or_exit
 
 if TYPE_CHECKING:
     from promptcadence.services.database import Database
@@ -25,23 +28,12 @@ __all__ = ["app"]
 app = typer.Typer(help="Database migration and maintenance.")
 
 
-def _utc_now() -> datetime:
-    """The instant, for a command that has no service to inject one from."""
-    return datetime.now(UTC)
-
-
 @contextmanager
 def _open_database(config: str | None) -> Iterator[Database]:
     """Resolve configuration and open one database handle for this command, or exit 3."""
-    from promptcadence.config import ConfigurationError, load_settings
     from promptcadence.services.database import Database
 
-    try:
-        loaded = load_settings(config_path=config)
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
-    database_url = loaded.settings.storage.database_url
+    database_url = load_settings_or_exit(config).storage.database_url
     if database_url is None:  # pragma: no cover — StorageSettings always fills this in
         typer.echo("Error: no database_url configured (CONFIGURATION_ERROR)", err=True)
         raise typer.Exit(3)
@@ -228,9 +220,9 @@ def rebuild_explanations(
         builder = ExplanationBuilder(
             database,
             budget=BudgetService(
-                database, settings, PricingCatalog.from_settings(settings), clock=_utc_now
+                database, settings, PricingCatalog.from_settings(settings), clock=utc_now
             ),
-            egress=EgressService(database, clock=_utc_now),
+            egress=EgressService(database, clock=utc_now),
             artifacts=explanation_store(settings),
         )
         dropped = builder.drop_revisions(trajectory) if drop else 0

@@ -614,7 +614,7 @@ class BudgetService:
                 usage=usage, cost=None, unpriced_reason=_no_price_reason(tier, self._settings, at)
             )
         estimates = [estimate_cost(usage, record, at=at) for record in candidates]
-        priced = max(estimates, key=lambda estimate: _sortable_total(estimate))
+        priced = max(estimates, key=_sortable_total)
         reason = "; ".join(priced.unpriced_reasons) if not priced.is_complete else ""
         return PricedUsage(usage=usage, cost=priced, unpriced_reason=reason)
 

@@ -86,7 +86,7 @@ and `GET /settings` reports each one's minimum and maximum.
 
 ## `[execution]`
 
-``[execution]`` — concurrency and loop bounds. Nothing here executes until Phase 3+.
+``[execution]`` — concurrency and loop bounds.
 
 | Key | Environment variable | Type | Default | Range | Runtime-changeable | Security | Example | Description |
 |---|---|---|---|---|---|---|---|---|

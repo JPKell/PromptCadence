@@ -40,23 +40,15 @@ from promptcadence.services.console import (
     trajectories_report,
 )
 from promptcadence.services.loadcoach_surface import remote_provider_registered
-from promptcadence.services.runtime import Runtime
 from promptcadence.services.tiers import unpriced_remote_tiers
 from promptcadence.web.auth import require_scope
 from promptcadence.web.csrf import render_form_page
 from promptcadence.web.rendering import render
+from promptcadence.web.state import runtime_of
 
 __all__ = ["ui_router"]
 
 ui_router = APIRouter(tags=["ui"], include_in_schema=False)
-
-
-def _runtime(request: Request) -> Runtime:
-    runtime = request.app.state.runtime
-    if not isinstance(runtime, Runtime):  # pragma: no cover — only outside the lifespan
-        message = "the application is not serving"
-        raise RuntimeError(message)
-    return runtime
 
 
 def _now() -> datetime:
@@ -82,7 +74,7 @@ def _page(template: str, **context: Any) -> HTMLResponse:
 def dashboard_page(request: Request) -> HTMLResponse:
     """What is running, what is waiting for a person, and today's spend."""
     require_scope(request, "read")
-    report = dashboard_report(_runtime(request), now=_now())
+    report = dashboard_report(runtime_of(request), now=_now())
     return _page("dashboard/index.html", page="dashboard", report=report)
 
 
@@ -94,7 +86,7 @@ def trajectories_page(
 ) -> HTMLResponse:
     """The trajectory list, newest first, filterable by state."""
     require_scope(request, "read")
-    report = trajectories_report(_runtime(request), state=state or None, cursor=cursor)
+    report = trajectories_report(runtime_of(request), state=state or None, cursor=cursor)
     return _page("trajectories/index.html", page="trajectories", report=report)
 
 
@@ -108,7 +100,7 @@ def timeline_page(request: Request, trajectory_id: str) -> HTMLResponse:
     record type the document holds is a record type this page shows, and the two cannot drift.
     """
     require_scope(request, "read")
-    report = timeline_report(_runtime(request), trajectory_id)
+    report = timeline_report(runtime_of(request), trajectory_id)
     return _page("trajectories/detail.html", page="trajectories", report=report)
 
 
@@ -116,7 +108,7 @@ def timeline_page(request: Request, trajectory_id: str) -> HTMLResponse:
 def approvals_page(request: Request, resolved: Annotated[bool, Query()] = False) -> HTMLResponse:
     """The inbox. Its two buttons are the reason this application has CSRF (ADR-0094)."""
     principal = require_scope(request, "read")
-    report = approvals_report(_runtime(request), now=_now(), include_resolved=resolved)
+    report = approvals_report(runtime_of(request), now=_now(), include_resolved=resolved)
     return render_form_page(
         request,
         "approvals/index.html",
@@ -134,7 +126,7 @@ async def grant_from_inbox(request: Request, trajectory_id: str) -> RedirectResp
     a post that reached here already matched the cookie.
     """
     principal = require_scope(request, "approve")
-    runtime = _runtime(request)
+    runtime = runtime_of(request)
     runtime.approvals.grant(
         trajectory_id, approver=Approver(token_id=principal.token_id, name=principal.name)
     )
@@ -147,7 +139,7 @@ async def deny_from_inbox(request: Request, trajectory_id: str) -> RedirectRespo
     """Resolve a pending request as a denial, with the operator's stated reason on the record."""
     principal = require_scope(request, "approve")
     reason = (await _form(request)).get("reason", "").strip()
-    _runtime(request).approvals.deny(
+    runtime_of(request).approvals.deny(
         trajectory_id,
         approver=Approver(token_id=principal.token_id, name=principal.name),
         reason=reason or None,
@@ -159,7 +151,7 @@ async def deny_from_inbox(request: Request, trajectory_id: str) -> RedirectRespo
 def tiers_page(request: Request) -> HTMLResponse:
     """Every configured tier, its ceiling, and whether it can serve right now."""
     require_scope(request, "read")
-    runtime = _runtime(request)
+    runtime = runtime_of(request)
     # Read from LoadCoach, as the loop reads it, so the page cannot disagree with the router
     # about whether a remote tier can serve (ADR-0098 rule 1).
     report = tiers_report(
@@ -174,7 +166,7 @@ def tiers_page(request: Request) -> HTMLResponse:
 def tools_page(request: Request) -> HTMLResponse:
     """The registry, including what configuration named and could not be registered."""
     require_scope(request, "read")
-    return _page("tools/index.html", page="tools", report=tools_report(_runtime(request)))
+    return _page("tools/index.html", page="tools", report=tools_report(runtime_of(request)))
 
 
 @ui_router.get("/ledger", summary="Ledger", response_class=HTMLResponse)
@@ -183,7 +175,7 @@ def ledger_page(
 ) -> HTMLResponse:
     """Today's position and the recorded debits behind it."""
     require_scope(request, "read")
-    report = ledger_report(_runtime(request), trajectory_id=trajectory_id or None)
+    report = ledger_report(runtime_of(request), trajectory_id=trajectory_id or None)
     return _page("ledger/index.html", page="ledger", report=report)
 
 
@@ -196,7 +188,7 @@ def egress_page(
     """Every recorded egress decision. A refusal is as auditable as an approval."""
     require_scope(request, "read")
     report = egress_report(
-        _runtime(request), verdict=verdict or None, trajectory_id=trajectory_id or None
+        runtime_of(request), verdict=verdict or None, trajectory_id=trajectory_id or None
     )
     return _page("egress/index.html", page="egress", report=report)
 
@@ -206,5 +198,5 @@ def system_page(request: Request) -> HTMLResponse:
     """Health, the last recovery pass, and how this install authenticates."""
     require_scope(request, "read")
     return _page(
-        "system/index.html", page="system", report=system_report(_runtime(request), now=_now())
+        "system/index.html", page="system", report=system_report(runtime_of(request), now=_now())
     )

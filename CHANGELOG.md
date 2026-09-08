@@ -12,6 +12,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
   line equals `__about__.__version__`, so a release cannot leave the README stale (M9 re-audit,
   row L7).
 
+### Changed
+
+- One `promptcadence.cli._backend.load_settings_or_exit` replaces the seven copies of "resolve
+  configuration, or exit 3" the CLI command modules carried; one `promptcadence.web.state`
+  (`runtime_of`, `request_id_of`) replaces the eleven copies in the route modules; the four
+  private `_utc_now` clocks are `baseaicore.utc_now`. Exit codes and messages unchanged.
+- Docstrings and the shipped `config.toml` comments describe the running application: `http_fetch`
+  is registered and egress-checked, compaction exists, `egress_decisions` is mounted, the domain
+  wraps `threads`. `docs/configuration.md` regenerated for the reworded `[tools]` description.
+- Small tightenings ruff's SIM/PERF/RET families flagged. No behaviour change.
+
 ### Fixed
 
 - README's `Status:` line still read `1.2.0`, on PyPI; it now states `1.3.2` in the repository,

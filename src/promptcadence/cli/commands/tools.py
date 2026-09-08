@@ -8,8 +8,8 @@ asking about the host, and a question routed through a server would answer about
 instead.
 
 Both commands report withheld tools beside registered ones. A list of only what works cannot
-distinguish a tool nobody enabled from one that was enabled and held back, and before Phase 6
-``http_fetch`` is exactly the second.
+distinguish a tool nobody enabled from one that was enabled and held back — ``run_command`` on a
+host with no isolation rung is exactly the second.
 
 Only ``typer`` and ``json`` load at module level; the service layer is imported inside the command
 bodies (CLI standards §12).

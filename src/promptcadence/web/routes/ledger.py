@@ -21,8 +21,8 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Query, Request, Response
 from mirrorwall import clamp_limit, json_response, paginated_response
 
-from promptcadence.services.runtime import Runtime
 from promptcadence.web.auth import require_scope
+from promptcadence.web.state import request_id_of, runtime_of
 
 if TYPE_CHECKING:
     from promptcadence.services.views import TrajectoryView
@@ -30,19 +30,6 @@ if TYPE_CHECKING:
 __all__ = ["router"]
 
 router = APIRouter(tags=["ledger"])
-
-
-def _runtime(request: Request) -> Runtime:
-    runtime = request.app.state.runtime
-    if not isinstance(runtime, Runtime):  # pragma: no cover — only outside the lifespan
-        message = "the application is not serving"
-        raise RuntimeError(message)
-    return runtime
-
-
-def _request_id(request: Request) -> str | None:
-    value = getattr(request.state, "request_id", None)
-    return value if isinstance(value, str) else None
 
 
 @router.get("/ledger", summary="Today's ledger position")
@@ -57,12 +44,12 @@ def get_ledger(request: Request, trajectory_id: str | None = Query(default=None)
     an arbitrary known trajectory as a reference run to satisfy a signature. ``read`` scope.
     """
     require_scope(request, "read")
-    runtime = _runtime(request)
+    runtime = runtime_of(request)
     trajectory: TrajectoryView | None = (
         runtime.trajectories.get(trajectory_id) if trajectory_id is not None else None
     )
     view = runtime.budget.ledger_view(trajectory=trajectory)
-    return json_response(view.as_json(), request_id=_request_id(request))
+    return json_response(view.as_json(), request_id=request_id_of(request))
 
 
 @router.get("/ledger/entries", summary="Recorded debits")
@@ -79,12 +66,12 @@ def get_ledger_entries(
     """
     require_scope(request, "read")
     effective = clamp_limit(limit, maximum=200)
-    entries = _runtime(request).budget.entry_views(
+    entries = runtime_of(request).budget.entry_views(
         trajectory_id=trajectory_id, tag=tag, limit=effective
     )
     return paginated_response(
         [entry.as_json() for entry in entries],
         limit=effective,
         has_more=len(entries) == effective,
-        request_id=_request_id(request),
+        request_id=request_id_of(request),
     )

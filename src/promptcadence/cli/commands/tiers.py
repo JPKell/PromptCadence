@@ -15,22 +15,14 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
+from promptcadence.cli._backend import load_settings_or_exit
+
 if TYPE_CHECKING:
     from promptcadence.config import Settings
 
 __all__ = ["app"]
 
 app = typer.Typer(help="Configured tiers, and whether LoadCoach can serve them.")
-
-
-def _settings(config: str | None) -> Settings:
-    from promptcadence.config import ConfigurationError, load_settings
-
-    try:
-        return load_settings(config_path=config).settings
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
 
 
 def _tier_json(name: str, settings: Settings) -> dict[str, Any]:
@@ -63,7 +55,7 @@ def list_tiers(
     ] = None,
 ) -> None:
     """List the configured tiers. Mode: local."""
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     items = [_tier_json(name, settings) for name in sorted(settings.tiers)]
     if json_output:
         typer.echo(json_module.dumps({"tiers": items}, sort_keys=True))
@@ -88,7 +80,7 @@ def show_tier(
     ] = None,
 ) -> None:
     """Show one configured tier. Mode: local."""
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     if name not in settings.tiers:
         typer.echo(
             f"Error: no tier named {name!r} is configured; configured: "
@@ -119,7 +111,7 @@ def check(
     from promptcadence.infrastructure.loadcoach import LoadCoachClient
     from promptcadence.services.tiers import check_tiers
 
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     client = LoadCoachClient.from_settings(
         base_url=settings.loadcoach.base_url,
         timeout_seconds=min(settings.loadcoach.timeout_seconds, 10.0),

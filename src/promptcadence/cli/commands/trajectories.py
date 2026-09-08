@@ -18,11 +18,13 @@ import json as json_module
 import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
+from baseaicore import utc_now
+
+from promptcadence.cli._backend import load_settings_or_exit
 
 if TYPE_CHECKING:
     import httpx
@@ -92,16 +94,6 @@ def _client(settings: Settings) -> Iterator[httpx.Client]:
         yield client
     finally:
         client.close()
-
-
-def _settings(config: str | None) -> Settings:
-    from promptcadence.config import ConfigurationError, load_settings
-
-    try:
-        return load_settings(config_path=config).settings
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
 
 
 def _fail_unreachable(settings: Settings, exc: Exception) -> typer.Exit:
@@ -223,11 +215,6 @@ def _local_service(settings: Settings) -> Iterator[Any]:
         yield TrajectoryService(database, TrajectoryEventSink(database), settings)
 
 
-def _utc_now() -> datetime:
-    """The instant, for a command with no service to inject one from."""
-    return datetime.now(UTC)
-
-
 @contextmanager
 def _local_explanations(settings: Settings) -> Iterator[Any]:
     """The explanation builder over the configured database, for the ``either`` fallback."""
@@ -246,9 +233,9 @@ def _local_explanations(settings: Settings) -> Iterator[Any]:
         yield ExplanationBuilder(
             database,
             budget=BudgetService(
-                database, settings, PricingCatalog.from_settings(settings), clock=_utc_now
+                database, settings, PricingCatalog.from_settings(settings), clock=utc_now
             ),
-            egress=EgressService(database, clock=_utc_now),
+            egress=EgressService(database, clock=utc_now),
             artifacts=explanation_store(settings),
         )
 
@@ -296,7 +283,7 @@ def run(
     Example:
         promptcadence run "summarize the files in ./notes" --bypass-planning --follow
     """
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     body: dict[str, Any] = {"task": task, "data_classification": classification}
     if bypass_planning:
         body["bypass_planning"] = True
@@ -343,7 +330,7 @@ def list_trajectories(
     ] = None,
 ) -> None:
     """List trajectories, newest first. Mode: either."""
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     params = {"state": state} if state else {}
     with _client(settings) as client:
         if _server_answers(client):
@@ -376,7 +363,7 @@ def show(
     ] = None,
 ) -> None:
     """Show one trajectory, with every halt's cause verbatim (spec §13). Mode: either."""
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     with _client(settings) as client:
         if _server_answers(client):
             response = client.get(f"/api/v1/trajectories/{trajectory_id}")
@@ -404,7 +391,7 @@ def cancel(
     ] = None,
 ) -> None:
     """Cancel a trajectory. Mode: client (exit 4 when no server is reachable)."""
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     with _client(settings) as client:
         try:
             response = client.post(f"/api/v1/trajectories/{trajectory_id}/cancel")
@@ -433,7 +420,7 @@ def wait(
     """
     import time
 
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     deadline = time.monotonic() + timeout_seconds
     with _client(settings) as client:
         remote = _server_answers(client)
@@ -489,7 +476,7 @@ def explain(
     Example:
         promptcadence trajectory explain 01J... --output explanation.json
     """
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     with _client(settings) as client:
         if _server_answers(client):
             response = client.get(f"/api/v1/trajectories/{trajectory_id}/explanation")

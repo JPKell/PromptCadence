@@ -459,8 +459,7 @@ def _render_tools(inputs: PlanningInputs) -> str:
 
 def _brief(description: str) -> str:
     """The first sentence of a description, without its full stop."""
-    first = description.strip().split(". ")[0].rstrip(".")
-    return first
+    return description.strip().split(". ")[0].rstrip(".")
 
 
 def _render_tiers(snapshot: TierSnapshot) -> str:

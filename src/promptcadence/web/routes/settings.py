@@ -31,6 +31,7 @@ from promptcadence.services.settings import (
 )
 from promptcadence.web.auth import require_scope
 from promptcadence.web.csrf import render_form_page
+from promptcadence.web.state import request_id_of, runtime_of
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -39,19 +40,6 @@ __all__ = ["router", "ui_router"]
 
 router = APIRouter(tags=["settings"])
 ui_router = APIRouter(tags=["ui"], include_in_schema=False)
-
-
-def _runtime(request: Request) -> Runtime:
-    runtime = request.app.state.runtime
-    if not isinstance(runtime, Runtime):  # pragma: no cover — only outside the lifespan
-        message = "the application is not serving"
-        raise RuntimeError(message)
-    return runtime
-
-
-def _request_id(request: Request) -> str | None:
-    value = getattr(request.state, "request_id", None)
-    return value if isinstance(value, str) else None
 
 
 def _document(runtime: Runtime) -> Mapping[str, Any]:
@@ -69,7 +57,7 @@ def get_settings(request: Request) -> Response:
     (configuration standards §7). ``read`` scope.
     """
     require_scope(request, "read")
-    return json_response(dict(_document(_runtime(request))), request_id=_request_id(request))
+    return json_response(dict(_document(runtime_of(request))), request_id=request_id_of(request))
 
 
 @router.put("/settings", summary="Change runtime settings")
@@ -82,9 +70,9 @@ def put_settings(request: Request, body: Annotated[dict[str, Any], Body()]) -> R
     within one lease-reap cadence. ``admin`` scope.
     """
     require_scope(request, "admin")
-    runtime = _runtime(request)
+    runtime = runtime_of(request)
     write_runtime_settings(runtime.database, body, settings=runtime.settings, now=datetime.now(UTC))
-    return json_response(dict(_document(runtime)), request_id=_request_id(request))
+    return json_response(dict(_document(runtime)), request_id=request_id_of(request))
 
 
 async def _changes_of(request: Request) -> dict[str, Any]:
@@ -134,7 +122,7 @@ def settings_page(request: Request) -> HTMLResponse:
     ``read`` renders the page; only ``admin`` is shown the form (ADR-0094).
     """
     principal = require_scope(request, "read")
-    runtime = _runtime(request)
+    runtime = runtime_of(request)
     return render_form_page(
         request,
         "settings/index.html",
@@ -154,7 +142,7 @@ async def settings_form(request: Request) -> RedirectResponse:
     a post that reached here already matched the cookie. ``admin`` scope.
     """
     require_scope(request, "admin")
-    runtime = _runtime(request)
+    runtime = runtime_of(request)
     write_runtime_settings(
         runtime.database,
         await _changes_of(request),

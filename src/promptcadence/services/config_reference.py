@@ -110,7 +110,7 @@ def _default(info: FieldInfo) -> str:
             produced = info.default_factory()  # type: ignore[call-arg]  # no-arg factories only
         except TypeError:
             return "—"
-        if isinstance(produced, BaseModel) or isinstance(produced, dict):
+        if isinstance(produced, BaseModel | dict):
             return "—"
         return f"`{produced!r}`"
     if info.default is PydanticUndefined:

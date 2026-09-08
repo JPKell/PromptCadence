@@ -24,10 +24,10 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
-from baseaicore import DataClassification, Money, ValidationError, new_id
+from baseaicore import DataClassification, Money, ValidationError, new_id, utc_now
 from baseaicore.timeutil import to_rfc3339
 from sqlalchemy import select, update
 
@@ -144,7 +144,7 @@ class TrajectoryService:
         self._sink = sink
         self._settings = settings
         self._budget = budget
-        self._clock = clock if clock is not None else _utc_now
+        self._clock = clock if clock is not None else utc_now
         self._ids = id_factory
         self._threads = SqlThreadStore(database.sessions)
 
@@ -507,7 +507,3 @@ def _decode_cursor(cursor: str | None) -> datetime | None:
         return datetime.fromisoformat(stamp)
     except (ValueError, UnicodeDecodeError):
         return None
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)

@@ -1,14 +1,12 @@
 """promptcadence.web.routes.system — `/health`, `/version`, `/system/status` and `/tools`.
 
-Health reports two components in Phase 1 (development plan Phase 1): ``database`` and
-``loadcoach``. An unreachable LoadCoach makes health *degraded*, never *unavailable* and never a
-startup failure (ADR-0045 rule 3, spec §20 AC1) — PromptCadence requires LoadCoach for execution,
-and nothing executes yet.
+Health reports ``database``, ``loadcoach`` and ``tools``. An unreachable LoadCoach makes health
+*degraded*, never *unavailable* and never a startup failure (ADR-0045 rule 3, spec §20 AC1) —
+PromptCadence requires LoadCoach for execution, not for serving.
 
 ``GET /tools`` reports the registry as assembled, and it reports the tools configuration named that
 were **not** registered, with the cause. Listing only what works would leave an operator unable to
-tell a tool nobody asked for from one that was asked for and withheld — which is exactly the
-question ``http_fetch`` raises before Phase 6.
+tell a tool nobody asked for from one that was asked for and withheld.
 """
 
 from __future__ import annotations

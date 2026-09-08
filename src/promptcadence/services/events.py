@@ -30,10 +30,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
-from baseaicore import new_id
+from baseaicore import new_id, utc_now
 from baseaicore.timeutil import to_rfc3339
 from mirrorwall import Event, EventBroker
 from sqlalchemy import func, select
@@ -181,7 +181,7 @@ class TrajectoryEventSink:
         """
         self._database = database
         self.broker = broker if broker is not None else EventBroker()
-        self.clock = clock if clock is not None else _utc_now
+        self.clock = clock if clock is not None else utc_now
 
     @contextmanager
     def write(self) -> Iterator[tuple[Session, EventWriter]]:
@@ -283,7 +283,3 @@ def _stored_of(row: EventRow) -> StoredEvent:
         timestamp=row.timestamp,
         data=dict(row.data_json) if isinstance(row.data_json, dict) else {},
     )
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)

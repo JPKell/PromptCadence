@@ -56,7 +56,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -68,6 +68,7 @@ from baseaicore import (
     is_supported,
     new_id,
     sha256_of,
+    utc_now,
 )
 from commissioner import Verdict
 from cutctx import (
@@ -636,7 +637,7 @@ class LoopController:
         self._budget = budget
         self._estimator = estimator
         self._egress = egress
-        self._clock = clock if clock is not None else _utc_now
+        self._clock = clock if clock is not None else utc_now
         self._ids = id_factory
         self._remote_provider = loadcoach_has_remote_provider
         self._remote_fact = remote_provider_fact
@@ -1695,14 +1696,15 @@ class LoopController:
 
     def _step_status(self, trajectory_id: str, plan_id: str) -> dict[str, str]:
         with self._database.read() as session:
-            return {
-                step_id: status
-                for step_id, status in session.execute(
+            return dict(
+                session.execute(
                     select(models.PlanStep.step_id, models.PlanStep.status).where(
                         models.PlanStep.plan_id == plan_id
                     )
-                ).all()
-            }
+                )
+                .tuples()
+                .all()
+            )
 
     def _dependency_results(self, trajectory_id: str, step: PlanStep) -> dict[str, str]:
         """Each dependency's final assistant answer, by step id, for the framing turn."""
@@ -4021,10 +4023,15 @@ def _render_dependencies(step: PlanStep, results: Mapping[str, str]) -> str:
     """The RESULTS OF EARLIER STEPS block of a framing turn, or an empty string."""
     if not step.depends_on:
         return ""
-    lines = ["", "RESULTS OF EARLIER STEPS"]
-    for dependency in step.depends_on:
-        lines.append(f"- {dependency}: {results.get(dependency, '') or '(no answer recorded)'}")
-    lines.append("")
+    lines = [
+        "",
+        "RESULTS OF EARLIER STEPS",
+        *(
+            f"- {dependency}: {results.get(dependency, '') or '(no answer recorded)'}"
+            for dependency in step.depends_on
+        ),
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -4111,10 +4118,6 @@ def _tokens_spent(turns: Sequence[Turn[TurnProvenance]]) -> int:
 
 def _supported(value: object) -> int | None:
     return value if isinstance(value, int) and is_supported(value) else None
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _round_trips(turns: Sequence[Turn[TurnProvenance]]) -> int:

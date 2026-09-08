@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
+from promptcadence.cli._backend import load_settings_or_exit
 from promptcadence.cli.commands.trajectories import TOKEN_ENV
 
 if TYPE_CHECKING:
@@ -29,16 +30,6 @@ if TYPE_CHECKING:
 __all__ = ["app", "approve", "deny"]
 
 app = typer.Typer(help="Pending approval requests.")
-
-
-def _settings(config: str | None) -> Settings:
-    from promptcadence.config import ConfigurationError, load_settings
-
-    try:
-        return load_settings(config_path=config).settings
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
 
 
 def _headers(token: str | None) -> dict[str, str]:
@@ -84,7 +75,7 @@ def list_approvals(
     ] = None,
 ) -> None:
     """List pending approval requests with their ages, oldest first. Mode: either."""
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     params: dict[str, Any] = {}
     if trajectory_id:
         params["trajectory_id"] = trajectory_id
@@ -172,7 +163,7 @@ def approve(
     Idempotent per request. For a ``ceiling_raise`` request pass the new ceiling with
     ``--tokens`` and/or ``--money-nanos``.
     """
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     body: dict[str, Any] = {}
     if tokens is not None or money_nanos is not None:
         body["budget"] = {}
@@ -223,7 +214,7 @@ def deny(
     ] = None,
 ) -> None:
     """Deny the trajectory's pending approval request; it halts. Mode: client; approve scope."""
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     with _client(settings) as client:
         try:
             response = client.post(

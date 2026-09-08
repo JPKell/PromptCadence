@@ -39,7 +39,7 @@ class FinishOutcome(StrEnum):
     """The turn is the trajectory's declared finish: ``STOP``, or a schema-validated result."""
 
     CONTINUE = "continue"
-    """The provider declared it wants tools (``TOOL_CALLS``); the loop's next act is Phase 4's."""
+    """The provider declared it wants tools (``TOOL_CALLS``); the loop dispatches them next."""
 
     HALT = "halt"
     """No declared success. ``LENGTH``, ``ERROR``, a cancelled or filtered generation, an

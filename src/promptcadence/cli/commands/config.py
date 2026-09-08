@@ -66,11 +66,14 @@ def _database_overlay(settings: Settings) -> dict[str, tuple[object, str]]:
     if database_url is None:  # pragma: no cover — StorageSettings always fills this in
         return {}
     url = make_url(database_url)
-    if url.drivername.startswith("sqlite") and url.database not in (None, ":memory:"):
-        # Connecting would create the file. An inspection command must not leave a database
-        # behind that `db status` would then report as unmigrated.
-        if not Path(str(url.database)).is_file():
-            return {}
+    # Connecting would create the file. An inspection command must not leave a database behind
+    # that `db status` would then report as unmigrated.
+    if (
+        url.drivername.startswith("sqlite")
+        and url.database not in (None, ":memory:")
+        and not Path(str(url.database)).is_file()
+    ):
+        return {}
     try:
         with Database.from_url(database_url) as database:
             document = runtime_settings_document(database, settings=settings)

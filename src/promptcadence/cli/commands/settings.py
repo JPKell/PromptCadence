@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
+from promptcadence.cli._backend import load_settings_or_exit
 from promptcadence.cli.commands.trajectories import TOKEN_ENV
 
 if TYPE_CHECKING:
@@ -38,16 +39,6 @@ app = typer.Typer(help="Runtime-changeable settings on a running server.")
 
 _CONFIG_OPTION = typer.Option("--config", help="Path to a config.toml file.")
 _JSON_OPTION = typer.Option("--json", help="Print JSON.")
-
-
-def _settings(config: str | None) -> Settings:
-    from promptcadence.config import ConfigurationError, load_settings
-
-    try:
-        return load_settings(config_path=config).settings
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
 
 
 def _request(
@@ -155,7 +146,7 @@ def list_settings(
         promptcadence settings list
     """
     document = _request(
-        _settings(config), method="GET", body=None, token=None, json_output=json_output
+        load_settings_or_exit(config), method="GET", body=None, token=None, json_output=json_output
     )
     if json_output:
         typer.echo(json_module.dumps(document, sort_keys=True))
@@ -181,7 +172,7 @@ def get_setting(
         promptcadence settings get execution.step_retries
     """
     document = _request(
-        _settings(config), method="GET", body=None, token=None, json_output=json_output
+        load_settings_or_exit(config), method="GET", body=None, token=None, json_output=json_output
     )
     definition = _defined(document, key)
     if json_output:
@@ -215,7 +206,7 @@ def set_setting(
     Example:
         promptcadence settings set execution.step_retries 3
     """
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     try:
         parsed: Any = json_module.loads(value)
     except ValueError:

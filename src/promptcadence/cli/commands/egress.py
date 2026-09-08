@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
+from promptcadence.cli._backend import load_settings_or_exit
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -33,16 +35,6 @@ __all__ = ["app"]
 app = typer.Typer(help="Recorded egress decisions: what was approved, denied and violated.")
 
 _VERDICTS = ("approved", "denied", "violation")
-
-
-def _settings(config: str | None) -> Settings:
-    from promptcadence.config import ConfigurationError, load_settings
-
-    try:
-        return load_settings(config_path=config).settings
-    except ConfigurationError as exc:
-        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
-        raise typer.Exit(3) from exc
 
 
 @contextmanager
@@ -160,7 +152,7 @@ def list_decisions(
         raise typer.Exit(2)
     if denied_only:
         verdict = "denied"
-    settings = _settings(config)
+    settings = load_settings_or_exit(config)
     documents = _documents(settings, trajectory_id=trajectory_id, verdict=verdict, limit=limit)
     if json_output:
         typer.echo(json_module.dumps(documents, indent=2, sort_keys=True))

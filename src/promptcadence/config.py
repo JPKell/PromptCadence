@@ -292,7 +292,7 @@ class ApprovalSettings(BaseModel):
 
 
 class ExecutionSettings(BaseModel):
-    """``[execution]`` — concurrency and loop bounds. Nothing here executes until Phase 3+."""
+    """``[execution]`` — concurrency and loop bounds."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -356,12 +356,10 @@ class BudgetSettings(BaseModel):
 class ToolsSettings(BaseModel):
     """``[tools]`` — the registry the loop draws from, and where its side effects land.
 
-    ``enabled`` keeps spec §12's shipped list, ``http_fetch`` included, even though no tool
-    performs network egress before Phase 6. The tool is **withheld** from the registry with a named
-    cause the catalog shows rather than removed from this default: an operator who copied the
-    documented configuration keeps working, P6 flips one guard instead of editing a shipped list,
-    and a model asking for it is refused as an unknown tool and recorded. See
-    :mod:`promptcadence.services.tools`.
+    ``enabled`` is spec §12's shipped list, ``http_fetch`` included; a tool this host cannot
+    honour (``run_command`` with no isolation rung) is **withheld** from the registry with a named
+    cause the catalog shows, and a model asking for it is refused as an unknown tool and recorded.
+    See :mod:`promptcadence.services.tools`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -927,9 +925,8 @@ nanos = 20000000000           # $20.00
 # nanos = 50000000000         # $50.00, lifetime, until raised
 
 [tools]
-# http_fetch is listed and deliberately NOT registered before Phase 6: no tool performs network
-# egress until egress governance is in place. `promptcadence tools list` shows it as withheld with
-# the cause, and a model that asks for it is refused as an unknown tool and recorded.
+# http_fetch is egress-checked through Commissioner on every call; a tool this host cannot honour
+# is withheld, and `promptcadence tools list` shows it with the cause.
 enabled = ["read_file", "list_dir", "write_file", "run_command", "http_fetch"]
 workspace_root = ""          # default: <data>/workspaces; per-trajectory subdirectory
 artifact_root = ""           # default: <data>/artifacts; oversize output, keyed by its digest

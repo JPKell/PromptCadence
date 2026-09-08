@@ -21,8 +21,8 @@ from mirrorwall import json_response, paginated_response
 from pydantic import BaseModel, ConfigDict, Field
 
 from promptcadence.services.approvals import Approver, BudgetRaise, RequestStatus
-from promptcadence.services.runtime import Runtime
 from promptcadence.web.auth import require_scope
+from promptcadence.web.state import request_id_of, runtime_of
 
 __all__ = ["ApproveBody", "DenyBody", "router"]
 
@@ -63,19 +63,6 @@ class DenyBody(BaseModel):
     reason: str | None = Field(default=None, max_length=2000)
 
 
-def _runtime(request: Request) -> Runtime:
-    runtime = request.app.state.runtime
-    if not isinstance(runtime, Runtime):  # pragma: no cover — only outside the lifespan
-        message = "the application is not serving"
-        raise RuntimeError(message)
-    return runtime
-
-
-def _request_id(request: Request) -> str | None:
-    value = getattr(request.state, "request_id", None)
-    return value if isinstance(value, str) else None
-
-
 def _raise_of(body: ApproveBody | None) -> BudgetRaise | None:
     if body is None or body.budget is None:
         return None
@@ -100,7 +87,7 @@ def list_approvals(
     it asks (``detail``), when it expires, and how long it has waited.
     """
     require_scope(request, "read")
-    runtime = _runtime(request)
+    runtime = runtime_of(request)
     now = datetime.now(UTC)
     if status_filter == "all" and trajectory_id is not None:
         items = runtime.approvals.requests(trajectory_id)
@@ -114,11 +101,11 @@ def list_approvals(
                 if trajectory_id is not None
                 else runtime.approvals.pending()
             )
-            if status_filter == "all" or item.status.value == status_filter
+            if status_filter in ("all", item.status.value)
         ]
     documents: list[dict[str, Any]] = [item.as_json(now=now) for item in items]
     return paginated_response(
-        documents, limit=max(len(documents), 1), has_more=False, request_id=_request_id(request)
+        documents, limit=max(len(documents), 1), has_more=False, request_id=request_id_of(request)
     )
 
 
@@ -137,7 +124,7 @@ def post_approve(request: Request, trajectory_id: str, body: ApproveBody | None 
     is offered to a request that is not a raise.
     """
     principal = require_scope(request, "approve")
-    runtime = _runtime(request)
+    runtime = runtime_of(request)
     outcome = runtime.approvals.grant(
         trajectory_id,
         approver=Approver(token_id=principal.token_id, name=principal.name),
@@ -154,7 +141,7 @@ def post_approve(request: Request, trajectory_id: str, body: ApproveBody | None 
             for intent in outcome.minted
         ],
     }
-    return json_response(document, request_id=_request_id(request))
+    return json_response(document, request_id=request_id_of(request))
 
 
 @router.post(
@@ -169,7 +156,7 @@ def post_deny(request: Request, trajectory_id: str, body: DenyBody | None = None
     nothing is pending and the last request was not denied.
     """
     principal = require_scope(request, "approve")
-    runtime = _runtime(request)
+    runtime = runtime_of(request)
     view = runtime.approvals.deny(
         trajectory_id,
         approver=Approver(token_id=principal.token_id, name=principal.name),
@@ -180,4 +167,4 @@ def post_deny(request: Request, trajectory_id: str, body: DenyBody | None = None
         "request": view.as_json(now=datetime.now(UTC)),
         "state": runtime.trajectories.get(trajectory_id).state.value,
     }
-    return json_response(document, request_id=_request_id(request))
+    return json_response(document, request_id=request_id_of(request))

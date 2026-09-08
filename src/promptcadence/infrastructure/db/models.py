@@ -57,7 +57,7 @@ at Phase 6 and CutCtx's later one should copy. Three things make it an example r
   ``run_id``/``source_ref`` are opaque strings; the application reads them through the package's
   own ledger class (ADR-0050 decision 2), never through a ``select`` written here.
 
-``egress_decisions`` (Commissioner) is **not** created here yet; it arrives the same way at Phase 6.
+``egress_decisions`` (Commissioner) is mounted the same way, as :data:`EGRESS_TABLES`.
 
 Phase 8 adds ``compactions`` (migration ``0009``) and ``explanation_revisions`` (migration
 ``0010``). CutCtx is **not** mounted: it owns no table — it plans and applies over values and
@@ -208,7 +208,7 @@ class Thread(Base):
     """One thread of turns within a trajectory (spec §10: PromptCadence-internal, package-shaped).
 
     Built without PromptCadence vocabulary leaking into the *shape*, per the recorded ThreadRack
-    rejection (ADR-0045 rule 5) — the domain module that will wrap this table arrives in Phase 2.
+    rejection (ADR-0045 rule 5); :mod:`promptcadence.domain.threads` wraps it.
     """
 
     __tablename__ = "threads"
