@@ -28,21 +28,24 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 from baseaicore import SuiteError, ValidationError
 from sqlalchemy import select
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 from weightsdb import upsert
 
 from promptcadence.config import env_var_for
 from promptcadence.infrastructure.db.models import Setting
+from promptcadence.services.database import Database
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import datetime
 
     from promptcadence.config import Settings
-    from promptcadence.services.database import Database
 
 __all__ = [
     "CONFIG_ONLY_SECURITY_KEYS",
@@ -50,8 +53,10 @@ __all__ = [
     "RUNTIME_SETTINGS",
     "RuntimeSetting",
     "SettingConfigOnly",
+    "all_configured_keys",
     "apply_runtime_settings",
     "config_only_keys",
+    "database_source_overlay",
     "is_config_only",
     "read_runtime_settings",
     "runtime_settings_document",
@@ -226,18 +231,12 @@ def is_config_only(key: str) -> bool:
     return key in CONFIG_ONLY_SECURITY_KEYS or key.startswith(CONFIG_ONLY_SECURITY_PREFIXES)
 
 
-def config_only_keys(settings: Settings) -> tuple[str, ...]:
-    """Every configured key this build refuses by name, sorted — what the page lists.
+def _walk_leaf_keys(settings: Settings) -> set[str]:
+    """Every dotted leaf path this configuration has, keyed tables expanded to their entries.
 
-    Args:
-        settings: The loaded configuration, walked so the keyed tables (``[tiers.<name>]``,
-            ``[budget.projects.<name>]``) are named as they are actually configured rather than
-            as a placeholder the operator would have to expand themselves.
-
-    Returns:
-        The dotted paths, sorted. Keys outside the registry that are *not* security-relevant are
-        absent: they are refused as unknown, and listing them would read as a promise that the
-        rest of the model is changeable here.
+    The one walk behind both :func:`all_configured_keys` and :func:`config_only_keys`, so the
+    settings-schema document and the config-only list can never name a keyed leaf
+    (``[tiers.<name>]``, ``[budget.projects.<name>]``) differently.
     """
     found: set[str] = set()
     for section_name in type(settings).model_fields:
@@ -260,7 +259,36 @@ def config_only_keys(settings: Settings) -> tuple[str, ...]:
                 )
                 continue
             found.add(key)
-    return tuple(sorted(key for key in found if is_config_only(key)))
+    return found
+
+
+def all_configured_keys(settings: Settings) -> tuple[str, ...]:
+    """Every leaf key this configuration expands to, sorted (ADR-0127 rule 1's schema document).
+
+    Args:
+        settings: The loaded configuration, walked so the keyed tables are named as they are
+            actually configured rather than left as a placeholder.
+
+    Returns:
+        Every dotted leaf path, sorted — runtime-changeable, security and plain config-only alike.
+    """
+    return tuple(sorted(_walk_leaf_keys(settings)))
+
+
+def config_only_keys(settings: Settings) -> tuple[str, ...]:
+    """Every configured key this build refuses by name, sorted — what the page lists.
+
+    Args:
+        settings: The loaded configuration, walked so the keyed tables (``[tiers.<name>]``,
+            ``[budget.projects.<name>]``) are named as they are actually configured rather than
+            as a placeholder the operator would have to expand themselves.
+
+    Returns:
+        The dotted paths, sorted. Keys outside the registry that are *not* security-relevant are
+        absent: they are refused as unknown, and listing them would read as a promise that the
+        rest of the model is changeable here.
+    """
+    return tuple(sorted(key for key in _walk_leaf_keys(settings) if is_config_only(key)))
 
 
 def shadowing_source(key: str) -> str | None:
@@ -419,6 +447,53 @@ def runtime_settings_document(database: Database, *, settings: Settings) -> dict
         "definitions": definitions,
         "config_only": list(config_only_keys(settings)),
     }
+
+
+def database_source_overlay(settings: Settings) -> dict[str, tuple[object, str]]:
+    """The runtime-changeable values the ``settings`` table decides, and how to label them.
+
+    Configuration standards §7 asks ``config show`` (and the ADR-0127 schema document's
+    ``sources``) to mark database-sourced values ``(database)``. This opens the configured
+    database read-only to find them, and **never raises**: an absent, unmigrated or unreadable
+    database is not a failure of the caller — printing the configured values is exactly the right
+    answer when there is no database to consult, and a command that needed one would be unusable
+    on a fresh install.
+
+    Args:
+        settings: The loaded :class:`Settings`.
+
+    Returns:
+        ``path -> (value, source)`` for the keys the database changes, plus the keys whose stored
+        row is shadowed by the environment — those keep their configured value and say that a row
+        exists and does nothing. Empty when no database can be read.
+    """
+    database_url = settings.storage.database_url
+    if database_url is None:  # pragma: no cover — StorageSettings always fills this in
+        return {}
+    url = make_url(database_url)
+    # Connecting would create the file. An inspection command must not leave a database behind
+    # that `db status` would then report as unmigrated.
+    if (
+        url.drivername.startswith("sqlite")
+        and url.database not in (None, ":memory:")
+        and not Path(str(url.database)).is_file()
+    ):
+        return {}
+    try:
+        with Database.from_url(database_url) as database:
+            document = runtime_settings_document(database, settings=settings)
+    except (SQLAlchemyError, SuiteError, OSError):
+        return {}
+    overlay: dict[str, tuple[object, str]] = {}
+    for key, definition in document["definitions"].items():
+        if definition["source"] == "database":
+            overlay[key] = (document["settings"][key], "database")
+        elif definition["shadowed_by"] is not None:
+            overlay[key] = (
+                document["settings"][key],
+                f"{definition['shadowed_by']}; database row {definition['stored']} shadowed",
+            )
+    return overlay
 
 
 def apply_runtime_settings(target: Settings, effective: Mapping[str, Any]) -> None:

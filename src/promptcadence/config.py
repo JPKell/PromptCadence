@@ -58,6 +58,7 @@ __all__ = [
     "data_dir",
     "env_var_for",
     "load_settings",
+    "load_settings_tolerant",
     "resolve_config_path",
     "state_dir",
 ]
@@ -819,19 +820,34 @@ def load_settings(
             ``approve``-scoped API token — see :mod:`promptcadence.bootstrap`.
     """
     resolved_path = resolve_config_path(config_path)
-    file_data: dict[str, Any] = {}
-    file_used = False
-    if resolved_path.is_file():
-        try:
-            with resolved_path.open("rb") as handle:
-                file_data = tomllib.load(handle)
-        except tomllib.TOMLDecodeError as exc:
-            raise ConfigurationError(
-                f"Configuration file {resolved_path} is not valid TOML: {exc}",
-                details={"file": str(resolved_path)},
-            ) from exc
-        file_used = True
+    file_data, file_used = _read_toml_file(resolved_path)
+    return _validate_and_load(
+        file_data, file_used=file_used, resolved_path=resolved_path, cli_overrides=cli_overrides
+    )
 
+
+def _read_toml_file(resolved_path: Path) -> tuple[dict[str, Any], bool]:
+    """Parse ``resolved_path`` if it exists; a missing file is normal, not an error (§2)."""
+    if not resolved_path.is_file():
+        return {}, False
+    try:
+        with resolved_path.open("rb") as handle:
+            return tomllib.load(handle), True
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigurationError(
+            f"Configuration file {resolved_path} is not valid TOML: {exc}",
+            details={"file": str(resolved_path)},
+        ) from exc
+
+
+def _validate_and_load(
+    file_data: dict[str, Any],
+    *,
+    file_used: bool,
+    resolved_path: Path,
+    cli_overrides: dict[str, Any] | None,
+) -> LoadedSettings:
+    """Merge the three layers onto ``file_data``, validate, and track per-leaf sources."""
     env_data = _read_env(ENV_PREFIX)
     cli_data = cli_overrides or {}
     merged = _deep_merge(_deep_merge(file_data, env_data), cli_data)
@@ -849,6 +865,55 @@ def load_settings(
     return LoadedSettings(
         settings=settings, config_path=resolved_path, config_file_used=file_used, sources=sources
     )
+
+
+def _delete_error_path(data: dict[str, Any], loc: tuple[Any, ...]) -> None:
+    """Remove the nested key ``loc`` (a pydantic error location) from ``data``, in place."""
+    node = data
+    for part in loc[:-1]:
+        node = node[part]
+    del node[loc[-1]]
+
+
+def load_settings_tolerant(
+    *, config_path: str | Path | None = None
+) -> tuple[LoadedSettings, tuple[str, ...]]:
+    """Load configuration for the settings-schema document, tolerating an unknown key in the file.
+
+    ``<app> config schema`` (ADR-0127 rule 1) has to produce a document even when the operator's
+    file names a key this build does not recognize — the document is what a settings form reads to
+    render every *other* field, so one typo must not blank the whole form. An unknown key at the
+    file layer is pruned before validation and named in the returned ``problems`` instead of
+    raising. Every other refusal — bad TOML, a wrong type, an insecure bind, a misconfigured tier
+    or project — still raises: those are not "unknown key" problems, and a document built around
+    them would not describe a configuration this application could actually run.
+
+    Args:
+        config_path: Same as :func:`load_settings`.
+
+    Returns:
+        The settings loaded from the pruned file (environment and CLI layers untouched), and every
+        unknown dotted key path the file named, in the order pydantic reported them.
+
+    Raises:
+        ConfigurationError: Any refusal other than an unknown file key — see :func:`load_settings`.
+    """
+    resolved_path = resolve_config_path(config_path)
+    file_data, file_used = _read_toml_file(resolved_path)
+    problems: list[str] = []
+    if file_data:
+        try:
+            Settings.model_validate(file_data)
+        except PydanticValidationError as exc:
+            for error in exc.errors():
+                if error["type"] != "extra_forbidden":
+                    continue
+                problems.append(".".join(str(part) for part in error["loc"]))
+                _delete_error_path(file_data, error["loc"])
+    loaded = _validate_and_load(
+        file_data, file_used=file_used, resolved_path=resolved_path, cli_overrides=None
+    )
+    return loaded, tuple(problems)
 
 
 EXAMPLE_CONFIG_TOML: Final = """\

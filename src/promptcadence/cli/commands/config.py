@@ -1,4 +1,4 @@
-"""promptcadence.cli.commands.config — show, validate, init, path, reference.
+"""promptcadence.cli.commands.config — show, validate, init, path, reference, schema.
 
 Only ``typer`` and ``json`` load at module level; ``promptcadence.config`` (which imports pydantic)
 is imported lazily inside each command body, per the same startup-performance discipline as
@@ -9,12 +9,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 import typer
-
-if TYPE_CHECKING:  # imported for typing only: `promptcadence.config` loads pydantic, and the
-    from promptcadence.config import Settings  # CLI keeps that out of module import time
 
 __all__ = ["app"]
 
@@ -38,59 +35,6 @@ def _flatten(payload: dict[str, object], prefix: str = "") -> list[tuple[str, ob
     return rows
 
 
-def _database_overlay(settings: Settings) -> dict[str, tuple[object, str]]:
-    """The runtime-changeable values the ``settings`` table decides, and how to label them.
-
-    Configuration standards §7 asks ``config show`` to mark database-sourced values
-    ``(database)``. This opens the configured database read-only to find them, and **never
-    raises**: an absent, unmigrated or unreadable database is not a failure of ``config show`` —
-    printing the configured values is exactly the right answer when there is no database to
-    consult, and a command that needed one would be unusable on a fresh install.
-
-    Args:
-        settings: The loaded :class:`~promptcadence.config.Settings`.
-
-    Returns:
-        ``path -> (value, source)`` for the keys the database changes, plus the keys whose stored
-        row is shadowed by the environment — those keep their configured value and say that a row
-        exists and does nothing. Empty when no database can be read.
-    """
-    from baseaicore import SuiteError
-    from sqlalchemy.engine import make_url
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from promptcadence.services.database import Database
-    from promptcadence.services.settings import runtime_settings_document
-
-    database_url = settings.storage.database_url
-    if database_url is None:  # pragma: no cover — StorageSettings always fills this in
-        return {}
-    url = make_url(database_url)
-    # Connecting would create the file. An inspection command must not leave a database behind
-    # that `db status` would then report as unmigrated.
-    if (
-        url.drivername.startswith("sqlite")
-        and url.database not in (None, ":memory:")
-        and not Path(str(url.database)).is_file()
-    ):
-        return {}
-    try:
-        with Database.from_url(database_url) as database:
-            document = runtime_settings_document(database, settings=settings)
-    except (SQLAlchemyError, SuiteError, OSError):
-        return {}
-    overlay: dict[str, tuple[object, str]] = {}
-    for key, definition in document["definitions"].items():
-        if definition["source"] == "database":
-            overlay[key] = (document["settings"][key], "database")
-        elif definition["shadowed_by"] is not None:
-            overlay[key] = (
-                document["settings"][key],
-                f"{definition['shadowed_by']}; database row {definition['stored']} shadowed",
-            )
-    return overlay
-
-
 @app.command("show")
 def show(
     config: Annotated[
@@ -111,6 +55,7 @@ def show(
         promptcadence config show --json
     """
     from promptcadence.config import ConfigurationError, load_settings
+    from promptcadence.services.settings import database_source_overlay
 
     try:
         loaded = load_settings(config_path=config)
@@ -119,7 +64,7 @@ def show(
         raise typer.Exit(3) from exc
 
     dumped = loaded.settings.model_dump(mode="json")
-    overlay = _database_overlay(loaded.settings)
+    overlay = database_source_overlay(loaded.settings)
     sources = dict(loaded.sources)
     for path, (value, source) in overlay.items():
         sources[path] = source
@@ -152,16 +97,41 @@ def validate(
     config: Annotated[
         str | None, typer.Option("--config", help="Path to a config.toml file.")
     ] = None,
+    file: Annotated[
+        str | None,
+        typer.Option(
+            "--file",
+            help=(
+                "Validate this candidate file instead of the configured one (ADR-0127 rule 2). "
+                "Unlike --config, a missing --file is a clean error, and the application's own "
+                "config.toml is never read or written."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Validate configuration without starting the service. Exit 0 or 3.
 
+    Without ``--file``, this is the existing verb: the resolved configuration (``--config``
+    overrides the search, as elsewhere) is validated, and a missing file falls back to defaults —
+    "starts with zero configuration" (spec §20 AC1). With ``--file``, an arbitrary candidate is
+    run through the same parse, validation and security refusals, so WeightRoomGym can check a
+    file it is about to write in place before it lands.
+
     Example:
-        promptcadence config validate --config ./config.toml
+        promptcadence config validate --file /tmp/candidate.toml
     """
     from promptcadence.config import ConfigurationError, load_settings
 
+    target = config
+    if file is not None:
+        candidate = Path(file).expanduser()
+        if not candidate.is_file():
+            typer.echo(f"Error: candidate file {candidate} does not exist.", err=True)
+            raise typer.Exit(3)
+        target = str(candidate)
+
     try:
-        load_settings(config_path=config)
+        load_settings(config_path=target)
     except ConfigurationError as exc:
         typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
         raise typer.Exit(3) from exc
@@ -252,3 +222,40 @@ def reference(
         typer.echo(f"wrote {target}")
     else:
         typer.echo(rendered)
+
+
+@app.command("schema")
+def schema(
+    config: Annotated[
+        str | None, typer.Option("--config", help="Path to a config.toml file.")
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print canonical single-line JSON.")
+    ] = False,
+) -> None:
+    """Print the ADR-0127 settings-schema document WeightRoomGym renders a form from.
+
+    Carries the pydantic ``json_schema`` of the whole model, the ``runtime_changeable`` registry
+    and ``security_keys`` (what ``PUT /settings`` refuses by name) verbatim, every other
+    ``config_only`` leaf, the per-leaf ``sources`` ``config show`` already reports, and any
+    unknown key the configuration file names under ``problems``. Never prints a secret: the
+    document carries key paths and layers, never a value from an ``api_key_env``/``api_key_file``
+    field.
+
+    Example:
+        promptcadence config schema --json | python -m json.tool
+    """
+    from baseaicore import canonical_json
+
+    from promptcadence.config import ConfigurationError
+    from promptcadence.services.config_schema import build_schema_document
+
+    try:
+        document = build_schema_document(config_path=config)
+    except ConfigurationError as exc:
+        typer.echo(f"Error: {exc.message} ({exc.code})", err=True)
+        raise typer.Exit(3) from exc
+    if json_output:
+        typer.echo(canonical_json(document))
+    else:
+        typer.echo(json.dumps(document, indent=2, sort_keys=True))

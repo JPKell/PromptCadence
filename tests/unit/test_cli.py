@@ -73,6 +73,57 @@ def test_config_validate_exits_three_for_invalid_config(tmp_path: Path) -> None:
     assert "INSECURE_BINDING" in result.stderr
 
 
+# --- ADR-0127 rule 2: `config validate --file` -------------------------------------------------
+
+
+def test_config_validate_file_accepts_a_valid_candidate(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.toml"
+    candidate.write_text("[server]\nport = 9500\n")
+    result = runner.invoke(app, ["config", "validate", "--file", str(candidate)])
+    assert result.exit_code == 0, result.stderr
+
+
+def test_config_validate_file_names_an_unknown_key(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.toml"
+    candidate.write_text('[server]\nhosts = "127.0.0.1"\n')  # typo: hosts, not host
+    result = runner.invoke(app, ["config", "validate", "--file", str(candidate)])
+    assert result.exit_code == 3
+    assert "hosts" in result.stderr
+
+
+def test_config_validate_file_refuses_insecure_binding(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.toml"
+    candidate.write_text('[server]\nhost = "0.0.0.0"\n')
+    result = runner.invoke(app, ["config", "validate", "--file", str(candidate)])
+    assert result.exit_code == 3
+    assert "INSECURE_BINDING" in result.stderr
+
+
+def test_config_validate_file_missing_is_a_clean_error(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["config", "validate", "--file", str(tmp_path / "absent.toml")])
+    assert result.exit_code == 3
+    assert "does not exist" in result.stderr
+
+
+def test_config_validate_file_never_touches_the_applications_own_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real config.toml is untouched by validating an unrelated candidate (ADR-0127 rule 2)."""
+    from promptcadence.config import resolve_config_path
+
+    own_config = resolve_config_path(None)
+    own_config.parent.mkdir(parents=True, exist_ok=True)
+    own_config.write_text("[server]\nport = 8768\n")
+    before = own_config.read_bytes()
+
+    candidate = tmp_path / "candidate.toml"
+    candidate.write_text("[server]\nport = 9500\n")
+    result = runner.invoke(app, ["config", "validate", "--file", str(candidate)])
+
+    assert result.exit_code == 0, result.stderr
+    assert own_config.read_bytes() == before
+
+
 def test_config_show_lists_effective_values() -> None:
     result = runner.invoke(app, ["config", "show"])
     assert result.exit_code == 0
@@ -177,6 +228,48 @@ def test_config_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
     result = runner.invoke(app, ["config", "init", "--config", str(target)])
     assert result.exit_code == 3
     assert target.read_text() == "# already here\n"
+
+
+# --- ADR-0127 rule 1: `config schema` -----------------------------------------------------------
+
+
+def test_config_schema_exits_zero_and_prints_json() -> None:
+    result = runner.invoke(app, ["config", "schema"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["application"] == "promptcadence"
+    assert payload["schema_version"] == "1.0"
+
+
+def test_config_schema_json_flag_is_canonical() -> None:
+    from baseaicore import canonical_json
+
+    result = runner.invoke(app, ["config", "schema", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert canonical_json(payload) == result.stdout.strip()
+
+
+def test_config_schema_exits_three_for_a_real_refusal(tmp_path: Path) -> None:
+    config_file = tmp_path / "bad.toml"
+    config_file.write_text('[server]\nhost = "0.0.0.0"\n')  # unacknowledged LAN exposure
+    result = runner.invoke(app, ["config", "schema", "--config", str(config_file)])
+    assert result.exit_code == 3
+    assert "INSECURE_BINDING" in result.stderr
+
+
+def test_config_schema_reports_an_unknown_file_key_as_a_problem(tmp_path: Path) -> None:
+    from promptcadence.config import resolve_config_path
+
+    own_config = resolve_config_path(None)
+    own_config.parent.mkdir(parents=True, exist_ok=True)
+    own_config.write_text('[server]\nhosts = "127.0.0.1"\nport = 9600\n')  # typo: hosts
+
+    result = runner.invoke(app, ["config", "schema", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert {"key": "server.hosts", "reason": "unknown configuration key"} in payload["problems"]
+    assert payload["sources"]["server.port"] == "file"  # the rest of the file still loaded
 
 
 def test_db_upgrade_then_status_then_backup() -> None:
