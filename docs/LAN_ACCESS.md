@@ -1,107 +1,124 @@
-# LAN access — the four applications from other machines on your network
+# LAN access — the suite from other machines on your network, through WeightRoom
 
-**Audience:** an operator who wants FreeWeight, LoadCoach, IdeaPress and PromptCadence reachable
-from a laptop, phone or second workstation on the same LAN. **Reference machine:** `Jordan-main`,
-`10.77.10.84`, Ubuntu with systemd and Avahi (`jordan-main.local` resolves on the LAN).
+**Audience:** an operator who wants the suite reachable from a laptop, phone or second
+workstation on the same LAN. **Reference machine:** `Jordan-main`, `10.77.10.84`, Ubuntu with
+systemd and Avahi (`jordan-main.local` resolves on the LAN).
 
-**Read first:** [ADR-0026](adr/0026-local-http-hardening.md) (the Host allowlist, CSRF, why TLS),
-each app's `docs/security.md` (its own exposure rules), `docs/scripts/expose_on_lan.sh` (what this
-document describes, as a script).
+**Read first:** [ADR-0126](adr/0126-weightroom-is-the-only-service-on-the-lan-and-terminates-tls-with-its-own-ca.md)
+(why one service, why its own CA, why a login), [ADR-0026](adr/0026-local-http-hardening.md) (the
+Host allowlist, CSRF), [ADR-0125](adr/0125-weightroom-drives-the-applications-through-systemd-user-units-it-writes.md)
+(how the applications run), each app's `docs/security.md` (its own exposure rules, unchanged).
+
+**Status (2026-09-09, row W0):** this is the design. WeightRoom rows W1 (TLS, login, `setup`) and
+W2 (units) build it; until they ship there is no supported LAN path — the Caddy script this
+document used to describe was retired with this rewrite, and a machine that still runs its Caddy
+site and units should turn them off (`sudo systemctl disable --now caddy`; `systemctl --user
+disable --now freeweight loadcoach ideapress promptcadence`) before running `weightroom setup`.
 
 ---
 
 ## 1. The shape, and why
 
-Every app is **local-first**: bound to `127.0.0.1`, no credentials, safe only because nothing off
-the machine can reach it. Each will refuse to start on a non-loopback bind without a Host
+Every application is **local-first**: bound to `127.0.0.1`, no credentials, safe only because
+nothing off the machine can reach it. Each refuses to start on a non-loopback bind without a Host
 allowlist and a credential (`INSECURE_BINDING`). Two facts decide the shape:
 
 1. **The web UIs need TLS from any hostname but `localhost`.** The CSRF cookie every form uses is
    `__Host-`-prefixed and `Secure`; browsers set it over `http://localhost` and over `https://`,
-   and over nothing else. Plain `http://10.77.10.84:8765` renders the page and then refuses every
-   form post with `403 CSRF_FAILED`. This is not configurable, on purpose.
-2. **IdeaPress has no authentication at all** (single-user by design, security.md "What IdeaPress
-   does not do"). Something in front of it has to ask who you are.
+   and over nothing else.
+2. **IdeaPress has no authentication and PromptCadence's console is loopback-first by decision**
+   ([ADR-0094](adr/0094-the-console-authenticates-as-the-api-does.md)). Something in front of
+   them has to ask who you are.
 
-So: **the apps stay on loopback, and one reverse proxy does both jobs.** Caddy terminates TLS
-with its own local certificate authority, asks for a username and password, and forwards to
-`127.0.0.1:<app port>`. Nothing about the apps' security posture changes — they still bind
-loopback, still require no app-level token — except that each app's `allowed_hosts` names this
-machine so the proxied `Host` header passes the rebinding check.
+So: **the four applications stay on loopback, and exactly one thing faces the LAN — WeightRoom.**
+It terminates TLS under a certificate authority it creates, asks for a username and password,
+and gives you every application's control surface as its own pages. Nothing about the
+applications' posture changes: they still bind loopback, still require no token, and their own
+UIs still work on the machine at `http://localhost:<port>`.
 
-| App | Loopback (unchanged) | On the LAN, through Caddy |
+| Service | On the machine | On the LAN |
 |---|---|---|
-| FreeWeight | `127.0.0.1:8765` | `https://jordan-main.local:9765` |
-| LoadCoach | `127.0.0.1:8766` | `https://jordan-main.local:9766` |
-| IdeaPress | `127.0.0.1:8767` | `https://jordan-main.local:9767` |
-| PromptCadence | `127.0.0.1:8768` | `https://jordan-main.local:9768` |
+| WeightRoom | `https://localhost:8769` | **`https://jordan-main.local:8769`** (or `https://10.77.10.84:8769`) |
+| Trust page (the root certificate, plain HTTP) | — | `http://jordan-main.local:8770/trust` |
+| FreeWeight | `http://127.0.0.1:8765` | not reachable — use the FreeWeight tab in WeightRoom |
+| LoadCoach | `http://127.0.0.1:8766` | not reachable — the LoadCoach tab |
+| IdeaPress | `http://127.0.0.1:8767` | not reachable — the IdeaPress tab |
+| PromptCadence | `http://127.0.0.1:8768` | not reachable — the PromptCadence tab |
+| Ollama | `http://127.0.0.1:11434` | see §5 |
 
-Each is also reachable as `https://10.77.10.84:<port>` for a client without mDNS. The
-composition between apps (IdeaPress → LoadCoach, PromptCadence → LoadCoach) keeps using loopback
-and is untouched.
+The composition between applications (IdeaPress → LoadCoach, PromptCadence → LoadCoach) keeps
+using loopback and is untouched.
 
-**Not chosen:** binding each app to `10.77.10.84` with `auth.tokens` / `token create`. It works
-for API callers with a bearer token, still needs TLS for every UI, exposes four HTTP ports instead
-of one proxy, and does nothing for IdeaPress. Keep it for a headless API-only host.
+**Not chosen:** binding an application to `10.77.10.84` with `auth.tokens` / `token create`. It
+works for an API caller with a bearer token — a script on the laptop calling LoadCoach directly —
+still needs TLS in front for any UI, and exposes a port per application. Keep it for a headless
+API-only host; [master architecture §8.2](architecture/master-architecture.md) still describes it.
 
 ---
 
 ## 2. Turning it on
 
 ```bash
-~/ai/suite/docs/scripts/expose_on_lan.sh          # asks for a username and password
-~/ai/suite/docs/scripts/expose_on_lan.sh --off    # stop everything; leaves configuration in place
+pip install openweight-gym            # or the workspace's install_local.sh
+weightroom setup                      # asks: bind (LAN interface or loopback), username, password
+weightroom serve                      # or: systemctl --user start weightroom  (setup enabled it)
 ```
 
-What it does, in order — each step is what you would do by hand:
+What `setup` does, in order — each step is what you would do by hand:
 
-1. `apt-get install caddy` if absent; `loginctl enable-linger` so user services outlive logins.
-2. Hashes the password with `caddy hash-password`. The plaintext is never written anywhere.
-3. Appends a `[server]` block to each app's `~/.config/<app>/config.toml`:
-   `allowed_hosts = ["localhost", "127.0.0.1", "jordan-main.local", "10.77.10.84"]`, and for
-   LoadCoach and PromptCadence `trusted_proxies = ["127.0.0.0/8"]` so their rate-limit and
-   failed-auth brakes key on the real client address from `X-Forwarded-For`, not on Caddy's.
-   An existing `[server]` block is left alone and named.
-4. Writes `/etc/caddy/Caddyfile`: one `https://` site per app with `tls internal`, `basicauth`,
-   `reverse_proxy 127.0.0.1:<port>`; plus a plain-HTTP site on `:9780` serving **only** the CA's
-   public `root.crt` from `/etc/caddy/public` (never the CA directory, which holds private keys).
-   Validates, enables and reloads Caddy; waits for the local CA to exist.
-5. Writes four `systemd --user` units (`ExecStart=<venv>/bin/<app> serve`, `Restart=on-failure`),
-   enables and starts them, waits for each `/api/v1/health`.
-6. Checks every app through Caddy with the credentials (expects `200`) and without (expects `401`).
+1. Creates the certificate authority and the server certificate under
+   `~/.config/weightroom/tls/` (ECDSA P-256; the root lasts 10 years, the leaf 398 days and
+   renews itself; the leaf names the hostname, `<hostname>.local`, every LAN address, and
+   `localhost`).
+2. Creates the operator account (the password is scrypt-hashed; the plaintext is never written).
+3. Fills `server.allowed_hosts` with the hostname, `<hostname>.local` and the LAN addresses, and
+   sets `server.host` to the interface you chose (or leaves loopback).
+4. Creates a `write` token on LoadCoach and a `write,approve` token on PromptCadence for chat,
+   stored as files under `~/.config/weightroom/secrets/` and named by reference in
+   `config.toml` — not required while the applications bind loopback, kept so chat survives an
+   application moving off it.
+5. Enables lingering (`loginctl enable-linger`) so user units outlive logins, writes the five
+   `systemd --user` units (`weightroom`, `freeweight`, `loadcoach`, `ideapress`,
+   `promptcadence`), enables and starts them, and waits for each `/api/v1/health`.
+6. Prints the root certificate's fingerprint, the trust URLs, and — if you want the Ollama
+   restart button — the polkit rule and the `sudo install` command for it
+   ([ADR-0125](adr/0125-weightroom-drives-the-applications-through-systemd-user-units-it-writes.md)
+   rule 5). Nothing in `setup` runs `sudo`.
 
-Re-running is safe. The Caddyfile is backed up once per day before it is rewritten.
+Re-running is safe. `weightroom units sync` regenerates the unit files; `weightroom doctor` tells
+you what is missing, including anything §2 of [`MEMORY_SAFETY.md`](MEMORY_SAFETY.md) still wants
+on the host.
 
 ---
 
 ## 3. Trusting the certificate on each client
 
-Caddy's `tls internal` signs with a CA that only this machine knows. Every client device must
-trust that CA's root certificate **once**; until it does, the browser shows a certificate warning,
-and — worse than the warning — treats the origin as insecure, so the `__Host-` cookie is never set
-and every form fails even after you click through. Trust the root; do not click through.
+WeightRoom's CA is one only this machine knows. Every client device must trust its root
+certificate **once**; until it does, the browser shows a certificate warning, and — worse than the
+warning — treats the origin as insecure, so the `__Host-` cookies are never set and login fails
+even after you click through. Trust the root; do not click through.
 
-**Get the certificate:** `http://jordan-main.local:9780/root.crt` (or `http://10.77.10.84:9780/root.crt`)
-from the client, or copy `~/jordan-main.local-root.crt` from the server. It is the CA's public
-certificate; it contains no secret. Its lifetime is 10 years; the per-site leaf certificates Caddy
-issues under it renew themselves.
+**Get the certificate:** `http://jordan-main.local:8770/root.crt` (or
+`http://10.77.10.84:8770/root.crt`) from the client, or `~/.config/weightroom/tls/ca.crt` from the
+server. It is the CA's public certificate; it contains no secret.
 
 **Verify before trusting** — on the server, print the fingerprint and compare it on the client:
 
 ```bash
-openssl x509 -in /etc/caddy/public/root.crt -noout -fingerprint -sha256 -subject
+weightroom trust          # prints the SHA-256 fingerprint, the paths, the URLs and these steps
+openssl x509 -in ~/.config/weightroom/tls/ca.crt -noout -fingerprint -sha256 -subject
 ```
 
 ### Linux (Debian/Ubuntu — system store, curl, Chrome, Chromium)
 
 ```bash
-sudo cp root.crt /usr/local/share/ca-certificates/jordan-main-caddy.crt   # must end in .crt
+sudo cp root.crt /usr/local/share/ca-certificates/weightroom-jordan-main.crt   # must end in .crt
 sudo update-ca-certificates
 ```
 
 Firefox keeps its own store: `Settings → Privacy & Security → Certificates → View Certificates
 → Authorities → Import…`, pick `root.crt`, tick *Trust this CA to identify websites*. (Or run
-`certutil -d sql:$HOME/.mozilla/firefox/<profile> -A -t "C,," -n jordan-main-caddy -i root.crt`
+`certutil -d sql:$HOME/.mozilla/firefox/<profile> -A -t "C,," -n weightroom-jordan-main -i root.crt`
 from `libnss3-tools`.) Snap-packaged Firefox and Chromium may ignore the system store; use the
 in-browser import for those.
 
@@ -129,11 +146,11 @@ the following store* → **Trusted Root Certification Authorities**.
 
 ### iOS / iPadOS
 
-1. Open `http://jordan-main.local:9780/root.crt` in Safari (not Chrome) → *Allow* the profile
+1. Open `http://jordan-main.local:8770/root.crt` in Safari (not Chrome) → *Allow* the profile
    download.
 2. *Settings → General → VPN & Device Management → Downloaded Profile → Install* (device passcode).
 3. **Then, separately:** *Settings → General → About → Certificate Trust Settings* → turn on
-   *Enable Full Trust for Root Certificates* for the Caddy root. Without step 3 the profile is
+   *Enable Full Trust for Root Certificates* for the WeightRoom root. Without step 3 the profile is
    installed but not trusted for websites.
 
 ### Android
@@ -142,51 +159,63 @@ the following store* → **Trusted Root Certification Authorities**.
 certificate → CA certificate* → *Install anyway* → pick the downloaded `root.crt`. (Menu names
 vary by vendor and version; the store is always "CA certificate", not "VPN & app user
 certificate".) Chrome trusts user CAs; some apps built with a strict network-security config do
-not — the four web UIs are fine in Chrome and Firefox.
+not — the console is fine in Chrome and Firefox.
 
 ### The server itself
 
 ```bash
-sudo cp ~/jordan-main.local-root.crt /usr/local/share/ca-certificates/jordan-main-caddy.crt
+sudo cp ~/.config/weightroom/tls/ca.crt /usr/local/share/ca-certificates/weightroom-jordan-main.crt
 sudo update-ca-certificates
 ```
 
-Only needed for browsing the `https://jordan-main.local:97xx` URLs *from* the server; `localhost`
-keeps working over plain HTTP.
+Only needed for browsing `https://jordan-main.local:8769` *from* the server; `https://localhost:8769`
+also needs it (the console never serves plain HTTP), and `curl --cacert ~/.config/weightroom/tls/ca.crt`
+works without touching the system store.
 
 ### Check it worked
 
 ```bash
-curl -u <user> https://jordan-main.local:9766/api/v1/health     # no -k, no warning: trusted
+curl --cacert ~/.config/weightroom/tls/ca.crt https://jordan-main.local:8769/api/v1/version   # no -k
 ```
 
-A browser at `https://jordan-main.local:9767` shows a padlock, asks for the password once, and
-IdeaPress's forms submit.
+A browser at `https://jordan-main.local:8769` shows a padlock, asks for the password once, and the
+four applications' tabs work — forms included.
 
 ---
 
 ## 4. Operating it
 
-* **Change the password:** re-run the script with `LAN_USER=… LAN_PASSWORD=…`; it rewrites the
-  Caddyfile and reloads Caddy. Add more users by adding lines under `basicauth` in
-  `/etc/caddy/Caddyfile` (`caddy hash-password` for each) and `sudo systemctl reload caddy`.
-* **Logs:** `journalctl --user -u freeweight -f` (and the other three); `sudo journalctl -u caddy -f`.
-* **Rotate the CA** (a device you no longer control has the root): `sudo systemctl stop caddy`,
-  delete `/var/lib/caddy/.local/share/caddy/pki/authorities/local/`, start Caddy, re-run the
-  script, re-trust on every client.
-* **Turn it off:** `expose_on_lan.sh --off`. The apps' `[server]` blocks and the Caddyfile stay;
-  the apps are simply not running and Caddy is stopped. Delete the `[server]` block to return an
-  app to its pre-LAN configuration exactly.
-* **API clients on the LAN** (a script on the laptop calling LoadCoach): send HTTP basic auth to
-  Caddy — `curl -u user:pass https://jordan-main.local:9766/api/v1/…`. LoadCoach's and
-  PromptCadence's own bearer tokens are not required while they bind loopback; add them
-  (`loadcoach token create …`) only if you later move an app off loopback.
+* **Change the password:** `weightroom operator password` on the server (revokes every session).
+* **Logs:** the *Logs* page of any application in the console; on the server
+  `journalctl --user -u weightroom -f` (and the other four).
+* **Renew the certificate:** it renews itself at startup within 30 days of expiry; `weightroom tls
+  renew` forces it. No re-trust needed — the root is unchanged.
+* **Rotate the CA** (a device you no longer control has the root): `weightroom tls rotate`, then
+  re-trust on every client (§3). Every session is revoked.
+* **Turn the LAN off:** set `server.host = "127.0.0.1"` in `~/.config/weightroom/config.toml`
+  and restart; the console is then local-only and still HTTPS.
+* **API clients on the LAN** (a script on the laptop calling LoadCoach): WeightRoom's API is for
+  its own pages. Expose the application itself the token-and-proxy way
+  ([master architecture §8.2](architecture/master-architecture.md)), or run the script on the
+  server. A WeightRoom API token for automation is a listed future extension
+  ([spec §21](apps/weightroom/spec.md)).
 
-## 5. What this does not do
+## 5. Ollama
+
+The reference machine's `ollama.service` override sets `OLLAMA_HOST=0.0.0.0:11434`, so Ollama
+itself listens on the LAN, unauthenticated. That is the operator's daemon and the operator's
+choice — it is what a LAN client that talks to Ollama directly needs — but it is the one thing on
+this machine besides WeightRoom that answers from another room. If no such client exists, set
+`OLLAMA_HOST=127.0.0.1:11434` in the override ([`MEMORY_SAFETY.md`](MEMORY_SAFETY.md) §2.1 shows
+the file) and restart Ollama; `weightroom doctor` reports the `0.0.0.0` bind as a notice either way.
+
+## 6. What this does not do
 
 * No exposure beyond the LAN. Nothing here opens a router port, and the certificate is not
-  publicly trusted; for the internet you want a real domain, a public CA (Caddy does that
-  automatically with a DNS name it can answer for) and a stronger authenticator than basic auth.
-* No per-user accounts inside the apps. Everyone with the Caddy password is the same operator to
-  every app; PromptCadence's approvals from the LAN are recorded as the loopback approver.
-* No change to any app's code. Everything is configuration the apps already document.
+  publicly trusted; for the internet you want a real domain, a public CA and a stronger
+  authenticator than one password ([ADR-0126](adr/0126-weightroom-is-the-only-service-on-the-lan-and-terminates-tls-with-its-own-ca.md)
+  rule 10).
+* No per-user accounts. One operator account in 1.0; a second person is a future record.
+  PromptCadence's approvals granted from the console are recorded under WeightRoom's token name.
+* No change to any application's code or posture. Every application keeps its `docs/security.md`
+  word for word.

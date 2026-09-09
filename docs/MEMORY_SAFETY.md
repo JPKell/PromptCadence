@@ -98,23 +98,44 @@ unless you accept that **every Ollama measurement becomes a different subject** 
 daemon-wide, not per request (ADR-0120 §"Ollama"), and FreeWeight cannot record what you set.
 KV-cache quantization is a llama.cpp feature in this suite.
 
-### 2.2 `llama-server` under LoadCoach or FreeWeight: run the parent in a capped scope
+### 2.2 `llama-server` under LoadCoach or FreeWeight: the unit carries the cap; a shell run wraps itself
 
 `llama-server` is a child of the application that launched it (ADR-0062) and inherits its cgroup.
-Until the launcher option in §3.1 ships, cap the parent:
+Two layers now cover the parent:
 
-```bash
-systemd-run --user --scope -p MemoryHigh=22G -p MemoryMax=24G -p MemorySwapMax=0 \
-    loadcoach serve
-systemd-run --user --scope -p MemoryHigh=22G -p MemoryMax=24G -p MemorySwapMax=0 \
-    freeweight run start --suite native.memory_kv --model llamacpp/…
-systemd-run --user --scope -p MemoryHigh=22G -p MemoryMax=24G -p MemorySwapMax=0 \
-    pytest -m live
-```
+* **Unit-managed applications (the operator path since row W0).** WeightRoom writes the
+  `systemd --user` units for the four applications, and the `freeweight` and `loadcoach` units
+  carry the cap themselves ([ADR-0125](adr/0125-weightroom-drives-the-applications-through-systemd-user-units-it-writes.md)
+  rule 1; values from WeightRoom's `[host] memory_high` / `memory_max`, defaulting to
+  RAM − 8 GB / RAM − 6 GB):
 
-The scope is under `user@1000.service`, which `systemd-oomd` already watches, so the cap and the
-pressure kill both apply. When the cap fires the kernel kills the largest process in the scope —
-`llama-server` — and the application's supervisor records a dead server, not a hung machine.
+  ```ini
+  [Service]
+  MemoryHigh=22G
+  MemoryMax=24G
+  MemorySwapMax=0
+  ```
+
+  `weightroom units sync` writes them; `weightroom doctor` reports a unit missing them. Until
+  WeightRoom's row W2 ships, write the same three lines by hand into
+  `~/.config/systemd/user/<app>.service` (`systemctl --user daemon-reload && systemctl --user
+  restart <app>`), or use the wrapper below.
+* **Ad-hoc runs from a shell** — a one-off `freeweight run start`, `pytest -m live`, a developer
+  `loadcoach serve` in a terminal — wrap the parent, exactly as before:
+
+  ```bash
+  systemd-run --user --scope -p MemoryHigh=22G -p MemoryMax=24G -p MemorySwapMax=0 \
+      freeweight run start --suite native.memory_kv --model llamacpp/…
+  systemd-run --user --scope -p MemoryHigh=22G -p MemoryMax=24G -p MemorySwapMax=0 \
+      pytest -m live
+  ```
+
+Both land under `user@1000.service`, which `systemd-oomd` already watches, so the cap and the
+pressure kill both apply. When the cap fires the kernel kills the largest process in the cgroup —
+`llama-server` — and the application's supervisor records a dead server, not a hung machine. The
+launcher-level cap of §3.1 (`provider.memory_max_bytes`, shipped at row N4) sits inside either as
+the inner belt on `llama-server` itself; the unit or scope is the outer belt on the parent and
+anything else it spawns.
 
 ### 2.3 Verify the guard before trusting it
 
@@ -287,17 +308,21 @@ through `provider_options = { "--fit" = "on" }` / `"off"`.
 ## 6. Checklist
 
 **Today, on the host (§2)** — `docs/scripts/apply_memory_safety.sh` does all four (`--fire` runs
-§2.3); `MEMORY_MAX_G`, `MEMORY_HIGH_G`, `CONTEXT_TOKENS` in the environment change the sizes:
+§2.3); `MEMORY_MAX_G`, `MEMORY_HIGH_G`, `CONTEXT_TOKENS` in the environment change the sizes.
+`weightroom doctor` (row W4) checks every line of §2.1 and §2.2 and prints this script's
+invocation for whatever is missing; it never runs it, because §2.1 needs root:
 
 - [ ] `override.conf` rewritten as in §2.1; `daemon-reload`; `restart ollama`; `oomctl` shows the unit
 - [ ] `~/.config/freeweight/config.toml` has `runtime.context_size = 8192` (or your chosen size) —
       never unset
-- [ ] Live tests and long runs launched through the `systemd-run --user --scope` wrapper of §2.2
+- [ ] The `freeweight` and `loadcoach` units carry the three `Memory*` lines of §2.2 (WeightRoom
+      writes them; by hand until row W2), and shell runs use the `systemd-run --user --scope` wrapper
 - [ ] The guard fired once on purpose (§2.3) and the desktop survived
 
 **Rows (§3):** N4 ModelRack launcher cap → N5 FreeWeight 1.2 (settings, ceiling, `--fit off`) →
 N6 LoadCoach 1.3 (per-model override). N4 first; N5 and N6 are independent of each other.
 
-**After N4/N5/N6:** drop the wrapper of §2.2 in favour of `provider.memory_max_bytes`; set
+**After N4/N5/N6:** keep the unit-level cap of §2.2 as the outer belt and rely on
+`provider.memory_max_bytes` as the inner one; set
 `benchmarks.max_fit_context_tokens` for Ollama installations; choose per model whether a
 quantized KV cache is a subject you want measured.
