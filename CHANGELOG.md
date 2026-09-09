@@ -6,8 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+## [1.3.3] — 2026-09-09
+
 ### Added
 
+- `config schema --json` (ADR-0127 rule 1): a versioned settings-schema document —
+  `Settings.model_json_schema()`, the `runtime_changeable` and `security_keys` registries
+  verbatim, every other `config_only` leaf, `config show`'s per-leaf `sources`, and any unknown
+  file key under `problems` rather than dropped — so WeightRoomGym can render a settings form
+  without hardcoding PromptCadence's configuration surface. `config validate --file <path>`
+  (rule 2): validates an arbitrary candidate through the same parse and refusals `load_settings`
+  already runs, without touching the application's own `config.toml`; a missing `--file` is a
+  clean error, unlike the existing `--config`, which still falls back to defaults (row WS4).
 - `tests/unit/test_readme_version.py` — asserts the version README.md states after its `Status:`
   line equals `__about__.__version__`, so a release cannot leave the README stale (M9 re-audit,
   row L7).

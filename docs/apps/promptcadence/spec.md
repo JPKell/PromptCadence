@@ -176,7 +176,7 @@ GET  /settings                    PUT  /settings
 
 ```text
 promptcadence serve | health | doctor | version
-promptcadence config show|validate|init|path|reference
+promptcadence config show|validate [--file <path>]|init|path|reference|schema [--json]
 promptcadence db upgrade|status|backup|restore
 promptcadence run "<task>" [--classification …] [--budget …] [--tokens …] [--tier …]
             [--bypass-planning] [--tool …] [--follow] [--json]
@@ -192,6 +192,16 @@ promptcadence egress list [--denied-only] [--verdict approved|denied|violation]
                                        [--trajectory <id>] [--limit N] [--json]
 promptcadence token create|list|revoke
 ```
+
+`config schema --json` prints the [ADR-0127](../../adr/0127-every-application-publishes-its-settings-schema-and-weightroom-generates-the-form.md)
+rule 1 settings-schema document — `Settings.model_json_schema()`, the `runtime_changeable` and
+`security_keys` registries verbatim, every other `config_only` leaf, `config show`'s per-leaf
+`sources`, and any unknown key the configuration file names under `problems` rather than dropped —
+so WeightRoomGym renders a settings form without hardcoding this application's configuration
+surface. `config validate --file <path>` (rule 2) runs an arbitrary candidate file through the
+same parse, validation and security refusals as startup, without reading or writing the
+application's own `config.toml`; a missing `--file` is a clean error, unlike a missing `--config`,
+which still falls back to defaults.
 
 ## 8. Inputs
 
