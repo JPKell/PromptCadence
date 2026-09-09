@@ -286,7 +286,8 @@ through `provider_options = { "--fit" = "on" }` / `"off"`.
 
 ## 6. Checklist
 
-**Today, on the host (§2):**
+**Today, on the host (§2)** — `docs/scripts/apply_memory_safety.sh` does all four (`--fire` runs
+§2.3); `MEMORY_MAX_G`, `MEMORY_HIGH_G`, `CONTEXT_TOKENS` in the environment change the sizes:
 
 - [ ] `override.conf` rewritten as in §2.1; `daemon-reload`; `restart ollama`; `oomctl` shows the unit
 - [ ] `~/.config/freeweight/config.toml` has `runtime.context_size = 8192` (or your chosen size) —
