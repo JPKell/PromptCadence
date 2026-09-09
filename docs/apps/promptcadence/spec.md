@@ -101,7 +101,7 @@ and the policy pass over that plan. This distinction is load-bearing and is reco
 `commissioner`.
 **Deliberately absent:** `modelrack` (no provider access — §3) and `sweatmeter` (telemetry is
 displayed from LoadCoach's `/system/status`, the same way IdeaPress treats it).
-**Third party:** `fastapi`, `uvicorn[standard]`, `typer`, `pydantic`, `pydantic-settings`,
+**Third party:** `fastapi`, `uvicorn[standard]`, `typer`, `pydantic`,
 `sqlalchemy`, `alembic`, `jinja2`, `httpx` (the LoadCoach client).
 **External services:** a running LoadCoach (for execution, not for startup).
 
