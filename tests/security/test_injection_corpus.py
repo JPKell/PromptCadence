@@ -6,8 +6,8 @@ was written, what the wire carried. The fake LoadCoach scripts the model's answe
 measured is what PromptCadence did with it. No case asserts what the model said, so no case rots
 when a model gets more or less obedient.
 
-The inventory (case → property → where asserted) is in `docs/history/I2_HANDOFF.md`; the cases
-that already had a test at P4, P6 or G2 are named in `test_checklist.py`'s map rather than
+The inventory (case → property → where asserted) is in `docs/history/handoffs/I2_HANDOFF.md`; the
+cases that already had a test at P4, P6 or G2 are named in `test_checklist.py`'s map rather than
 duplicated here.
 """
 

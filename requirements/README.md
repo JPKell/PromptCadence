@@ -44,7 +44,7 @@ pip-compile --extra=dev --extra=postgres --generate-hashes --no-emit-index-url \
 
 Locally the repository still runs against editable installs; the lock is what makes a green CI
 build mean something. The clean-venv proof for 1.0 — install from the lock, install the package
-`--no-deps`, run the suite — is recorded in `docs/history/I2_HANDOFF.md`.
+`--no-deps`, run the suite — is recorded in `docs/history/handoffs/I2_HANDOFF.md`.
 
 ## Coverage measures the installed package, not the checkout
 

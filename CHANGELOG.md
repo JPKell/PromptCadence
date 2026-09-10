@@ -270,7 +270,7 @@ P8's compaction, explanation and console, and P9's hardening — the security ch
 item, the prompt-injection corpus as a release gate, the retention sweep, every spec §15 budget
 asserted, the remote tier reading its fact from LoadCoach, the operator set, the OpenAPI snapshot,
 the generated configuration reference and a hashed CI lock. What ships known is under *Known
-limitations*; the release handoff (`docs/history/I2_HANDOFF.md`) records the independent-brief
+limitations*; the release handoff (`docs/history/handoffs/I2_HANDOFF.md`) records the independent-brief
 verification on a real LoadCoach 1.1.0 over Ollama, the ten §15 numbers, and the corpus inventory.
 
 Of the beta's three known limitations: the sandboxed-tool clause of spec §20 #2 was closed at G2
