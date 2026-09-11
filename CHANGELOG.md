@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ### Added
 
+- **Every approval request over the API** (row WPC1, api.md §4): `GET /approvals?status=all`
+  without `trajectory_id` lists every request ever raised, newest first by
+  `(created_at, request_id)`, paged by `limit` (default 50, clamped to 200) and `cursor`. The
+  pending listing and the per-trajectory listings answer exactly as before. WeightRoomGym's
+  Approvals history read the database for want of it.
+- **Egress decisions newest first, and paged** (row WPC1, api.md §6): `GET /egress-decisions`
+  takes `sort=-decided_at` (or `decided_at`, the default, stated) and `cursor`, and sets
+  `page.next_cursor` whenever more decisions follow; with neither parameter the items are the
+  ones it always returned, and `page.has_more` is now exact rather than "the page was full".
+  An unknown `sort` and a cursor this API did not mint are `400 VALIDATION_ERROR` naming the
+  field.
+
 - **MirrorWall 0.3 adopted on the pages that want it** (row WM2, `apps/weightroom/design.md`
   §6): the trajectory list renders dense; the System page shows each health component, and the
   Tiers page each tier's availability, with the suite's status dot beside its own word; a

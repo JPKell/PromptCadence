@@ -144,6 +144,49 @@ def test_an_unknown_verdict_is_refused_rather_than_ignored(seeded: TestClient) -
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+def _ids(client: TestClient, **params: Any) -> list[str]:
+    body = client.get("/api/v1/egress-decisions", params=params).json()
+    return [row["decision_id"] for row in body["items"]]
+
+
+def test_the_default_order_is_unchanged_and_sort_reverses_it(seeded: TestClient) -> None:
+    """Chat reads one trajectory's decisions in the historical order; newest first is opt-in.
+
+    The three seeded decisions share one ``decided_at``, so the order here is the tie-breaker's —
+    ``decision_id`` — which is what makes it total.
+    """
+    default = _ids(seeded)
+    assert default == sorted(default)
+    assert _ids(seeded, sort="decided_at") == default
+    assert _ids(seeded, sort="-decided_at") == list(reversed(default))
+
+
+@pytest.mark.parametrize("sort", ["decided_at", "-decided_at"])
+def test_a_cursor_pages_every_decision_once_in_either_order(seeded: TestClient, sort: str) -> None:
+    whole = _ids(seeded, sort=sort)
+    paged: list[str] = []
+    cursor: str | None = None
+    while True:
+        body = seeded.get(
+            "/api/v1/egress-decisions",
+            params={"sort": sort, "limit": 1, **({"cursor": cursor} if cursor else {})},
+        ).json()
+        paged.extend(row["decision_id"] for row in body["items"])
+        cursor = body["page"]["next_cursor"]
+        assert body["page"]["has_more"] is (cursor is not None)
+        if cursor is None:
+            break
+    assert paged == whole
+    assert len(whole) == 3
+
+
+def test_an_unknown_sort_or_a_forged_cursor_is_refused_by_name(seeded: TestClient) -> None:
+    for params, field in (({"sort": "-reason"}, "sort"), ({"cursor": "not-a-cursor"}, "cursor")):
+        response = seeded.get("/api/v1/egress-decisions", params=params)
+        assert response.status_code == 400, params
+        assert response.json()["error"]["details"]["field"] == field
+
+
 # --------------------------------------------------------------------------------------------
 # promptcadence egress list
 # --------------------------------------------------------------------------------------------

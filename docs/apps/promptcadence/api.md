@@ -203,6 +203,14 @@ Pending requests, oldest first; `?trajectory_id=` narrows, `?status=all` include
 `gated_step`, `bypass_gate`, `reapproval`, `ceiling_raise`), the steps it is scoped to, what it asks
 (`detail`), when it expires and `age_seconds`. `read` scope.
 
+**Every request ever raised** is `?status=all` **without** `?trajectory_id=`: newest first, ordered
+by `(created_at, request_id)`, cursor-paginated as API standards §6 and `GET /trajectories` are —
+`?limit=` (default 50, clamped to 200; `page.limit` says what was applied) and `?cursor=` (the
+previous page's opaque `page.next_cursor`, `null` on the last page). A cursor this build did not mint
+is `400 VALIDATION_ERROR` naming `cursor`, never a silent first page. The pending listing and the
+per-trajectory listings are unchanged: oldest first, unpaginated, `?limit=` and `?cursor=` ignored.
+Additive, unreleased (row WPC1).
+
 ```json
 {
   "request_id": "01J9K…", "trajectory_id": "01J9K…", "kind": "reapproval",
@@ -289,6 +297,15 @@ and the violations a verification step wrote after the fact — each rendered as
 hand-written projection, so the wire shape cannot drift from the package's
 ([ADR-0051 §4](../../adr/0051-plans-stay-internal-and-one-payload-travels.md)). `source_ref` names the turn or
 tool invocation the decision gated. `read` scope.
+
+**Newest first, and paging**, opt-in (API standards §6): `?sort=-decided_at` orders by
+`(decided_at, decision_id)` descending; `?sort=decided_at` is the default order, stated; any other
+`sort` is `400 VALIDATION_ERROR` naming `sort`. `?cursor=` takes the previous page's opaque
+`page.next_cursor` in either order, and `page.next_cursor` is set whenever more decisions follow
+(`null` on the last page), so `page.has_more` is now exact. With neither parameter the items are
+exactly the ones this endpoint always returned — chat reads one trajectory's decisions in that
+order. A cursor this build did not mint is `400 VALIDATION_ERROR` naming `cursor`. Additive,
+unreleased (row WPC1).
 
 ## 7. Settings
 

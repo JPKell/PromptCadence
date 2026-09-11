@@ -354,6 +354,55 @@ class EgressService:
         """
         return self.ledger().decisions(run_id=run_id, verdict=verdict, target=target, since=since)
 
+    def page(  # noqa: PLR0913 — the filters, the order and the page
+        self,
+        *,
+        run_id: str | None = None,
+        verdict: Verdict | None = None,
+        target: str | None = None,
+        descending: bool = False,
+        limit: int,
+        cursor: str | None = None,
+    ) -> tuple[list[EgressDecision], str | None]:
+        """One page of recorded decisions, in either order of ``(decided_at, decision_id)``.
+
+        Args:
+            run_id: Restrict to one trajectory.
+            verdict: Restrict to approvals, denials or violations.
+            target: Restrict to one target name.
+            descending: Newest first; oldest first — this endpoint's historical order — otherwise.
+            limit: Decisions on this page; the caller has already clamped it.
+            cursor: The previous page's ``next_cursor`` in the same order, or ``None``.
+
+        Returns:
+            The page and the next cursor, ``None`` on the last page.
+
+        Raises:
+            ValidationError: ``cursor`` is not one this API minted.
+        """
+        from promptcadence.services.cursors import decode_cursor, encode_cursor
+
+        after = decode_cursor(cursor)
+        # ponytail: reads every matching decision and pages in memory, as this endpoint always
+        # did before slicing; push the order and the cursor into Commissioner's SqlEgressLedger if
+        # the egress table grows past what one read can hold.
+        ordered = list(self.decisions(run_id=run_id, verdict=verdict, target=target))
+        if descending:
+            ordered.reverse()
+        if after is not None:
+            ordered = [
+                one
+                for one in ordered
+                if (
+                    (one.decided_at, one.decision_id) < after
+                    if descending
+                    else (one.decided_at, one.decision_id) > after
+                )
+            ]
+        page = ordered[:limit]
+        more = len(ordered) > limit and bool(page)
+        return page, encode_cursor(page[-1].decided_at, page[-1].decision_id) if more else None
+
 
 def decision_view(decision: EgressDecision) -> dict[str, Any]:
     """Render one decision for ``GET /egress-decisions`` and ``promptcadence egress list``.

@@ -300,7 +300,7 @@
   "paths": {
     "/api/v1/approvals": {
       "get": {
-        "description": "Every pending request with its age, oldest first; ``status=all`` lists resolved ones too.\n\n``read`` scope. Each item names the trajectory, the kind of question (a held plan, a gated\nstep, the bypass gate, a scoped re-approval, a ceiling raise), the steps it is scoped to, what\nit asks (``detail``), when it expires, and how long it has waited.",
+        "description": "Every pending request with its age, oldest first; ``status=all`` lists resolved ones too.\n\n``read`` scope. Each item names the trajectory, the kind of question (a held plan, a gated\nstep, the bypass gate, a scoped re-approval, a ceiling raise), the steps it is scoped to, what\nit asks (``detail``), when it expires, and how long it has waited.\n\n``status=all`` with no ``trajectory_id`` is every request ever raised, newest first, paged by\n``limit`` (clamped to 200) and ``cursor``; ``400 VALIDATION_ERROR`` for a cursor this API did\nnot mint. Every other combination answers as it always has, unpaged (row WPC1).",
         "operationId": "list_approvals_api_v1_approvals_get",
         "parameters": [
           {
@@ -334,6 +334,38 @@
               ],
               "title": "Status"
             }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
           }
         ],
         "responses": {
@@ -364,7 +396,7 @@
     },
     "/api/v1/egress-decisions": {
       "get": {
-        "description": "Recorded egress decisions, oldest-decided first, narrowed by whichever filters are given.\n\nEvery decision this build made is here \u2014 approvals, denials and the violations a verification\nstep wrote after the fact \u2014 each rendered as SetSpec's ``governance.egress_decision`` 1.0.\n``source_ref`` names the turn or tool invocation the decision gated, which is how a decision is\nmatched back to what it governed.\n\n``400 VALIDATION_ERROR`` if ``verdict`` names something outside the vocabulary. ``read``\nscope.",
+        "description": "Recorded egress decisions, oldest-decided first, narrowed by whichever filters are given.\n\nEvery decision this build made is here \u2014 approvals, denials and the violations a verification\nstep wrote after the fact \u2014 each rendered as SetSpec's ``governance.egress_decision`` 1.0.\n``source_ref`` names the turn or tool invocation the decision gated, which is how a decision is\nmatched back to what it governed.\n\n``sort=-decided_at`` lists newest first; ``cursor`` continues from ``page.next_cursor`` in\neither order (row WPC1). With neither, the items are the ones this endpoint always returned.\n\n``400 VALIDATION_ERROR`` if ``verdict`` names something outside the vocabulary, ``sort`` is not\n``decided_at`` or ``-decided_at``, or ``cursor`` is not one this API minted. ``read`` scope.",
         "operationId": "get_egress_decisions_api_v1_egress_decisions_get",
         "parameters": [
           {
@@ -429,6 +461,38 @@
                 }
               ],
               "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sort"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           }
         ],

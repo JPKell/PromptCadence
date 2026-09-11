@@ -14,8 +14,6 @@ go", and the second question is the one spec §11 contract 3 exists to make answ
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from baseaicore import ValidationError
 from commissioner import Verdict
 from fastapi import APIRouter, Query, Request, Response
@@ -24,9 +22,6 @@ from mirrorwall import clamp_limit, paginated_response
 from promptcadence.services.egress import decision_view
 from promptcadence.web.auth import require_scope
 from promptcadence.web.state import request_id_of, runtime_of
-
-if TYPE_CHECKING:
-    from commissioner import EgressDecision
 
 __all__ = ["router"]
 
@@ -66,6 +61,8 @@ def get_egress_decisions(
     verdict: str | None = Query(default=None),
     target: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    sort: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
 ) -> Response:
     """Recorded egress decisions, oldest-decided first, narrowed by whichever filters are given.
 
@@ -74,19 +71,41 @@ def get_egress_decisions(
     ``source_ref`` names the turn or tool invocation the decision gated, which is how a decision is
     matched back to what it governed.
 
-    ``400 VALIDATION_ERROR`` if ``verdict`` names something outside the vocabulary. ``read``
-    scope.
+    ``sort=-decided_at`` lists newest first; ``cursor`` continues from ``page.next_cursor`` in
+    either order (row WPC1). With neither, the items are the ones this endpoint always returned.
+
+    ``400 VALIDATION_ERROR`` if ``verdict`` names something outside the vocabulary, ``sort`` is not
+    ``decided_at`` or ``-decided_at``, or ``cursor`` is not one this API minted. ``read`` scope.
     """
     require_scope(request, "read")
     effective = clamp_limit(limit, maximum=200)
-    decisions: list[EgressDecision] = list(
-        runtime_of(request).egress.decisions(
-            run_id=trajectory_id, verdict=_verdict(verdict), target=target
-        )
-    )[:effective]
+    decisions, next_cursor = runtime_of(request).egress.page(
+        run_id=trajectory_id,
+        verdict=_verdict(verdict),
+        target=target,
+        descending=_descending(sort),
+        limit=effective,
+        cursor=cursor,
+    )
     return paginated_response(
         [decision_view(decision) for decision in decisions],
         limit=effective,
-        has_more=len(decisions) == effective,
+        next_cursor=next_cursor,
+        has_more=next_cursor is not None,
         request_id=request_id_of(request),
     )
+
+
+def _descending(raw: str | None) -> bool:
+    """Parse ``sort``: ``-decided_at`` is newest first, ``decided_at`` or absent the default.
+
+    Raises:
+        ValidationError: Any other value, refused rather than ignored — an unsorted list read as a
+            sorted one would put the oldest decisions where a caller looks for the newest.
+    """
+    if raw in (None, "decided_at"):
+        return False
+    if raw == "-decided_at":
+        return True
+    message = f"sort must be decided_at or -decided_at; got {raw!r}"
+    raise ValidationError(message, details={"field": "sort"})

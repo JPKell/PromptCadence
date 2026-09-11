@@ -17,7 +17,7 @@ from typing import Any
 
 from baseaicore import Money
 from fastapi import APIRouter, Query, Request, Response, status
-from mirrorwall import json_response, paginated_response
+from mirrorwall import clamp_limit, json_response, paginated_response
 from pydantic import BaseModel, ConfigDict, Field
 
 from promptcadence.services.approvals import Approver, BudgetRaise, RequestStatus
@@ -79,16 +79,32 @@ def list_approvals(
     request: Request,
     trajectory_id: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
+    limit: int | None = Query(default=None),
+    cursor: str | None = Query(default=None),
 ) -> Response:
     """Every pending request with its age, oldest first; ``status=all`` lists resolved ones too.
 
     ``read`` scope. Each item names the trajectory, the kind of question (a held plan, a gated
     step, the bypass gate, a scoped re-approval, a ceiling raise), the steps it is scoped to, what
     it asks (``detail``), when it expires, and how long it has waited.
+
+    ``status=all`` with no ``trajectory_id`` is every request ever raised, newest first, paged by
+    ``limit`` (clamped to 200) and ``cursor``; ``400 VALIDATION_ERROR`` for a cursor this API did
+    not mint. Every other combination answers as it always has, unpaged (row WPC1).
     """
     require_scope(request, "read")
     runtime = runtime_of(request)
     now = datetime.now(UTC)
+    if status_filter == "all" and trajectory_id is None:
+        effective = clamp_limit(limit, maximum=200)
+        page, next_cursor = runtime.approvals.every_request(limit=effective, cursor=cursor)
+        return paginated_response(
+            [item.as_json(now=now) for item in page],
+            limit=effective,
+            next_cursor=next_cursor,
+            has_more=next_cursor is not None,
+            request_id=request_id_of(request),
+        )
     if status_filter == "all" and trajectory_id is not None:
         items = runtime.approvals.requests(trajectory_id)
     elif status_filter in (None, RequestStatus.PENDING.value):

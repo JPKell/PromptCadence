@@ -670,6 +670,44 @@ class ApprovalService:
                 statement = statement.where(models.ApprovalRequest.trajectory_id == trajectory_id)
             return [_view_of(row) for row in session.execute(statement).scalars()]
 
+    def every_request(
+        self, *, limit: int, cursor: str | None = None
+    ) -> tuple[list[ApprovalRequestView], str | None]:
+        """Every request ever raised, newest first, one page (API standards §6).
+
+        Ordered by ``(created_at, id)`` descending, so the order is total and a page boundary can
+        neither skip nor repeat a row.
+
+        Args:
+            limit: Rows on this page; the caller has already clamped it.
+            cursor: The previous page's ``next_cursor``, or ``None`` for the first page.
+
+        Returns:
+            The page and the next cursor, ``None`` on the last page.
+
+        Raises:
+            ValidationError: ``cursor`` is not one this API minted.
+        """
+        from sqlalchemy import and_, or_
+
+        from promptcadence.services.cursors import decode_cursor, encode_cursor
+
+        after = decode_cursor(cursor)
+        table = models.ApprovalRequest
+        with self._database.read() as session:
+            statement = (
+                select(table).order_by(table.created_at.desc(), table.id.desc()).limit(limit + 1)
+            )
+            if after is not None:
+                at, identity = after
+                statement = statement.where(
+                    or_(table.created_at < at, and_(table.created_at == at, table.id < identity))
+                )
+            rows = [_view_of(row) for row in session.execute(statement).scalars()]
+        page = rows[:limit]
+        more = len(rows) > limit and bool(page)
+        return page, encode_cursor(page[-1].created_at, page[-1].request_id) if more else None
+
     def requests(self, trajectory_id: str) -> list[ApprovalRequestView]:
         """Every request a trajectory ever raised, oldest first, whatever became of it."""
         with self._database.read() as session:
