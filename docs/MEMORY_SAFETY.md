@@ -103,10 +103,10 @@ KV-cache quantization is a llama.cpp feature in this suite.
 `llama-server` is a child of the application that launched it (ADR-0062) and inherits its cgroup.
 Two layers now cover the parent:
 
-* **Unit-managed applications (the operator path since row W0).** WeightRoom writes the
+* **Unit-managed applications (the operator path since row W0).** WeightRoomGym writes the
   `systemd --user` units for the four applications, and the `freeweight` and `loadcoach` units
   carry the cap themselves ([ADR-0125](adr/0125-weightroom-drives-the-applications-through-systemd-user-units-it-writes.md)
-  rule 1; values from WeightRoom's `[host] memory_high` / `memory_max`, defaulting to
+  rule 1; values from WeightRoomGym's `[host] memory_high` / `memory_max`, defaulting to
   RAM − 8 GB / RAM − 6 GB):
 
   ```ini
@@ -116,8 +116,8 @@ Two layers now cover the parent:
   MemorySwapMax=0
   ```
 
-  `weightroom units sync` writes them; `weightroom doctor` reports a unit missing them. Until
-  WeightRoom's row W2 ships, write the same three lines by hand into
+  `wr-gym units sync` writes them; `wr-gym doctor` reports a unit missing them. Until
+  WeightRoomGym's row W2 ships, write the same three lines by hand into
   `~/.config/systemd/user/<app>.service` (`systemctl --user daemon-reload && systemctl --user
   restart <app>`), or use the wrapper below.
 * **Ad-hoc runs from a shell** — a one-off `freeweight run start`, `pytest -m live`, a developer
@@ -139,13 +139,29 @@ anything else it spawns.
 
 ### 2.3 Verify the guard before trusting it
 
+Fire a cap on purpose and watch the kill arrive — in the kernel log, in the unit's journal, and
+(with WeightRoomGym running) as a *memory cap fired* alert on every console page. The unit is a
+throwaway: a transient `systemd --user` service with a 64 MiB cap allocating past it, so the
+proof costs nothing and touches no model.
+
 ```bash
-# Drive Ollama past the cap on purpose. Expect: the runner dies, `ollama ps` empties, the
-# desktop stays responsive, journalctl -u ollama shows the kill, the daemon restarts in 3 s.
-curl -s http://127.0.0.1:11434/api/generate -d \
-  '{"model":"gemma4:12b-it-q8_0","prompt":"hi","options":{"num_ctx":131072}}'
-journalctl -u ollama -k --since "-2m" | grep -iE 'oom|killed|memory'
+systemd-run --user --unit=memcap-demo --collect -p MemoryMax=64M -p MemorySwapMax=0 \
+  python3 -c 'bytearray(512 * 1024 * 1024)'
+# Expect, within a few seconds:
+journalctl --user -u memcap-demo --since "-2m"          # "Failed with result 'oom-kill'"
+journalctl -k --since "-2m" | grep -i 'oom-kill'        # task_memcg=…/memcap-demo.service
+wr-gym alerts list                                      # memory cap fired · memcap-demo.service (if the console watches it)
 ```
+
+This proves the half that matters — the kernel enforces a cgroup cap, the journal records it,
+and the alert path from journal to banner works — for **any** capped unit, `ollama.service`
+and the application units included, which carry the same `MemoryMax=` line (§2.1, §2.2). What
+it does not prove is that a real request drives Ollama past *its* cap: since Ollama 0.32
+`--fit` places the KV cache to fit the GPU, and on the reference machine no installed model can
+push `ollama.service` past 24 G (row W9, 2026-09-10). The older recipe — a 131 072-token request
+to `gemma4:12b-it-q8_0` — therefore no longer fires anything, and is retired. To fire Ollama's
+own cap you need a model larger than the cap; trust the unit's `MemoryMax=` line as
+`systemctl show ollama.service` reports it, which `wr-gym doctor` checks on every run.
 
 A guard that has not been fired once is a hope. Fire it.
 
@@ -309,13 +325,13 @@ through `provider_options = { "--fit" = "on" }` / `"off"`.
 
 **Today, on the host (§2)** — `docs/scripts/apply_memory_safety.sh` does all four (`--fire` runs
 §2.3); `MEMORY_MAX_G`, `MEMORY_HIGH_G`, `CONTEXT_TOKENS` in the environment change the sizes.
-`weightroom doctor` (row W4) checks every line of §2.1 and §2.2 and prints this script's
+`wr-gym doctor` (row W4) checks every line of §2.1 and §2.2 and prints this script's
 invocation for whatever is missing; it never runs it, because §2.1 needs root:
 
 - [ ] `override.conf` rewritten as in §2.1; `daemon-reload`; `restart ollama`; `oomctl` shows the unit
 - [ ] `~/.config/freeweight/config.toml` has `runtime.context_size = 8192` (or your chosen size) —
       never unset
-- [ ] The `freeweight` and `loadcoach` units carry the three `Memory*` lines of §2.2 (WeightRoom
+- [ ] The `freeweight` and `loadcoach` units carry the three `Memory*` lines of §2.2 (WeightRoomGym
       writes them; by hand until row W2), and shell runs use the `systemd-run --user --scope` wrapper
 - [ ] The guard fired once on purpose (§2.3) and the desktop survived
 

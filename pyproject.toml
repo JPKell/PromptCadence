@@ -110,7 +110,7 @@ packages = ["src/promptcadence"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
-# docs/ is a byte-identical mirror of ~/ai/suite/docs; ruff formats fenced Python inside Markdown
+# docs/ is a byte-identical mirror of ~/ai/suite/WeightRoom/docs; ruff formats fenced Python inside Markdown
 # and would silently diverge the mirror. Workspace CLAUDE.md states this exclusion as the rule.
 extend-exclude = ["docs"]
 
