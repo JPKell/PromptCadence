@@ -145,6 +145,7 @@ from promptcadence.domain.tiers import Tier, TierPolicy
 from promptcadence.domain.tools import ToolCallCompleted, ToolCallStarted
 from promptcadence.domain.trajectory import (
     BudgetWindowWait,
+    EgressEvaluated,
     TrajectoryCancelled,
     TrajectoryClaimed,
     TrajectoryCompleted,
@@ -244,6 +245,8 @@ from promptcadence.services.views import TrajectoryView, view_of
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping, Sequence
 
+    from baseaicore import DataClassification
+    from commissioner import EgressDecision, EgressTarget
     from setspec.prompts import RenderedPrompt
     from sqlalchemy import CursorResult
     from sqlalchemy.orm import Session
@@ -3093,8 +3096,8 @@ class LoopController:
             permitted tier first, and returns this only when none was permitted.
         """
         trajectory_id = ctx.view.trajectory_id
-        decision = self._egress.evaluate(
-            run_id=trajectory_id,
+        decision = self._evaluate_egress(
+            trajectory_id,
             source_ref=turn_id,
             classification=ctx.declaration.classification,
             target=tier_target(tier),
@@ -3108,6 +3111,41 @@ class LoopController:
             f"{decision.policy_version})"
         )
         return self._end_with(trajectory_id, halt, cause=cause, error_code=ErrorCode.EGRESS_DENIED)
+
+    def _evaluate_egress(
+        self,
+        trajectory_id: str,
+        *,
+        source_ref: str,
+        classification: DataClassification,
+        target: EgressTarget,
+    ) -> EgressDecision:
+        """Decide one egress request and record it twice in one write: the ledger row Commissioner
+        keeps, and the ``egress.evaluated`` event the stream carries (ADR-0044)."""
+        with self._sink.write() as (session, events):
+            decision = self._egress.evaluate(
+                run_id=trajectory_id,
+                source_ref=source_ref,
+                classification=classification,
+                target=target,
+                session=session,
+            )
+            events.append(
+                trajectory_id,
+                EgressEvaluated(
+                    trajectory_id=trajectory_id,
+                    decision_id=decision.decision_id,
+                    source_ref=source_ref,
+                    target=target.name,
+                    remote=target.remote,
+                    verdict=decision.verdict.value,
+                    reason=decision.reason,
+                    policy_name=decision.policy_name,
+                    policy_version=decision.policy_version,
+                ),
+                now=self._clock(),
+            )
+        return decision
 
     def _preflight(
         self, ctx: GovernanceContext, run: _StepRun, tier: Tier
@@ -3503,8 +3541,8 @@ class LoopController:
             return ToolEgressClass.NONE
         url = call.arguments.get("url")
         tools_settings = self._settings.tools
-        decision = self._egress.evaluate(
-            run_id=ctx.view.trajectory_id,
+        decision = self._evaluate_egress(
+            ctx.view.trajectory_id,
             source_ref=invocation_id,
             classification=ctx.declaration.classification,
             target=fetch_target(

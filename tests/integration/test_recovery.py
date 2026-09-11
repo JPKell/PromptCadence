@@ -287,8 +287,10 @@ def test_kill_minus_nine_with_a_turn_in_flight_cancels_the_orphan_and_resumes(
         "trajectory.claimed",
         "intent.minted",
         "step.started",
+        "egress.evaluated",
         "turn.started",
         "trajectory.recovered",
+        "egress.evaluated",
         "turn.started",
         # The debit is written before the turn row and in its own transaction (P5): a debit that
         # a crash could lose alongside the turn is a debit reconciliation has to reconstruct, and
@@ -298,7 +300,7 @@ def test_kill_minus_nine_with_a_turn_in_flight_cancels_the_orphan_and_resumes(
         "step.completed",
         "trajectory.completed",
     ]
-    recovered = recoverer.events(trajectory_id)[5]["data"]
+    recovered = recoverer.events(trajectory_id)[6]["data"]
     assert recovered["outcome"] == f"cancelled_in_flight_job:{orphan.job_id}"
 
 

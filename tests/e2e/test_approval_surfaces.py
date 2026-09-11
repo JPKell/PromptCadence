@@ -110,6 +110,9 @@ def test_the_approve_deny_and_list_surfaces_over_http(manual: TestClient) -> Non
         "/api/v1/approvals", params={"trajectory_id": trajectory_id, "status": "all"}
     ).json()["items"]
     assert resolved[0]["status"] == "granted" and resolved[0]["approver_token_id"] == "loopback"  # noqa: S105
+    assert manual.get(f"/api/v1/trajectories/{trajectory_id}").json()["approver"] == (
+        "approver:loopback"
+    )
 
     second = manual.post("/api/v1/trajectories", json={"task": "t", "bypass_planning": True})
     second_id = second.json()["trajectory_id"]
@@ -125,7 +128,9 @@ def test_the_approve_deny_and_list_surfaces_over_http(manual: TestClient) -> Non
     assert manual.post("/api/v1/trajectories/01ABSENT000000000000000000/approve").status_code == 404
 
 
-def test_the_approve_scope_is_enforced_once_a_token_exists(manual: TestClient) -> None:
+def test_the_approve_scope_is_enforced_once_a_token_exists(
+    manual: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runtime = cast("FastAPI", manual.app).state.runtime
     now = datetime.now(UTC)
     reader = create_token(runtime.database, name="reader", scopes=["read", "write"], now=now)
@@ -154,6 +159,22 @@ def test_the_approve_scope_is_enforced_once_a_token_exists(manual: TestClient) -
         "items"
     ]
     assert intents[-1]["minted_by"] == f"approver:{approver.record.token_id}"  # noqa: S105
+    # Row W10 (W6 §8 item 2): the trajectory names its approver by the token's *name*, in the
+    # JSON document and in `trajectory show`'s text, so the plan's `approver:<name>` reads as
+    # written wherever the grant came from.
+    shown = manual.get(f"/api/v1/trajectories/{trajectory_id}", headers=as_reader).json()
+    assert shown["approver"] == "approver:ops"
+    monkeypatch.setattr(
+        trajectory_commands,
+        "http_client_factory",
+        lambda settings: TestClient(manual.app, base_url="http://127.0.0.1"),
+    )
+    monkeypatch.setenv("PROMPTCADENCE_API_TOKEN", reader.token)
+    result = CliRunner().invoke(cli_main.app, ["trajectory", "show", trajectory_id])
+    assert result.exit_code == 0, result.output
+    assert "approver     approver:ops" in result.stdout
+    as_json = CliRunner().invoke(cli_main.app, ["trajectory", "show", trajectory_id, "--json"])
+    assert json.loads(as_json.stdout)["approver"] == "approver:ops"
 
 
 def test_the_planned_journey_over_http_and_the_cli_with_the_plan_and_intent_reads(

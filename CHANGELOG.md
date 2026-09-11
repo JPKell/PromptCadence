@@ -6,6 +6,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ## [Unreleased]
 
+### Added
+
+- **`egress.evaluated` is sent** (row W10; carried from WeightRoomGym row W6, `history/handoffs/W6_HANDOFF.md`
+  §8 item 3). The event type existed in `domain/events.py` and the API document since Phase 6 but
+  nothing emitted it. Every Commissioner decision — each turn's tier, local ones included, and each
+  `NETWORK` tool call — is now written together with an `egress.evaluated` event carrying
+  `decision_id`, `source_ref`, `target`, `remote`, `verdict`, `reason`, `policy_name` and
+  `policy_version`, in the one transaction ADR-0044 requires. The trajectory-explanation golden
+  and the event-sequence tests gained the event before each `turn.started`.
+- **The trajectory document names its approver** (`GET /trajectories/{id}`, `trajectory show` in
+  text and `--json`): `approver` is `approver:<token name>` for the most recently granted approval
+  request (`approver:loopback` on an open install), `null` when none was granted — the token's
+  *name*, where `execution_intents.minted_by` keeps its id (ADR-0049). WeightRoomGym's plan
+  Phase 6 criterion 2 (`approver:weightroom`) reads as written (W6 §8 item 2).
+- **`promptcadence doctor` and `/api/v1/health` say whether LoadCoach accepts the configured
+  token.** The `loadcoach` component's `data.token_accepted` is `false`, with the detail naming
+  the fix (`loadcoach token create`, `[loadcoach] api_key_file`), when LoadCoach answers `401` or
+  `403`; `true` on any other answer; absent when LoadCoach did not answer at all. WeightRoomGym's
+  doctor shows the check on PromptCadence's card (W6 §8 item 4).
+
+### Fixed
+
+- `tests/unit/test_egress_surfaces.py` pinned to a closed server port: its client-mode commands
+  reached a real PromptCadence on `8768` (the reference machine's unit, with tokens) and failed
+  on `401` rather than exercising the local path.
+
 ## [1.3.3] — 2026-09-09
 
 ### Added

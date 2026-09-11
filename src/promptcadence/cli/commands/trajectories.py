@@ -133,6 +133,8 @@ def _print_view(view: dict[str, Any], *, json_output: bool) -> None:
     typer.echo(f"bypass       {view['bypass_planning']}")
     if view.get("tier"):
         typer.echo(f"tier         {view['tier']}")
+    if view.get("approver"):
+        typer.echo(f"approver     {view['approver']}")
     if view.get("cause"):
         typer.echo(f"cause        {view['cause']}")
     if view.get("error_code"):

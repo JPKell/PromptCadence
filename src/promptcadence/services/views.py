@@ -64,6 +64,12 @@ class TrajectoryView:
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
+    approver: str | None = None
+    """Who granted the trajectory's most recent approval, as ``approver:<token name>`` —
+    ``approver:loopback`` on an open install — or ``None`` when no request was ever granted (a
+    plan approved by policy alone records no approver). The token's *name*, not its id: the id
+    is what ``execution_intents.minted_by`` stores (ADR-0049), and the name is what an operator
+    recognises (row W10; ``history/handoffs/W6_HANDOFF.md`` §8 item 2)."""
 
     @property
     def is_terminal(self) -> bool:
@@ -99,6 +105,7 @@ class TrajectoryView:
             ),
             "tier_snapshot_id": self.tier_snapshot_id,
             "approval_policy_version": self.approval_policy_version,
+            "approver": self.approver,
             "cause": self.halted_reason,
             "error_code": self.error_code,
             "cancel_requested": self.cancel_requested,

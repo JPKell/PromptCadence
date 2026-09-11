@@ -88,6 +88,7 @@ The trajectory document. `404 TRAJECTORY_NOT_FOUND` for an unknown id. `read` sc
   "window_wait": null,
   "tier_snapshot_id": "3f2a…",
   "approval_policy_version": "2026-08-01",
+  "approver": "approver:ops",
   "cause": null,
   "error_code": null,
   "cancel_requested": false,
@@ -103,7 +104,12 @@ code beside it once the trajectory has one. `window_wait` is non-`null` only whi
 parked at `awaiting_window` (`on_daily_exhausted = "window"`): `parked_from` (the state it will
 resume to), `next_edge_at` (the next UTC day boundary) and `days_waited`. `budget.partial_pricing`
 carries the same three-valued reading as the request body — `null` here means the trajectory is
-running under the configured default, not that no rule applies.
+running under the configured default, not that no rule applies. `approver` names who granted the
+trajectory's most recent approval request, by the token's **name** (`approver:ops`;
+`approver:loopback` on an open install), and is `null` while no request has been granted — a plan
+approved by policy alone has no approver. The intent record keeps the token's *id*
+(`minted_by = approver:<token id>`, ADR-0049); this field is the same fact in the operator's words,
+and `promptcadence trajectory show` prints it as `approver` (row W10).
 
 ### `GET /trajectories/{trajectory_id}/turns`
 
@@ -179,6 +185,14 @@ document. `409 TRAJECTORY_NOT_CANCELLABLE` for one already terminal. `write` sco
 SSE per [API Standards §8](../../standards/api-and-contract-standards.md): every frame a persisted
 event, replay from `Last-Event-ID`. The stream closes on the terminal event. `404` before any frame
 for an unknown trajectory. `read` scope.
+
+`egress.evaluated` is sent once per Commissioner decision — before every `turn.started` (a local
+tier is *approved* with `target_not_remote`, never skipped) and for every `NETWORK` tool call —
+in the same write as the decision it names, so the decisions of `GET /egress-decisions` can be
+counted from the stream alone. Its `data`: `decision_id`, `source_ref` (the turn id or tool
+invocation id gated), `target` and `remote`, `verdict` (`approved` | `denied` | `violation`),
+`reason`, `policy_name`, `policy_version`. Declared with the event vocabulary at Phase 6; first
+sent at row W10.
 
 ## 4. Approvals
 

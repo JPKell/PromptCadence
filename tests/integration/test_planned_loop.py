@@ -49,6 +49,7 @@ def test_a_planned_trajectory_drafts_is_auto_approved_and_executes_to_completion
         "plan.approved",
         "intent.minted",
         "step.started",
+        "egress.evaluated",
         "turn.started",
         "budget.debited",
         "turn.completed",

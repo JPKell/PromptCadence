@@ -139,6 +139,13 @@ class Harness:
     def decisions(self, trajectory_id: str) -> list[Any]:
         return list(self.egress.decisions(run_id=trajectory_id))
 
+    def event_data(self, trajectory_id: str, event_type: str) -> list[dict[str, Any]]:
+        return [
+            dict(event.data)
+            for event in self.sink.events(trajectory_id)
+            if event.event_type == event_type
+        ]
+
 
 def _fake(model: FakeModel | None = None) -> FakeLoadCoach:
     fake = FakeLoadCoach(model=model) if model is not None else FakeLoadCoach()
@@ -258,6 +265,12 @@ def test_the_refusal_is_a_queryable_egress_decision(remote_harness: Harness) -> 
 
     denied = remote_harness.egress.decisions(run_id=trajectory_id, verdict=Verdict.DENIED)
     assert [d.decision_id for d in denied] == [decision.decision_id]
+    (event,) = [
+        one
+        for one in remote_harness.event_data(trajectory_id, "egress.evaluated")
+        if one["verdict"] == "denied"
+    ]
+    assert event["decision_id"] == decision.decision_id and event["target"] == "remote_cheap"
 
 
 def test_an_internal_trajectory_within_the_ceiling_is_approved_and_recorded(
@@ -396,6 +409,15 @@ def test_every_turn_of_an_ordinary_local_journey_carries_an_egress_decision(
     assert gated == {record.turn.turn_id for record in assistant_turns}, (
         "each decision must name the turn it gated"
     )
+
+    # Row W10 (W6 §8 item 3): each decision is also an `egress.evaluated` event on the stream,
+    # written with it, so the count above is readable from the events alone.
+    emitted = harness.event_data(trajectory_id, "egress.evaluated")
+    assert {event["decision_id"] for event in emitted} == {d.decision_id for d in decisions}
+    assert {event["source_ref"] for event in emitted} == gated
+    assert {(event["verdict"], event["reason"], event["remote"]) for event in emitted} == {
+        ("approved", "target_not_remote", False)
+    }
 
 
 # --------------------------------------------------------------------------------------------

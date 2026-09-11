@@ -21,6 +21,8 @@ from promptcadence.infrastructure.loadcoach import resolve_api_key
 __all__ = ["loadcoach_health_component"]
 
 _HEALTH_CHECK_TIMEOUT_SECONDS: Final = 3.0
+_REFUSED_CREDENTIAL: Final = frozenset({401, 403})
+"""LoadCoach's answers to a missing, wrong or under-scoped bearer token (its spec §14)."""
 
 
 def loadcoach_health_component(
@@ -43,6 +45,12 @@ def loadcoach_health_component(
         execution, never for startup (ADR-0045 rule 3), so a downstream outage here must never
         drag PromptCadence's own ``/health`` below 200 (spec §20 AC1, development plan Phase 1
         acceptance criterion 1).
+
+        ``data["token_accepted"]`` says whether LoadCoach took the configured credential:
+        ``True`` on any answer that was not a ``401``/``403``, ``False`` on one that was — the
+        check ``promptcadence doctor`` shows and WeightRoomGym's doctor repeats on PromptCadence's
+        card (row W10; ``history/handoffs/W6_HANDOFF.md`` §8 item 4). It is absent when LoadCoach
+        did not answer at all, because nothing was decided about the token then.
     """
     headers = {}
     token = resolve_api_key(api_key_env=api_key_env, api_key_file=api_key_file)
@@ -57,6 +65,18 @@ def loadcoach_health_component(
             name="loadcoach", status=ComponentStatus.DEGRADED, detail=f"unreachable: {exc}"
         )
 
+    if response.status_code in _REFUSED_CREDENTIAL:
+        return ComponentHealth(
+            name="loadcoach",
+            status=ComponentStatus.DEGRADED,
+            detail=(
+                f"loadcoach answers but refuses the configured token ({response.status_code}); "
+                "issue a new one with `loadcoach token create` and point "
+                "[loadcoach] api_key_file or api_key_env at it"
+            ),
+            data={"token_accepted": False, "base_url": base_url, "token_configured": bool(token)},
+        )
+
     try:
         payload = response.json()
     except ValueError:
@@ -64,6 +84,7 @@ def loadcoach_health_component(
             name="loadcoach",
             status=ComponentStatus.DEGRADED,
             detail=f"responded {response.status_code} with a non-JSON body",
+            data={"token_accepted": True, "base_url": base_url},
         )
 
     reported_status = payload.get("status", "unknown") if isinstance(payload, dict) else "unknown"
@@ -72,5 +93,5 @@ def loadcoach_health_component(
         name="loadcoach",
         status=status,
         detail=f"loadcoach reports {reported_status}",
-        data={"reported_status": reported_status, "base_url": base_url},
+        data={"reported_status": reported_status, "base_url": base_url, "token_accepted": True},
     )

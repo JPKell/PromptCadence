@@ -279,6 +279,7 @@ def test_hybrid_runs_the_ungated_step_first_and_parks_when_the_gated_step_become
             "plan.approved",
             "intent.minted",  # s1 only
             "step.started",
+            "egress.evaluated",
             "turn.started",
             "budget.debited",
             "turn.completed",

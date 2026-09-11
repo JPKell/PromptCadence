@@ -23,7 +23,7 @@ LoadCoach job (lifecycle §8.2 T14). ``planning`` is treated like ``executing``:
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
@@ -110,6 +110,36 @@ class TrajectorySubmission:
     token_budget: int | None = None
     money_budget: Money | None = None
     partial_pricing: Literal["floor", "strict"] | None = None
+
+
+_LOOPBACK: Final = "loopback"
+"""The open install's principal, as ``web.auth`` records it (``LOOPBACK_PRINCIPAL_NAME``); spelled
+here because services do not import the web layer."""
+
+
+def approver_of(session: Session, trajectory_id: str) -> str | None:
+    """``approver:<token name>`` for the trajectory's most recently granted request, or ``None``.
+
+    The request row stores the approving token's *id* (``loopback`` on an open install); the
+    name is looked up here so ``trajectory show`` says who in the operator's own words. A token
+    revoked since keeps its name; one deleted outright falls back to the id.
+    """
+    granted = session.execute(
+        select(models.ApprovalRequest)
+        .where(
+            models.ApprovalRequest.trajectory_id == trajectory_id,
+            models.ApprovalRequest.status == "granted",
+        )
+        .order_by(models.ApprovalRequest.resolved_at.desc(), models.ApprovalRequest.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if granted is None or not granted.approver_token_id:
+        return None
+    token_id = granted.approver_token_id
+    if token_id == _LOOPBACK:
+        return f"approver:{token_id}"
+    token = session.get(models.ApiToken, token_id)
+    return f"approver:{token.name if token is not None else token_id}"
 
 
 class TrajectoryService:
@@ -280,7 +310,7 @@ class TrajectoryService:
                 raise TrajectoryNotFoundError(
                     f"No trajectory {trajectory_id!r}.", details={"trajectory_id": trajectory_id}
                 )
-            return view_of(row)
+            return replace(view_of(row), approver=approver_of(session, trajectory_id))
 
     def resolve(self, reference: str) -> TrajectoryView:
         """Return the trajectory a full id or an unambiguous prefix names (CLI standards §7).
@@ -302,7 +332,7 @@ class TrajectoryService:
             )
             exact = [row for row in rows if row.id == reference]
             if exact:
-                return view_of(exact[0])
+                return replace(view_of(exact[0]), approver=approver_of(session, exact[0].id))
             if not rows:
                 raise TrajectoryNotFoundError(
                     f"No trajectory matches {reference!r}.", details={"trajectory_id": reference}
@@ -313,7 +343,7 @@ class TrajectoryService:
                     message,
                     details={"field": "trajectory_id", "candidates": [row.id for row in rows]},
                 )
-            return view_of(rows[0])
+            return replace(view_of(rows[0]), approver=approver_of(session, rows[0].id))
 
     def list(
         self, *, state: TrajectoryState | None = None, limit: int = 50, cursor: str | None = None

@@ -28,6 +28,14 @@ from promptcadence.cli.main import app
 from promptcadence.services.database import Database, ensure_ready
 from promptcadence.services.egress import EgressService
 
+
+@pytest.fixture(autouse=True)
+def _no_server_on_this_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Client-mode commands here must find no server: on the reference machine a real
+    PromptCadence answers 8768 with a token requirement, and the local path is what is tested."""
+    monkeypatch.setenv("PROMPTCADENCE_SERVER__PORT", "9")
+
+
 runner = CliRunner()
 
 _NOW = datetime(2026, 9, 4, 9, 30, tzinfo=UTC)

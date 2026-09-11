@@ -37,6 +37,7 @@ from promptcadence.domain.events import EventType
 __all__ = [
     "TRANSITIONS",
     "BudgetWindowWait",
+    "EgressEvaluated",
     "TrajectoryCancelled",
     "TrajectoryClaimed",
     "TrajectoryCompleted",
@@ -1034,6 +1035,44 @@ class BudgetWindowWait:
             "next_edge_at": self.next_edge_at.isoformat(),
             "days_waited": self.days_waited,
             "window_wait_max_days": self.window_wait_max_days,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EgressEvaluated:
+    """``egress.evaluated`` — one Commissioner decision, written with the decision it names.
+
+    Emitted for every turn's tier (local tiers included: ``target_not_remote`` is a verdict too)
+    and for every ``NETWORK`` tool call, in the same transaction the ledger row lands in, so a
+    reader can count decisions against turns from the stream alone (spec §7.1's event list; the
+    body was declared at Phase 6 and first sent at row W10 — ``history/handoffs/W6_HANDOFF.md``
+    §8 item 3). Carries the decision's shape and its reason; never the data whose egress it
+    decided.
+    """
+
+    event_type: ClassVar[EventType] = EventType.EGRESS_EVALUATED
+    trajectory_id: str
+    decision_id: str
+    source_ref: str
+    target: str
+    remote: bool
+    verdict: str
+    reason: str
+    policy_name: str
+    policy_version: str
+
+    def as_canonical(self) -> dict[str, Any]:
+        """Return the persisted and streamed mapping form."""
+        return {
+            "trajectory_id": self.trajectory_id,
+            "decision_id": self.decision_id,
+            "source_ref": self.source_ref,
+            "target": self.target,
+            "remote": self.remote,
+            "verdict": self.verdict,
+            "reason": self.reason,
+            "policy_name": self.policy_name,
+            "policy_version": self.policy_version,
         }
 
 

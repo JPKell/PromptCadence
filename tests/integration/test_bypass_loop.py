@@ -204,6 +204,7 @@ def test_a_text_profile_turn_completes_on_a_declared_stop(harness: Harness) -> N
         "trajectory.claimed",
         "intent.minted",
         "step.started",
+        "egress.evaluated",
         "turn.started",
         "budget.debited",
         "turn.completed",
