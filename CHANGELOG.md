@@ -51,6 +51,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ### Fixed
 
+- **A cancelled trajectory no longer leaves an approval request nobody can decide** (row WPF3,
+  api.md §4, lifecycle §8.2 T14). Cancelling from `awaiting_approval` resolves the pending request
+  in the cancel's own write, as `expired` with the cancel named in `resolution_reason`; the request
+  is resolved, never deleted, so `?status=all` keeps it. No new status value, so an existing caller
+  reads the same vocabulary. The worker's expiry pass sweeps the same shape for a request whose
+  trajectory is already terminal — the rows a build before this rule left behind, which
+  `GET /approvals` would otherwise offer for ever. Found by WeightRoomGym's WP6 verification.
+- **The explanation document names the approver** its `GET /trajectories/{id}` already named (row
+  WPF3): `trajectory.approver` was composed without the session the lookup needs and was always
+  `null`.
+
 - `tests/unit/test_egress_surfaces.py` pinned to a closed server port: its client-mode commands
   reached a real PromptCadence on `8768` (the reference machine's unit, with tokens) and failed
   on `401` rather than exercising the local path.

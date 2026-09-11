@@ -29,7 +29,7 @@ from tests.fakes.loadcoach_app import ScriptedGeneration
 
 from promptcadence.config import Settings, load_settings
 from promptcadence.domain.errors import ApprovalInvalidStateError, ErrorCode
-from promptcadence.domain.trajectory import TrajectoryState
+from promptcadence.domain.trajectory import TrajectoryState, transitions_from
 from promptcadence.infrastructure.db import models
 from promptcadence.services.approvals import Approver, BudgetRaise
 from promptcadence.services.pricing import PricingCatalog, load_pricing_records
@@ -119,6 +119,11 @@ def test_manual_holds_a_planned_trajectory_and_a_grant_mints_every_step_under_th
         ]
         again = harness.approvals.grant(trajectory_id, approver=OPS)
         assert again.already_resolved and again.minted == ()
+
+        # Row WPF3 decision 3: the document and `GET /trajectories/{id}` name the same approver.
+        document = harness.controller().explanations.compose_live(trajectory_id)
+        assert document["trajectory"]["approver"] == harness.service.get(trajectory_id).approver
+        assert document["trajectory"]["approver"] == f"approver:{OPS.token_id}", "no token row"
 
         harness.script(ScriptedGeneration(text="s1 done"), ScriptedGeneration(text="s2 done"))
         assert harness.resume(trajectory_id) is TrajectoryState.COMPLETED
@@ -212,6 +217,90 @@ def test_a_pending_request_expires_by_its_persisted_clock_and_a_timeout_is_never
         assert event["timed_out"] is True and event["approval_request_id"] == expired
         assert harness.approvals.expire(now=harness.clock()) == (), "idempotent"
         assert harness.fake.requests == []
+
+
+def test_a_cancel_resolves_the_request_the_trajectory_was_parked_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Row WPF3: no listing offers a decision PromptCadence would then refuse."""
+    settings = _settings(monkeypatch, PROMPTCADENCE_APPROVAL__MODE="manual")
+    with open_harness(settings) as harness:
+        trajectory_id = harness.submit_bypass()
+        harness.claim_and_run(trajectory_id)
+        (pending,) = harness.approvals.pending()
+
+        cancelled = harness.service.cancel(trajectory_id)
+
+        assert cancelled.state is TrajectoryState.CANCELLED
+        assert harness.approvals.pending() == [], "the request is no longer decidable"
+        assert harness.approvals.pending(trajectory_id=trajectory_id) == []
+        (kept,) = harness.approvals.requests(trajectory_id)
+        assert kept.request_id == pending.request_id, "resolved, never deleted"
+        assert kept.status.value == "expired"
+        assert kept.resolution_reason == (
+            "the trajectory was cancelled from awaiting_approval, unanswered"
+        )
+        assert kept.resolved_at == cancelled.completed_at, "resolved in the cancel's own write"
+        assert kept.approver_token_id is None, "nobody answered it"
+        history, _cursor = harness.approvals.every_request(limit=50)
+        assert [one.request_id for one in history] == [pending.request_id]
+        assert harness.events(trajectory_id)[-2:] == [
+            "approval.requested",
+            "trajectory.cancelled",
+        ], "the cancel is the state change; the row resolution is its consequence"
+
+        with pytest.raises(ApprovalInvalidStateError) as refused:
+            harness.approvals.grant(trajectory_id, approver=OPS)
+        assert "expired" in str(refused.value)
+        with pytest.raises(ApprovalInvalidStateError):
+            harness.approvals.deny(trajectory_id, approver=OPS)
+        assert harness.approvals.expire(now=harness.clock() + timedelta(hours=48)) == ()
+
+
+def test_the_sweep_resolves_a_request_a_terminal_trajectory_left_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Row WPF3: the shape a build older than that rule left behind, healed on the worker's pass."""
+    settings = _settings(monkeypatch, PROMPTCADENCE_APPROVAL__MODE="manual")
+    with open_harness(settings) as harness:
+        trajectory_id = harness.submit_bypass()
+        harness.claim_and_run(trajectory_id)
+        (pending,) = harness.approvals.pending()
+        harness.service.cancel(trajectory_id)
+        with harness.sink.write() as (session, _events):  # put the old shape back
+            row = session.get(models.ApprovalRequest, pending.request_id)
+            assert row is not None
+            row.status, row.resolved_at, row.resolution_reason = "pending", None, None
+        assert [one.request_id for one in harness.approvals.pending()] == [pending.request_id]
+
+        assert harness.approvals.expire(now=harness.clock()) == (pending.request_id,)
+
+        assert harness.approvals.pending() == []
+        (kept,) = harness.approvals.requests(trajectory_id)
+        assert kept.status.value == "expired"
+        assert kept.resolution_reason == (
+            "the trajectory is cancelled and never answered this request"
+        )
+        assert harness.service.get(trajectory_id).state is TrajectoryState.CANCELLED, "not halted"
+        assert harness.approvals.expire(now=harness.clock()) == (), "idempotent"
+
+
+def test_no_other_exit_from_awaiting_approval_leaves_a_request_pending() -> None:
+    """Row WPF3 decision 2, from the state machine rather than from a run.
+
+    A pending request exists only while its trajectory is ``awaiting_approval`` (ADR-0049 rule 6:
+    it is created in the write that parks the trajectory). So the exits that could leave one open
+    are exactly the transitions out of that state — T8 grant, T9 deny or timeout, T14 cancel — and
+    each of the three resolves the row. Every other terminal transition (T6, T7, T12, T13, T17) and
+    the recovery pass leave from a state that holds no request: recovery takes over ``planning`` and
+    ``executing`` leases only, and ``awaiting_approval`` holds no lease.
+    """
+    assert {t.label for t in transitions_from(TrajectoryState.AWAITING_APPROVAL)} == {
+        "T8",
+        "T9",
+        "T14",
+    }
+    assert not TrajectoryState.AWAITING_APPROVAL.holds_lease
 
 
 def test_a_trajectory_parks_on_exactly_one_pending_request(

@@ -25,6 +25,13 @@ modes differ only in **who** authorises the minting. This service is where that 
 A trajectory parks on **exactly one** pending request (ADR-0049 rule 6): every request here is
 created in the write that moves the trajectory to ``awaiting_approval``, and a second pending one
 for the same trajectory is refused before it can be written.
+
+* :func:`resolve_abandoned` is the other end of that rule: a request outlives the state it was
+  asked in only when its trajectory left ``awaiting_approval`` without answering it, which T14
+  (cancel) is the one transition that does. The request is **resolved, never deleted** — ``expired``
+  with the reason on the row — so *Every request* keeps it and no listing offers a decision nobody
+  can make. :meth:`ApprovalService.expire` sweeps the same shape for any request whose trajectory
+  is already terminal, which is what a row written before this rule existed looks like (row WPF3).
 """
 
 from __future__ import annotations
@@ -109,6 +116,7 @@ __all__ = [
     "PlanDecision",
     "ReapprovalAsk",
     "RequestStatus",
+    "resolve_abandoned",
 ]
 
 
@@ -141,6 +149,9 @@ class RequestStatus(StrEnum):
 
 
 _RESOLVED: Final = frozenset({RequestStatus.GRANTED, RequestStatus.DENIED, RequestStatus.EXPIRED})
+
+_TERMINAL_STATES: Final = tuple(state.value for state in TrajectoryState if state.is_terminal)
+"""The states a trajectory can no longer answer a request from; the sweep's second query."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -945,8 +956,13 @@ class ApprovalService:
         Called by the worker on every pass; the clock is the persisted ``expires_at``, so a
         request survives a restart with its deadline intact and a timeout is never a grant.
 
+        The same pass resolves any request whose trajectory is **already terminal**, with the state
+        it ended in as the reason. Nothing this build writes leaves one — a cancel resolves its own
+        request — so this is the sweep for rows written before that rule, which would otherwise sit
+        in ``GET /approvals`` until their deadline and then be skipped by the halt above (row WPF3).
+
         Returns:
-            The ids of the requests expired in this pass.
+            The ids resolved in this pass, the timed-out ones first.
         """
         expired: list[str] = []
         with self._database.read() as session:
@@ -955,6 +971,19 @@ class ApprovalService:
                     select(models.ApprovalRequest.id, models.ApprovalRequest.trajectory_id).where(
                         models.ApprovalRequest.status == RequestStatus.PENDING.value,
                         models.ApprovalRequest.expires_at <= now,
+                    )
+                ).all()
+            )
+            orphaned = list(
+                session.execute(
+                    select(models.ApprovalRequest.id, models.Trajectory.status)
+                    .join(
+                        models.Trajectory,
+                        models.Trajectory.id == models.ApprovalRequest.trajectory_id,
+                    )
+                    .where(
+                        models.ApprovalRequest.status == RequestStatus.PENDING.value,
+                        models.Trajectory.status.in_(_TERMINAL_STATES),
                     )
                 ).all()
             )
@@ -981,6 +1010,17 @@ class ApprovalService:
                     ),
                     timed_out=True,
                     now=now,
+                )
+                expired.append(request_id)
+        for request_id, state in orphaned:
+            with self._sink.write() as (session, _events):
+                request = session.get(models.ApprovalRequest, request_id)
+                if request is None or request.status != RequestStatus.PENDING.value:
+                    continue
+                request.status = RequestStatus.EXPIRED.value
+                request.resolved_at = now
+                request.resolution_reason = (
+                    f"the trajectory is {state} and never answered this request"
                 )
                 expired.append(request_id)
         return tuple(expired)
@@ -1235,3 +1275,48 @@ def _view_of(row: models.ApprovalRequest) -> ApprovalRequestView:
         approver_token_id=row.approver_token_id,
         resolution_reason=row.resolution_reason,
     )
+
+
+def resolve_abandoned(
+    session: Session, trajectory_id: str, *, reason: str, now: datetime
+) -> tuple[str, ...]:
+    """Resolve every request the trajectory still holds pending, as ``expired`` with ``reason``.
+
+    A trajectory that leaves ``awaiting_approval`` without answering its request — T14, the cancel
+    — would otherwise leave a question nobody can answer: ``GET /approvals`` would keep offering it
+    and every grant and denial on it would be refused ``APPROVAL_INVALID_STATE``. The request is
+    resolved, never deleted, so ``?status=all`` keeps it with the reason beside it.
+
+    ``expired`` rather than a new status: the vocabulary is a released API's enum, ``expired``
+    already means *resolved without an answer, and never a grant* (ADR-0049 rule 4), and
+    ``resolution_reason`` is the field that says which way (row WPF3).
+
+    Writes rows on the caller's session and appends no event: the trajectory's own transition
+    (``trajectory.cancelled``) is the state change, and this is its consequence on a row that holds
+    no state of its own. It does **not** move the trajectory — the caller has already decided what
+    it becomes.
+
+    Args:
+        session: The caller's session, inside the write that moves the trajectory.
+        trajectory_id: The trajectory leaving the state its request was asked in.
+        reason: What is written to ``resolution_reason``, in the operator's words.
+        now: The instant, written as ``resolved_at``.
+
+    Returns:
+        The ids resolved, empty when the trajectory held none.
+    """
+    rows = (
+        session.execute(
+            select(models.ApprovalRequest).where(
+                models.ApprovalRequest.trajectory_id == trajectory_id,
+                models.ApprovalRequest.status == RequestStatus.PENDING.value,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        row.status = RequestStatus.EXPIRED.value
+        row.resolved_at = now
+        row.resolution_reason = reason
+    return tuple(row.id for row in rows)

@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from baseaicore import DataClassification, Money, ValidationError
 from baseaicore.timeutil import to_rfc3339
+from sqlalchemy import select
 
 from promptcadence.domain.threads import Turn
 from promptcadence.domain.trajectory import (
@@ -21,12 +22,44 @@ from promptcadence.domain.trajectory import (
     TrajectoryState,
     WindowWait,
 )
+from promptcadence.infrastructure.db import models
 
 if TYPE_CHECKING:
-    from promptcadence.domain.intent import TurnProvenance
-    from promptcadence.infrastructure.db import models
+    from sqlalchemy.orm import Session
 
-__all__ = ["TrajectoryView", "TurnView", "declaration_of", "view_of"]
+    from promptcadence.domain.intent import TurnProvenance
+
+__all__ = ["TrajectoryView", "TurnView", "approver_of", "declaration_of", "view_of"]
+
+
+_LOOPBACK: Final = "loopback"
+"""The open install's principal, as ``web.auth`` records it (``LOOPBACK_PRINCIPAL_NAME``); spelled
+here because services do not import the web layer."""
+
+
+def approver_of(session: Session, trajectory_id: str) -> str | None:
+    """``approver:<token name>`` for the trajectory's most recently granted request, or ``None``.
+
+    The request row stores the approving token's *id* (``loopback`` on an open install); the
+    name is looked up here so ``trajectory show`` says who in the operator's own words. A token
+    revoked since keeps its name; one deleted outright falls back to the id.
+    """
+    granted = session.execute(
+        select(models.ApprovalRequest)
+        .where(
+            models.ApprovalRequest.trajectory_id == trajectory_id,
+            models.ApprovalRequest.status == "granted",
+        )
+        .order_by(models.ApprovalRequest.resolved_at.desc(), models.ApprovalRequest.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if granted is None or not granted.approver_token_id:
+        return None
+    token_id = granted.approver_token_id
+    if token_id == _LOOPBACK:
+        return f"approver:{token_id}"
+    token = session.get(models.ApiToken, token_id)
+    return f"approver:{token.name if token is not None else token_id}"
 
 
 @dataclass(frozen=True, slots=True)

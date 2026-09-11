@@ -107,7 +107,8 @@ carries the same three-valued reading as the request body — `null` here means 
 running under the configured default, not that no rule applies. `approver` names who granted the
 trajectory's most recent approval request, by the token's **name** (`approver:ops`;
 `approver:loopback` on an open install), and is `null` while no request has been granted — a plan
-approved by policy alone has no approver. The intent record keeps the token's *id*
+approved by policy alone has no approver. The explanation document's `trajectory` block carries the
+same field with the same value; before row WPF3 it was always `null` there. The intent record keeps the token's *id*
 (`minted_by = approver:<token id>`, ADR-0049); this field is the same fact in the operator's words,
 and `promptcadence trajectory show` prints it as `approver` (row W10).
 
@@ -179,6 +180,16 @@ field folded into it would make two reads of the same rows differ:
 T14: at once for an unleased trajectory, at the next turn boundary for a leased one — cancellation
 is honoured at the turn boundary and cancels any in-flight LoadCoach job. `202` with the trajectory
 document. `409 TRAJECTORY_NOT_CANCELLABLE` for one already terminal. `write` scope.
+
+**A cancel from `awaiting_approval` resolves the request the trajectory was parked on**, in the same
+write, as `expired` with the cancel named in its `resolution_reason` — nobody can answer a question
+its trajectory has abandoned, and `GET /approvals` must not offer a decision this API would then
+refuse `APPROVAL_INVALID_STATE`. The request is resolved, never deleted: `?status=all` keeps it with
+the reason beside it. No new status: `expired` already means *resolved without an answer, and never
+a grant* (ADR-0049 rule 4), and `resolution_reason` is the field that says which way. A pending
+request whose trajectory is **already terminal** — the shape a build before this rule left behind —
+is resolved the same way by the worker's expiry pass, with the trajectory's state as the reason.
+Fixed, unreleased (row WPF3).
 
 ### `GET /trajectories/{trajectory_id}/stream`
 
