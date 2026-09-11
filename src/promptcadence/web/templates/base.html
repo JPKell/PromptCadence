@@ -1,0 +1,21 @@
+{# base.html — PromptCadence's shell over MirrorWall's (row WM2).
+
+   Every page extends this file rather than "mirrorwall/base.html" directly, so the one thing
+   PromptCadence adds to the masthead lives in one place: the suite's tab strip (MirrorWall 0.3
+   `app_tab`) — WeightRoomGym and the peers through it — rendered only when `[console] url` is
+   configured. Unset, this block is empty and the page is byte-for-byte what it was. No status
+   dots: this application does not know a peer's state and never invents one (ADR-0016); the
+   console's own strip carries them. #}
+{% extends "mirrorwall/base.html" %}
+{% from "mirrorwall/components.html" import app_tab %}
+
+{% block header_extra %}
+{%- if console_url %}
+<nav class="app-tabs" aria-label="Applications">
+  {{ app_tab("WeightRoomGym", console_url) }}
+  {%- for name, label in app_tabs %}
+  {{ app_tab(label, "/" if name == own_app else console_url ~ "/apps/" ~ name, selected=(name == own_app)) }}
+  {%- endfor %}
+</nav>
+{%- endif %}
+{% endblock %}

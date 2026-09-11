@@ -1,5 +1,5 @@
-{% extends "mirrorwall/base.html" %}
-{% from "mirrorwall/components.html" import badge, card, empty_state, json_viewer, kv_list, table %}
+{% extends "base.html" %}
+{% from "mirrorwall/components.html" import badge, card, empty_state, json_viewer, kv_list, table, log_pane %}
 {% from "_macros.html" import content_cell, measure, short %}
 {% block title %}{{ report.trajectory.trajectory_id }} — PromptCadence{% endblock %}
 {% block content %}
@@ -267,6 +267,11 @@ These rows are why one turn saw less history than the turn before it.</p>
 {% endif %}
 
 <h3>Events</h3>
+{%- if not report.trajectory.completed_at %}
+{#- MirrorWall 0.3's log pane (row WM2): the trajectory's own event stream as log frames, bounded
+    and pausable, closed on the terminal event. The table below is the persisted record. -#}
+{{ log_pane("trajectory-log", stream_url="/api/v1/trajectories/" ~ report.trajectory.trajectory_id ~ "/log", label="Events, live") }}
+{%- endif %}
 {% set columns = [{"label": "#", "numeric": true}, {"label": "Event"}, {"label": "At"}] %}
 {% set rows = [] %}
 {% for one in doc.events %}

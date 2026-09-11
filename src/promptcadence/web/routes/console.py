@@ -101,7 +101,13 @@ def timeline_page(request: Request, trajectory_id: str) -> HTMLResponse:
     """
     require_scope(request, "read")
     report = timeline_report(runtime_of(request), trajectory_id)
-    return _page("trajectories/detail.html", page="trajectories", report=report)
+    return _page(
+        "trajectories/detail.html",
+        page="trajectories",
+        report=report,
+        # htmx while the trajectory runs (ADR-0128): the log pane's SSE region is the one swap.
+        mirrorwall={"htmx": not report["trajectory"]["completed_at"]},
+    )
 
 
 @ui_router.get("/approvals", summary="Approvals inbox", response_class=HTMLResponse)

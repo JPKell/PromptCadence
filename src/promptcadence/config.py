@@ -544,6 +544,27 @@ def _default_tiers() -> dict[str, Tier]:
     }
 
 
+class ConsoleSettings(BaseModel):
+    """Where WeightRoomGym is, when one fronts this application (row WM2).
+
+    Set, the top bar gains the suite's tab strip: WeightRoomGym itself and the peer applications
+    through it (``<url>/apps/<name>``). Unset — the default — nothing is rendered: an
+    application knows only its own port, and a strip of loopback links another machine cannot
+    reach would be a strip of dead links.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(
+        default="",
+        description=(
+            "WeightRoomGym's base URL (https://<host>:8769); empty renders no application tab "
+            "strip."
+        ),
+        examples=["https://jordan-main.local:8769"],
+    )
+
+
 class Settings(BaseModel):
     """The complete, validated PromptCadence configuration.
 
@@ -565,6 +586,7 @@ class Settings(BaseModel):
     tiers: dict[str, Tier] = Field(default_factory=_default_tiers)
     policy: PolicySettings = Field(default_factory=PolicySettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    console: ConsoleSettings = Field(default_factory=ConsoleSettings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1056,4 +1078,8 @@ escalation_order = ["local_fast", "local_large"]
 level = "INFO"
 format = "auto"               # text | json | auto (text on a TTY, json otherwise)
 include_content = false
+
+[console]
+url = ""                      # WeightRoomGym's URL (https://<host>:8769); set, the top bar links
+                              # to it and to the peer applications through it (row WM2)
 """

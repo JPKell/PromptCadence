@@ -33,7 +33,7 @@ dependencies = [
     # Floor 0.2.2 (2026-09-07, row L6): 0.2.0 and 0.2.1 still pinned setspec<0.5, below this
     # application's own setspec floor, so a resolver asked for the lowest mirrorwall could not
     # resolve at all. The compatibility matrix tests both ends of every range.
-    "mirrorwall>=0.2.2,<0.3",
+    "mirrorwall>=0.3.1,<0.4",  # 0.3.1: the tab strip, status dot, dense table, log pane (row WM2)
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.30,<1",
     "pydantic>=2.9,<3",

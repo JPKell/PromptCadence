@@ -1,4 +1,4 @@
-{% extends "mirrorwall/base.html" %}
+{% extends "base.html" %}
 {% from "mirrorwall/components.html" import badge, empty_state, filter_bar, pagination, table %}
 {% from "_macros.html" import trajectory_link %}
 {% block title %}Trajectories — PromptCadence{% endblock %}
@@ -37,7 +37,7 @@ call, every debit and every egress verdict.</p>
   one.cause or "—"
 ]) %}
 {% endfor %}
-{{ table(columns, rows, caption="Trajectories", complete=report.next_cursor is none, row_count=report.row_count) }}
+{{ table(columns, rows, density="dense", caption="Trajectories", complete=report.next_cursor is none, row_count=report.row_count) }}
 {{ pagination(next_href=("/trajectories?cursor=" ~ report.next_cursor) if report.next_cursor else none,
               summary=(report.row_count ~ " shown")) }}
 {% else %}

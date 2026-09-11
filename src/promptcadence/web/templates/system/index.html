@@ -1,5 +1,5 @@
-{% extends "mirrorwall/base.html" %}
-{% from "mirrorwall/components.html" import badge, empty_state, kv_list, table %}
+{% extends "base.html" %}
+{% from "mirrorwall/components.html" import empty_state, kv_list, status_dot, table %}
 {% block title %}System — PromptCadence{% endblock %}
 {% block content %}
 <h2>System</h2>
@@ -11,7 +11,7 @@
 {% for one in report.components %}
 {% set _ = rows.append([
   one.name,
-  badge(one.status, tone=outcome_tone(one.status)),
+  status_dot({"ok": "ok", "degraded": "degraded", "unavailable": "stopped"}.get(one.status, "unknown"), label=one.status),
   one.detail or "—",
   one.checked_at or "—"
 ]) %}

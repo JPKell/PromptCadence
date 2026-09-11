@@ -37,9 +37,21 @@ __all__ = [
     "state_tone",
     "templates",
     "verdict_tone",
+    "APP_TABS",
+    "configure_shell",
 ]
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+APP_TABS: tuple[tuple[str, str], ...] = (
+    ("freeweight", "FreeWeight"),
+    ("loadcoach", "LoadCoach"),
+    ("ideapress", "IdeaPress"),
+    ("promptcadence", "PromptCadence"),
+)
+"""The suite's four applications, in the console's order, for the top-bar tab strip (row WM2).
+Rendered only when ``[console] url`` is set; a peer is reached through the console
+(``<url>/apps/<name>``), never on its own loopback port."""
 
 NAV_ITEMS: tuple[dict[str, str], ...] = (
     {"key": "dashboard", "href": "/", "label": "Dashboard"},
@@ -128,6 +140,13 @@ def templates() -> Environment:
             "nav_items": NAV_ITEMS,
             "theme_storage_key": "promptcadence-theme",
             "show_telemetry_bar": False,
+            # MirrorWall 0.3 opt-ins (row WM2, design brief §6): the product name as a link home
+            # and the tab strip, which renders nothing until `configure_shell` hands it a console
+            # URL. No telemetry bar here, so no meters.
+            "product_href": "/",
+            "console_url": "",
+            "app_tabs": APP_TABS,
+            "own_app": "promptcadence",
             # The status vocabulary as functions rather than as a mapping every template has to
             # look up defensively: `StrictUndefined` turns a missing key into a raise, and a state
             # this build has never seen should render as neutral rather than as a 500.
@@ -136,6 +155,15 @@ def templates() -> Environment:
             "outcome_tone": outcome_tone,
         },
     )
+
+
+def configure_shell(*, console_url: str) -> None:
+    """Hand the shell what only the running configuration knows.
+
+    Args:
+        console_url: ``[console] url`` — WeightRoomGym's base URL, or ``""`` for no tab strip.
+    """
+    templates().globals["console_url"] = console_url.rstrip("/")
 
 
 def render(template_name: str, /, **context: Any) -> str:

@@ -182,3 +182,11 @@ Structured-logging behaviour.
 | `logging.level` | `PROMPTCADENCE_LOGGING__LEVEL` | `'DEBUG' \| 'INFO' \| 'WARNING' \| 'ERROR' \| 'CRITICAL'` | `'INFO'` | — | no | — | — |  |
 | `logging.format` | `PROMPTCADENCE_LOGGING__FORMAT` | `'text' \| 'json' \| 'auto'` | `'auto'` | — | no | — | — |  |
 | `logging.include_content` | `PROMPTCADENCE_LOGGING__INCLUDE_CONTENT` | `bool` | `False` | — | no | Logs transcript text at DEBUG when true (config-only). | — | Log full prompts and responses. Off by default: only hashes are logged. |
+
+## `[console]`
+
+Where WeightRoomGym is, when one fronts this application (row WM2).
+
+| Key | Environment variable | Type | Default | Range | Runtime-changeable | Security | Example | Description |
+|---|---|---|---|---|---|---|---|---|
+| `console.url` | `PROMPTCADENCE_CONSOLE__URL` | `str` | `''` | — | no | — | `'https://jordan-main.local:8769'` | WeightRoomGym's base URL (https://<host>:8769); empty renders no application tab strip. |

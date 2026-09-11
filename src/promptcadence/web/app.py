@@ -54,7 +54,7 @@ from promptcadence.__about__ import __version__
 from promptcadence.config import LOOPBACK_HOSTS, Settings
 from promptcadence.web.limits import BodySizeLimitMiddleware, SameOriginMiddleware
 from promptcadence.web.rate_limit import RateLimitMiddleware
-from promptcadence.web.rendering import templates
+from promptcadence.web.rendering import configure_shell, templates
 from promptcadence.web.routes import approvals as approval_routes
 from promptcadence.web.routes import console as console_routes
 from promptcadence.web.routes import egress as egress_routes
@@ -249,6 +249,7 @@ def create_app(settings: Settings, *, runtime_builder: Any | None = None) -> Fas
         lifespan=_lifespan,
     )
     app.state.settings = settings
+    configure_shell(console_url=settings.console.url)
     app.state.runtime = None
     app.state.runtime_builder = runtime_builder
     app.state.health_checkers = None

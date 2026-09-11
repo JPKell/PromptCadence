@@ -1,5 +1,5 @@
-{% extends "mirrorwall/base.html" %}
-{% from "mirrorwall/components.html" import badge, empty_state, kv_list, table %}
+{% extends "base.html" %}
+{% from "mirrorwall/components.html" import badge, empty_state, kv_list, table, status_dot %}
 {% from "_macros.html" import short %}
 {% block title %}Tiers — PromptCadence{% endblock %}
 {% block content %}
@@ -29,7 +29,7 @@ nothing silently climbs to a more capable tier.</p>
   badge("remote" if one.is_remote else "local", tone="warning" if one.is_remote else "success"),
   one.effective_max_classification,
   one.context_budget_tokens ~ " tokens",
-  badge("available", tone="success") if one.available else badge(one.unavailable_reason, tone="warning")
+  status_dot("ok" if one.available else "degraded", label="available" if one.available else one.unavailable_reason)
 ]) %}
 {% endfor %}
 {{ table(columns, rows, caption="Configured tiers", row_count=report.row_count) }}

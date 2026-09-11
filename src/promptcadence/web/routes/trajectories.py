@@ -18,7 +18,15 @@ from typing import Any, Literal
 import anyio
 from baseaicore import DataClassification, Money
 from fastapi import APIRouter, Query, Request, Response, status
-from mirrorwall import clamp_limit, json_response, paginated_response, sse_response
+from mirrorwall import (
+    Event,
+    clamp_limit,
+    json_response,
+    log_line,
+    log_pane_response,
+    paginated_response,
+    sse_response,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from setspec import GeneratorInfo
 from starlette.responses import StreamingResponse
@@ -240,6 +248,42 @@ def post_cancel(request: Request, trajectory_id: str) -> Response:
     view = runtime_of(request).trajectories.cancel(trajectory_id)
     return json_response(
         view.as_json(), status=status.HTTP_202_ACCEPTED, request_id=request_id_of(request)
+    )
+
+
+def _log_line(event: Event) -> str | None:
+    """One trajectory event as a ``log_pane`` line — its type and the fields that say why."""
+    payload = dict(event.payload)
+    kind = str(event.type)
+    level = "info"
+    if kind.endswith((".failed", ".denied", ".rejected", ".halted")) or kind == "error":
+        level = "error"
+    elif kind in ("step.retried", "deviation.detected", "budget.window_wait"):
+        level = "warning"
+    extra = payload.get("cause") or payload.get("reason") or payload.get("step_id")
+    text = f"{kind} — {extra}" if isinstance(extra, str) and extra else kind
+    return log_line(text, level=level)
+
+
+@router.get("/trajectories/{trajectory_id}/log", include_in_schema=False)
+async def log_trajectory(request: Request, trajectory_id: str) -> StreamingResponse:
+    """The trajectory's events as a MirrorWall ``log_pane`` stream (row WM2).
+
+    The same source and loop as ``/stream``, rendered as ``log`` frames the pane swaps in and
+    closed with ``log.closed`` after the terminal event; the enveloped stream stays the API.
+    """
+    runtime = runtime_of(request)
+    await anyio.to_thread.run_sync(require_scope, request, "read")
+    await anyio.to_thread.run_sync(runtime.trajectories.get, trajectory_id)
+    return log_pane_response(
+        runtime.sink.source(trajectory_id),
+        stream_id=trajectory_id,
+        last_event_id=request.headers.get("last-event-id"),
+        render_line=_log_line,
+        generator=GENERATOR,
+        heartbeat_seconds=15.0,
+        poll_interval_seconds=0.002,
+        terminal_events=TERMINAL_EVENTS,
     )
 
 

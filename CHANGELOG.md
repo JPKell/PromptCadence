@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ### Added
 
+- **MirrorWall 0.3 adopted on the pages that want it** (row WM2, `apps/weightroom/design.md`
+  §6): the trajectory list renders dense; the System page shows each health component, and the
+  Tiers page each tier's availability, with the suite's status dot beside its own word; a
+  running trajectory's page carries MirrorWall's bounded, pausable log pane, fed by the new
+  `GET /api/v1/trajectories/{id}/log` (outside the OpenAPI snapshot) — the same event source as
+  `/stream`, rendered as `log` frames and closed with `log.closed` (htmx on that page while it
+  runs, ADR-0128); every page extends the application's own `base.html` over MirrorWall's; and
+  the top bar gains the suite's tab strip — WeightRoomGym and the peer applications through it —
+  when the new `[console] url` names the console. Unset, the strip is absent and the masthead
+  is byte-for-byte what it was. `mirrorwall>=0.3.1,<0.4`.
+
 - **`egress.evaluated` is sent** (row W10; carried from WeightRoomGym row W6, `history/handoffs/W6_HANDOFF.md`
   §8 item 3). The event type existed in `domain/events.py` and the API document since Phase 6 but
   nothing emitted it. Every Commissioner decision — each turn's tier, local ones included, and each
