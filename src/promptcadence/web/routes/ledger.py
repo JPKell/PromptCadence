@@ -58,20 +58,24 @@ def get_ledger_entries(
     trajectory_id: str | None = Query(default=None),
     tag: str | None = Query(default=None),
     limit: int | None = Query(default=None),
+    cursor: str | None = Query(default=None),
 ) -> Response:
     """Recorded debits, newest first, optionally narrowed to one trajectory or one tag.
 
     Each entry carries its four token counts, its ``pricing_hash`` and every ceiling's verdict as
-    of that debit — never a money figure as a fact of its own (ADR-0030 rule 1). ``read`` scope.
+    of that debit — never a money figure as a fact of its own (ADR-0030 rule 1). ``cursor``
+    continues from ``page.next_cursor`` (row WX5). ``400 VALIDATION_ERROR`` if ``cursor`` is not
+    one this API minted. ``read`` scope.
     """
     require_scope(request, "read")
     effective = clamp_limit(limit, maximum=200)
-    entries = runtime_of(request).budget.entry_views(
-        trajectory_id=trajectory_id, tag=tag, limit=effective
+    entries, next_cursor = runtime_of(request).budget.entry_page(
+        trajectory_id=trajectory_id, tag=tag, limit=effective, cursor=cursor
     )
     return paginated_response(
         [entry.as_json() for entry in entries],
         limit=effective,
-        has_more=len(entries) == effective,
+        next_cursor=next_cursor,
+        has_more=next_cursor is not None,
         request_id=request_id_of(request),
     )

@@ -592,7 +592,7 @@
     },
     "/api/v1/ledger/entries": {
       "get": {
-        "description": "Recorded debits, newest first, optionally narrowed to one trajectory or one tag.\n\nEach entry carries its four token counts, its ``pricing_hash`` and every ceiling's verdict as\nof that debit \u2014 never a money figure as a fact of its own (ADR-0030 rule 1). ``read`` scope.",
+        "description": "Recorded debits, newest first, optionally narrowed to one trajectory or one tag.\n\nEach entry carries its four token counts, its ``pricing_hash`` and every ceiling's verdict as\nof that debit \u2014 never a money figure as a fact of its own (ADR-0030 rule 1). ``cursor``\ncontinues from ``page.next_cursor`` (row WX5). ``400 VALIDATION_ERROR`` if ``cursor`` is not\none this API minted. ``read`` scope.",
         "operationId": "get_ledger_entries_api_v1_ledger_entries_get",
         "parameters": [
           {
@@ -641,6 +641,22 @@
                 }
               ],
               "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           }
         ],

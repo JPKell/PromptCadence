@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ### Added
 
+- **`GET /ledger/entries` gains a cursor** (row WX5, api.md §7.1): the same shape
+  `/egress-decisions` got at WPC1 — `cursor` continues from the previous page's
+  `page.next_cursor` in the existing newest-first order, and `page.has_more` is now exact rather
+  than "the page was full". With no `cursor`, the items are the ones this endpoint always
+  returned. A cursor this API did not mint is `400 VALIDATION_ERROR` naming `cursor`.
+  `BudgetService.entry_page` is new; `entry_views` and its other callers (the CLI's `ledger show`,
+  the trajectory explanation, the remote-tier tests) are unchanged.
+
 - **Every approval request over the API** (row WPC1, api.md §4): `GET /approvals?status=all`
   without `trajectory_id` lists every request ever raised, newest first by
   `(created_at, request_id)`, paged by `limit` (default 50, clamped to 200) and `cursor`. The

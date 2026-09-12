@@ -273,7 +273,7 @@ T9: halt the trajectory with the denial recorded, under the caller's identity. R
 | Endpoint | Notes |
 |---|---|
 | `GET /ledger` | Today's position against the per-day ceiling and each configured project's; `?trajectory_id=` adds that trajectory's own per-run position (`404 TRAJECTORY_NOT_FOUND` if it names one that does not exist). `read` scope |
-| `GET /ledger/entries` | Recorded debits, newest first; `?trajectory_id=`, `?tag=`, `?limit=` (clamped to 200). Each entry carries its four token counts, its `pricing_hash` and every ceiling's verdict as of that debit — never a money figure as a fact of its own ([ADR-0030](../../adr/0030-model-cost-and-pricing.md) rule 1). `read` scope |
+| `GET /ledger/entries` | Recorded debits, newest first; `?trajectory_id=`, `?tag=`, `?limit=` (clamped to 200), `?cursor=` (the previous page's opaque `page.next_cursor`, `null` on the last page; row WX5). Each entry carries its four token counts, its `pricing_hash` and every ceiling's verdict as of that debit — never a money figure as a fact of its own ([ADR-0030](../../adr/0030-model-cost-and-pricing.md) rule 1). With no `cursor` the items are the ones this endpoint always returned, and `page.has_more` is now exact rather than "the page was full". A cursor this build did not mint is `400 VALIDATION_ERROR` naming `cursor`. `read` scope |
 
 `GET /ledger` response:
 
