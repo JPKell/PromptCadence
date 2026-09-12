@@ -143,6 +143,32 @@ def test_get_ledger_entries_filters_by_tag(client: TestClient) -> None:
     assert empty == []
 
 
+def test_a_cursor_pages_every_debit_once(client: TestClient) -> None:
+    """Row WX5: the same cursor shape ``/egress-decisions`` got at WPC1, over the ledger."""
+    for _ in range(3):
+        _run(client)
+    whole = client.get("/api/v1/ledger/entries").json()["items"]
+    assert len(whole) == 3
+
+    paged: list[str] = []
+    cursor: str | None = None
+    while True:
+        params = {"limit": 1, **({"cursor": cursor} if cursor else {})}
+        body = client.get("/api/v1/ledger/entries", params=params).json()
+        paged.extend(entry["entry_id"] for entry in body["items"])
+        cursor = body["page"]["next_cursor"]
+        assert body["page"]["has_more"] is (cursor is not None)
+        if cursor is None:
+            break
+    assert paged == [entry["entry_id"] for entry in whole]
+
+
+def test_a_forged_ledger_cursor_is_refused_by_name(client: TestClient) -> None:
+    response = client.get("/api/v1/ledger/entries", params={"cursor": "not-a-cursor"})
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["field"] == "cursor"
+
+
 def test_ledger_show_prints_the_same_figures_the_api_returns(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

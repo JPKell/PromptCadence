@@ -106,6 +106,10 @@ TIER_TAG_PREFIX: Final = "tier:"
 _UNTOTALLED_IS_WORST: Final = 2**62
 """A sentinel rank, not an amount. Never rendered, never stored, never compared to real money."""
 _PROJECT_TAG_PREFIX: Final = "project:"
+_ALL_ENTRIES: Final = 1_000_000
+"""``entry_views`` counts from the newest and needs a bound; :meth:`BudgetService.entry_page`
+reads every matching entry before paging in memory, the same bound :mod:`services.explanation`
+uses for the same reason."""
 
 
 def tier_tag(tier: str) -> str:
@@ -720,6 +724,42 @@ class BudgetService:
             )
             for entry in newest
         )
+
+    def entry_page(
+        self,
+        *,
+        trajectory_id: str | None = None,
+        tag: str | None = None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> tuple[tuple[LedgerEntryView, ...], str | None]:
+        """One page of recorded debits, newest first, continued by ``cursor`` (row WX5).
+
+        Args:
+            trajectory_id: Narrow to one trajectory, or ``None`` for the whole ledger.
+            tag: Narrow to one tag — ``tier:<name>`` or ``project:<name>``.
+            limit: Entries on this page; the caller has already clamped it.
+            cursor: The previous page's ``next_cursor``, or ``None`` for the first page.
+
+        Returns:
+            The page and the next cursor, ``None`` on the last page. Built over
+            :meth:`entry_views`, which already reads the whole matching ledger and slices —
+            *ponytail*: this pages in memory too, on the same ceiling (push the order and the
+            cursor into LoadLedger's own store if the ledger grows past what one read can hold).
+
+        Raises:
+            ValidationError: ``cursor`` is not one this API minted.
+        """
+        from promptcadence.services.cursors import decode_cursor, encode_cursor
+
+        after = decode_cursor(cursor)
+        views = self.entry_views(trajectory_id=trajectory_id, tag=tag, limit=_ALL_ENTRIES)
+        if after is not None:
+            views = tuple(view for view in views if (view.occurred_at, view.entry_id) < after)
+        page = views[:limit]
+        more = len(views) > limit and bool(page)
+        next_cursor = encode_cursor(page[-1].occurred_at, page[-1].entry_id) if more else None
+        return page, next_cursor
 
     def ledger_view(self, *, trajectory: TrajectoryView | None) -> LedgerView:
         """Build the ledger position ``GET /ledger`` and ``promptcadence ledger show`` report.
