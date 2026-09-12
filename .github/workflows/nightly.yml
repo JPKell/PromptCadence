@@ -1,16 +1,21 @@
 name: Nightly
 
-# The two suites the default gate deliberately excludes (testing standards §10), for the two
-# different reasons a suite can be excluded for: `performance` asserts wall-clock budgets, which a
-# shared runner under PR load distorts, and `live` needs a real provider/GPU that no hosted runner
-# has. Both are real coverage, so they run on a schedule rather than not at all — a marked test
-# that never runs anywhere is an untested behaviour with a green tick beside it.
+# The `live` suite the default gate deliberately excludes (testing standards §10): it needs a real
+# provider/GPU that no hosted runner has. It is real coverage, so it runs on a schedule rather than
+# not at all — a marked test that never runs anywhere is an untested behaviour with a green tick
+# beside it.
+#
+# `performance` is **not** here. Its budgets are calibrated against the reference machine, and a
+# GitHub-hosted runner is roughly half its speed, so every nightly asserted a number the runner
+# could not reach and went red for the hardware rather than for a regression — red every night
+# teaches people to stop reading the result. Packaging standards §5 puts the budgets on a
+# self-hosted runner with the hardware; until this suite registers one, they run on the reference
+# machine with `pytest -m performance` and nowhere else.
 #
 # Either step skips itself honestly, with a printed reason, when this repository has nothing
 # collected under that marker yet — `pytest -m <marker>` on an empty selection exits 5 ("no tests
 # ran"), which would fail the job for a marker this repository simply hasn't used, rather than for
 # a real regression.
-
 on:
   schedule:
     # 04:00 UTC, off the busiest window for GitHub's shared runners.
@@ -18,22 +23,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  performance:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install --require-hashes -r requirements/ci.lock
-      - run: pip install . --no-deps
-      - name: performance suite
-        run: |
-          if [ -d tests/performance ]; then
-            pytest -m performance -p no:randomly
-          else
-            echo "No tests/performance/ in this repository; skipping honestly rather than failing on an empty marker selection."
-          fi
-
   live:
     runs-on: ubuntu-latest
     steps:
