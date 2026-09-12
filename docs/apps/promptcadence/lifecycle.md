@@ -504,10 +504,18 @@ that this table does not list; terminal states have no outgoing rows.
 | T11 | `executing` | `completed` | All steps terminal-success / declared finish | — | `trajectory.completed` |
 | T12 | `executing` | `halted` | `tier_violation`; re-approval denied; deviation limit; budget exhaustion (halt policy); egress denial with no permitted tier; a step's retry budget spent on a LoadCoach service failure ([ADR-0076](../../adr/0076-a-step-retry-is-a-repeat-under-the-same-intent.md)) | Cause recorded, naming every attempt where a retry budget was spent | `trajectory.halted` |
 | T13 | `executing` | `failed` | Unrecoverable error | Cause recorded | `trajectory.failed` |
-| T14 | any non-terminal | `cancelled` | `POST /cancel` or CLI | From `executing`: honoured at the next turn boundary; any in-flight LoadCoach job cancelled | `trajectory.cancelled` |
+| T14 | any non-terminal | `cancelled` | `POST /cancel` or CLI | From `executing`: honoured at the next turn boundary; any in-flight LoadCoach job cancelled. From `awaiting_approval`: the pending request is resolved `expired` in the same write, with the cancel as its `resolution_reason` (row WPF3) | `trajectory.cancelled` |
 | T15 | `planning` or `executing` | `awaiting_window` | The per-day ceiling would be exceeded by the plan or by the next step, and `on_daily_exhausted = "window"` | Parked-from state and the next UTC-day edge persisted; in-flight turns finish first; lease released | `budget.window_wait` |
 | T16 | `awaiting_window` | the state it parked from | The UTC day rolls | The per-day ceiling now admits the plan or step; `window_wait_max_days` not exceeded; lease re-acquired | `trajectory.resumed` |
 | T17 | `awaiting_window` | `halted` | `window_wait_max_days` elapsed — the ceiling still refused at that many day edges | Cause recorded | `trajectory.halted` |
+
+**A cancel answers what the trajectory was asking.** A pending approval request exists only while
+its trajectory is `awaiting_approval` — it is created in the write that parks it ([ADR-0049](../../adr/0049-approval-is-a-mode-with-its-own-scope.md)
+rule 6) — so the only exits that could abandon one are the three out of that state: T8 grants it,
+T9 denies or times it out, and T14 resolves it as `expired`. Every other terminal transition (T6,
+T7, T12, T13, T17) and the recovery pass of §8.3 leave from a state that holds no request;
+`awaiting_approval` holds no lease, so recovery never sees it. Before row WPF3, T14 left the request
+`pending` for ever: the listings offered a decision this build then refused.
 
 **A step failure during execution is T12, or T13 when nothing can be recovered — never T7.** T7 is
 `planning → failed`: the plan *draft* failed after `[planning] corrective_retries`. A step whose

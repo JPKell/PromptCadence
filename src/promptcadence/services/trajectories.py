@@ -18,6 +18,12 @@ and claim cannot silently turn a planned trajectory into a bypassed one.
 trajectory is *asked* to cancel: the row's ``cancel_requested`` flag is set and the worker
 honours it at the next turn boundary, in one write with the event, after cancelling any in-flight
 LoadCoach job (lifecycle §8.2 T14). ``planning`` is treated like ``executing``: a worker holds it.
+
+**A cancel answers what the trajectory was asking.** Cancelling from ``awaiting_approval`` resolves
+the pending approval request in the same write, so no listing offers a decision that PromptCadence
+would then refuse (row WPF3). The lease-holding states cannot hold one: a request is created in the
+write that moves the trajectory to ``awaiting_approval`` (ADR-0049 rule 6), so a ``planning`` or
+``executing`` trajectory has none to resolve when the worker honours its cancel at the boundary.
 """
 
 from __future__ import annotations
@@ -47,13 +53,20 @@ from promptcadence.domain.trajectory import (
 )
 from promptcadence.infrastructure.db import models
 from promptcadence.infrastructure.threads import SqlThreadStore
+from promptcadence.services.approvals import resolve_abandoned
 from promptcadence.services.loop import BypassGate
 from promptcadence.services.policy_assembly import (
     approval_policy_from_settings,
     money_from_amount,
     tier_snapshot_from_settings,
 )
-from promptcadence.services.views import TrajectoryView, TurnView, declaration_of, view_of
+from promptcadence.services.views import (
+    TrajectoryView,
+    TurnView,
+    approver_of,
+    declaration_of,
+    view_of,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -71,6 +84,7 @@ __all__ = [
     "TrajectorySubmission",
     "TrajectoryView",
     "TurnView",
+    "approver_of",
     "declaration_of",
     "view_of",
 ]
@@ -110,36 +124,6 @@ class TrajectorySubmission:
     token_budget: int | None = None
     money_budget: Money | None = None
     partial_pricing: Literal["floor", "strict"] | None = None
-
-
-_LOOPBACK: Final = "loopback"
-"""The open install's principal, as ``web.auth`` records it (``LOOPBACK_PRINCIPAL_NAME``); spelled
-here because services do not import the web layer."""
-
-
-def approver_of(session: Session, trajectory_id: str) -> str | None:
-    """``approver:<token name>`` for the trajectory's most recently granted request, or ``None``.
-
-    The request row stores the approving token's *id* (``loopback`` on an open install); the
-    name is looked up here so ``trajectory show`` says who in the operator's own words. A token
-    revoked since keeps its name; one deleted outright falls back to the id.
-    """
-    granted = session.execute(
-        select(models.ApprovalRequest)
-        .where(
-            models.ApprovalRequest.trajectory_id == trajectory_id,
-            models.ApprovalRequest.status == "granted",
-        )
-        .order_by(models.ApprovalRequest.resolved_at.desc(), models.ApprovalRequest.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if granted is None or not granted.approver_token_id:
-        return None
-    token_id = granted.approver_token_id
-    if token_id == _LOOPBACK:
-        return f"approver:{token_id}"
-    token = session.get(models.ApiToken, token_id)
-    return f"approver:{token.name if token is not None else token_id}"
 
 
 class TrajectoryService:
@@ -434,6 +418,10 @@ class TrajectoryService:
             TrajectoryNotFoundError: No trajectory has that id.
             TrajectoryNotCancellableError: The trajectory is terminal — the service-layer name
                 for the state machine's refusal.
+
+        Note:
+            A cancel from ``awaiting_approval`` resolves the trajectory's pending approval request
+            in the same write, as ``expired`` with the cancel as its ``resolution_reason``.
         """
         now = self._clock()
         with self._sink.write() as (session, events):
@@ -490,6 +478,12 @@ class TrajectoryService:
                         f"Trajectory {trajectory_id} changed state while being cancelled.",
                         details={"trajectory_id": trajectory_id},
                     )
+                resolve_abandoned(
+                    session,
+                    trajectory_id,
+                    reason=f"the trajectory was cancelled from {current.value}, unanswered",
+                    now=now,
+                )
                 events.append(
                     trajectory_id,
                     TrajectoryCancelled(trajectory_id=trajectory_id, cancelled_from=current),

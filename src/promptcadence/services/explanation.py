@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from baseaicore import canonical_json, new_id, sha256_of
@@ -48,7 +48,7 @@ from promptcadence.services.compaction import COMPACTION_STEP_PREFIX
 from promptcadence.services.egress import decision_view
 from promptcadence.services.intents import intent_document
 from promptcadence.services.records import RecordReader
-from promptcadence.services.views import view_of
+from promptcadence.services.views import approver_of, view_of
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -170,10 +170,12 @@ class ExplanationBuilder:
                 raise TrajectoryNotFoundError(
                     f"No trajectory {trajectory_id!r}.", details={"trajectory_id": trajectory_id}
                 )
+            # `approver` needs the session `view_of` does not take: the row keeps the approving
+            # token's id and the field is its name (row W10). Composed here so the document and
+            # `GET /trajectories/{id}` answer the same thing (row WPF3).
+            view = replace(view_of(row), approver=approver_of(session, trajectory_id))
             trajectory = {
-                key: value
-                for key, value in view_of(row).as_json().items()
-                if key not in _LEASE_KEYS
+                key: value for key, value in view.as_json().items() if key not in _LEASE_KEYS
             }
             trajectory["tier_snapshot"] = _tier_snapshot(session, row.tier_snapshot_id)
             return compose(
